@@ -8,6 +8,10 @@
 
 import { EdgeTelemetry } from '../../core/EdgeTelemetry';
 
+// Type declarations for fetch API
+declare const global: any;
+type RequestInfo = string | URL | Request;
+
 // Store reference to original fetch function
 let originalFetch: typeof fetch | null = null;
 

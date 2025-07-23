@@ -23,7 +23,6 @@ interface BatchPayload {
  */
 export class JsonExporter {
   private buffer: Record<string, any>[] = [];
-  private readonly defaultBatchSize = 30;
 
   constructor(
     private exportUrl: string,

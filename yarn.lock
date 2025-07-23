@@ -5872,9 +5872,9 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"edge-telemetry-ncg@workspace:.":
+"edge-telemetry-sdk@workspace:.":
   version: 0.0.0-use.local
-  resolution: "edge-telemetry-ncg@workspace:."
+  resolution: "edge-telemetry-sdk@workspace:."
   dependencies:
     "@commitlint/config-conventional": ^19.6.0
     "@embrace-io/react-native": ^6.1.0

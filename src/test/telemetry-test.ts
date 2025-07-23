@@ -4,9 +4,11 @@
  */
 
 import { EdgeTelemetry } from '../core/EdgeTelemetry';
-import { startScreenTracking } from '../data/navigation/ScreenTracker';
 import { interceptFetch } from '../data/network/FetchInterceptor';
 import { trackError } from '../data/error/ErrorHandler';
+
+// Type declarations for browser environment
+declare const window: any;
 
 /**
  * Test function to demonstrate the new functionality
@@ -142,8 +144,8 @@ export async function testFetchInterception() {
 
 // Export test functions for manual execution
 if (typeof window !== 'undefined') {
-  (window as any).testEdgeTelemetryInternalEvents = testEdgeTelemetryInternalEvents;
-  (window as any).testFetchInterception = testFetchInterception;
+  window.testEdgeTelemetryInternalEvents = testEdgeTelemetryInternalEvents;
+  window.testFetchInterception = testFetchInterception;
   
   console.log('🔧 Test functions available:');
   console.log('- testEdgeTelemetryInternalEvents()');

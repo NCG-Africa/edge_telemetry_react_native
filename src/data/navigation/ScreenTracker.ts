@@ -157,15 +157,15 @@ export function startScreenTracking(navigationContainerRef: NavigationContainerR
 
 /**
  * Stops screen tracking and cleans up listeners
- * @param navigationContainerRef Reference to the NavigationContainer
+ * @param _navigationContainerRef Reference to the NavigationContainer (unused due to React Navigation API limitations)
  */
-export function stopScreenTracking(navigationContainerRef: NavigationContainerRef): void {
+export function stopScreenTracking(_navigationContainerRef: NavigationContainerRef): void {
   if (!trackingState.isTracking) {
     return;
   }
 
   try {
-    // Remove listeners (Note: React Navigation doesn't provide removeListener for these events)
+    // Note: React Navigation doesn't provide removeListener for these events
     // This is a limitation of the current React Navigation API
     
     // Reset tracking state
@@ -190,9 +190,9 @@ export function getScreenTrackingState(): Readonly<ScreenTrackingState> {
 /**
  * Manually tracks a screen change (for custom navigation implementations)
  * @param screenName Screen name to track
- * @param params Optional route parameters
+ * @param _params Optional route parameters (reserved for future use)
  */
-export function trackScreenManually(screenName: string, params?: Record<string, any>): void {
+export function trackScreenManually(screenName: string, _params?: Record<string, any>): void {
   if (!trackingState.isTracking) {
     console.warn('ScreenTracker: Screen tracking is not enabled. Call startScreenTracking() first.');
     return;

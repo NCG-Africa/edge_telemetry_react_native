@@ -1,6 +1,6 @@
 {
-  "name": "edge-telemetry-ncg",
-  "version": "0.1.0",
+  "name": "edge-telemetry-sdk",
+  "version": "1.0.0",
   "description": "A lightweight React Native SDK for collecting mobile app telemetry and exporting it to custom backends in JSON format. Built for flexible and developer-friendly observability.",
   "main": "./lib/module/index.js",
   "types": "./lib/typescript/src/index.d.ts",
@@ -13,8 +13,9 @@
     "./package.json": "./package.json"
   },
   "files": [
-    "src",
     "lib",
+    "src",
+    "README.md",
     "android",
     "ios",
     "cpp",
@@ -38,23 +39,31 @@
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
     "clean": "del-cli lib",
     "prepare": "bob build",
+    "build": "bob build",
     "release": "release-it --only-version"
   },
   "keywords": [
     "react-native",
+    "telemetry",
+    "monitoring",
+    "sdk",
+    "observability",
+    "analytics",
+    "crash-reporting",
+    "performance",
     "ios",
     "android"
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/NCG-Africa/edge_telemetry_react_native.git.git"
+    "url": "https://github.com/NCG-Africa/edge_telemetry_react_native.git"
   },
   "author": "mktowett <marvintowett@gmail.com> (https://github.com/NCG-Africa/edge_telemetry_react_native)",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/NCG-Africa/edge_telemetry_react_native.git/issues"
+    "url": "https://github.com/NCG-Africa/edge_telemetry_react_native/issues"
   },
-  "homepage": "https://github.com/NCG-Africa/edge_telemetry_react_native.git#readme",
+  "homepage": "https://github.com/NCG-Africa/edge_telemetry_react_native#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },
