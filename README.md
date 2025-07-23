@@ -24,16 +24,21 @@
 - [x] Installed Embrace SDK (used internally for telemetry collection)
 - [x] Defined project structure for maintainability
 - [x] Created `EdgeTelemetryConfig` with `appName`, `exportUrl`, and `debug` options
+- [x] Defined `TelemetryClient` interface to enforce a telemetry contract
+- [x] Implemented `EmbraceClient` using the Embrace SDK v6.1.0
+- [x] Created `EdgeTelemetry` coordinator with an `init()` method
+- [x] Exported the SDK's public API via `index.ts`
 
 ---
 
 ## 🚧 What's Coming Next
 
-- [ ] Create `TelemetryClient` interface to define telemetry contract
-- [ ] Implement `EmbraceClient` to handle real telemetry logic
-- [ ] Add `EdgeTelemetry.init(config)` method
-- [ ] Add auto-instrumentation for crash, network, and screen tracking
-- [ ] Export telemetry in JSON to `exportUrl`
+- [ ] Start and verify Embrace SDK telemetry flow
+- [ ] Enable auto-instrumentation (crash/ANR, screen, network)
+- [ ] Create `JsonExporter` to send data to `exportUrl`
+- [ ] Add public `trackEvent()` method
+- [ ] Route telemetry events to your backend in JSON format
+- [ ] Add `debug` logging and extensible configuration support
 
 ---
 
