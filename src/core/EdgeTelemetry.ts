@@ -1,6 +1,7 @@
 import type { EdgeTelemetryConfig } from './EdgeTelemetryConfig';
 import type { TelemetryClient } from '../domain/TelemetryClient';
 import { EmbraceClient } from '../data/EmbraceClient';
+import { JsonExporter } from '../data/exporter/JsonExporter';
 
 /**
  * EdgeTelemetry coordinator class that serves as the public API
@@ -10,6 +11,7 @@ import { EmbraceClient } from '../data/EmbraceClient';
 class EdgeTelemetryCoordinator {
   private config: EdgeTelemetryConfig | null = null;
   private telemetryClient: TelemetryClient | null = null;
+  private exporter: JsonExporter | null = null;
   private isInitialized = false;
 
   /**
@@ -36,6 +38,13 @@ class EdgeTelemetryCoordinator {
       // Initialize an instance of EmbraceClient
       this.telemetryClient = new EmbraceClient();
 
+      // Initialize JsonExporter for telemetry data export
+      this.exporter = new JsonExporter(
+        config.exportUrl,
+        config.debug || false,
+        30 // default batch size
+      );
+
       // Call the start method (which uses initialize() internally)
       // Pass debug mode to enable proper logging
       await this.telemetryClient.start(config.debug);
@@ -57,6 +66,7 @@ class EdgeTelemetryCoordinator {
       // Reset state on failure
       this.config = null;
       this.telemetryClient = null;
+      this.exporter = null;
       this.isInitialized = false;
       
       throw error;
@@ -158,6 +168,107 @@ class EdgeTelemetryCoordinator {
    */
   getIsInitialized(): boolean {
     return this.isInitialized;
+  }
+
+  /**
+   * Tracks a custom telemetry event with optional attributes
+   * @param eventName Name of the event to track
+   * @param attributes Optional attributes/properties for the event
+   */
+  trackEvent(eventName: string, attributes?: Record<string, any>): void {
+    // Warn if SDK is not initialized
+    if (!this.isInitialized || !this.exporter) {
+      console.warn('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.init() first. Event will be ignored:', eventName);
+      return;
+    }
+
+    try {
+      // Validate event name
+      if (!eventName || typeof eventName !== 'string') {
+        console.warn('EdgeTelemetry: Event name must be a non-empty string. Event ignored.');
+        return;
+      }
+
+      // Create the telemetry event with enrichment
+      const telemetryEvent = {
+        eventName: eventName.trim(),
+        timestamp: new Date().toISOString(),
+        appName: this.config?.appName || 'unknown',
+        attributes: this.sanitizeAttributes(attributes),
+      };
+
+      // Debug logging if enabled
+      if (this.config?.debug) {
+        console.log('EdgeTelemetry: Tracking event:', {
+          eventName: telemetryEvent.eventName,
+          timestamp: telemetryEvent.timestamp,
+          attributeCount: attributes ? Object.keys(attributes).length : 0,
+        });
+      }
+
+      // Queue the event for export via JsonExporter
+      this.exporter.export(telemetryEvent);
+
+      // Also send to the underlying telemetry client (Embrace)
+      if (this.telemetryClient) {
+        this.telemetryClient.trackEvent(eventName, attributes);
+      }
+    } catch (error) {
+      console.error('EdgeTelemetry: Failed to track event:', eventName, error);
+    }
+  }
+
+  /**
+   * Sanitizes attributes to ensure JSON serializability
+   * @param attributes Raw attributes object
+   * @returns Sanitized attributes safe for JSON serialization
+   */
+  private sanitizeAttributes(attributes?: Record<string, any>): Record<string, any> | undefined {
+    if (!attributes || typeof attributes !== 'object') {
+      return undefined;
+    }
+
+    try {
+      const sanitized: Record<string, any> = {};
+
+      for (const [key, value] of Object.entries(attributes)) {
+        // Skip functions, symbols, and undefined values
+        if (typeof value === 'function' || typeof value === 'symbol' || value === undefined) {
+          if (this.config?.debug) {
+            console.warn(`EdgeTelemetry: Skipping non-serializable attribute '${key}' of type '${typeof value}'`);
+          }
+          continue;
+        }
+
+        // Handle null, primitives, and objects
+        if (value === null || typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') {
+          sanitized[key] = value;
+        } else if (Array.isArray(value)) {
+          // Recursively sanitize arrays
+          sanitized[key] = value.map(item => {
+            if (typeof item === 'object' && item !== null) {
+              return this.sanitizeAttributes(item as Record<string, any>) || {};
+            }
+            return item;
+          });
+        } else if (typeof value === 'object') {
+          // Recursively sanitize nested objects
+          sanitized[key] = this.sanitizeAttributes(value as Record<string, any>) || {};
+        } else {
+          // Convert other types to string representation
+          sanitized[key] = String(value);
+        }
+      }
+
+      // Test JSON serializability
+      JSON.stringify(sanitized);
+      return sanitized;
+    } catch (error) {
+      if (this.config?.debug) {
+        console.warn('EdgeTelemetry: Failed to sanitize attributes, using empty object:', error);
+      }
+      return {};
+    }
   }
 }
 
