@@ -10,4 +10,7 @@ export interface EdgeTelemetryConfig {
   
   /** Optional flag to enable debug logging */
   debug?: boolean;
+  
+  /** Optional batch size for telemetry events (default: 30) */
+  batchSize?: number;
 }

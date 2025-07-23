@@ -2,6 +2,7 @@ import type { EdgeTelemetryConfig } from './EdgeTelemetryConfig';
 import type { TelemetryClient } from '../domain/TelemetryClient';
 import { EmbraceClient } from '../data/EmbraceClient';
 import { JsonExporter } from '../data/exporter/JsonExporter';
+import { startErrorTracking, stopErrorTracking } from '../data/error/ErrorHandler';
 
 /**
  * EdgeTelemetry coordinator class that serves as the public API
@@ -42,12 +43,15 @@ class EdgeTelemetryCoordinator {
       this.exporter = new JsonExporter(
         config.exportUrl,
         config.debug || false,
-        30 // default batch size
+        config.batchSize || 30 // use configured batch size or default to 30
       );
 
       // Call the start method (which uses initialize() internally)
       // Pass debug mode to enable proper logging
       await this.telemetryClient.start(config.debug);
+
+      // Start internal telemetry tracking
+      startErrorTracking();
 
       // Mark as initialized
       this.isInitialized = true;
@@ -68,6 +72,9 @@ class EdgeTelemetryCoordinator {
       this.telemetryClient = null;
       this.exporter = null;
       this.isInitialized = false;
+      
+      // Stop error tracking if it was started
+      stopErrorTracking();
       
       throw error;
     }
@@ -175,46 +182,87 @@ class EdgeTelemetryCoordinator {
    * @param eventName Name of the event to track
    * @param attributes Optional attributes/properties for the event
    */
-  trackEvent(eventName: string, attributes?: Record<string, any>): void {
+  trackEvent(eventName: string, attributes?: Record<string, any>): void;
+  
+  /**
+   * Tracks a telemetry event using object format (for internal events)
+   * @param event Event object with type, timestamp, and other properties
+   */
+  trackEvent(event: Record<string, any>): void;
+  
+  trackEvent(eventNameOrEvent: string | Record<string, any>, attributes?: Record<string, any>): void {
     // Warn if SDK is not initialized
     if (!this.isInitialized || !this.exporter) {
-      console.warn('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.init() first. Event will be ignored:', eventName);
+      const eventIdentifier = typeof eventNameOrEvent === 'string' ? eventNameOrEvent : eventNameOrEvent.type || 'unknown';
+      console.warn('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.init() first. Event will be ignored:', eventIdentifier);
       return;
     }
 
     try {
-      // Validate event name
-      if (!eventName || typeof eventName !== 'string') {
-        console.warn('EdgeTelemetry: Event name must be a non-empty string. Event ignored.');
-        return;
-      }
+      let telemetryEvent: Record<string, any>;
+      let eventName: string;
+      let isInternalEvent = false;
 
-      // Create the telemetry event with enrichment
-      const telemetryEvent = {
-        eventName: eventName.trim(),
-        timestamp: new Date().toISOString(),
-        appName: this.config?.appName || 'unknown',
-        attributes: this.sanitizeAttributes(attributes),
-      };
+      // Handle both string-based and object-based event formats
+      if (typeof eventNameOrEvent === 'string') {
+        // Traditional string-based event format
+        eventName = eventNameOrEvent;
+        
+        // Validate event name
+        if (!eventName || typeof eventName !== 'string') {
+          console.warn('EdgeTelemetry: Event name must be a non-empty string. Event ignored.');
+          return;
+        }
+
+        // Create the telemetry event with enrichment
+        telemetryEvent = {
+          eventName: eventName.trim(),
+          timestamp: new Date().toISOString(),
+          appName: this.config?.appName || 'unknown',
+          attributes: this.sanitizeAttributes(attributes),
+        };
+      } else {
+        // Object-based event format (for internal events)
+        const eventObj = eventNameOrEvent;
+        eventName = eventObj.type || 'unknown';
+        isInternalEvent = eventObj.source === 'internal';
+        
+        // Create telemetry event from object
+        telemetryEvent = {
+          ...eventObj,
+          timestamp: eventObj.timestamp || new Date().toISOString(),
+          appName: this.config?.appName || 'unknown',
+        };
+        
+        // Ensure attributes are sanitized if present
+        if (telemetryEvent.attributes) {
+          telemetryEvent.attributes = this.sanitizeAttributes(telemetryEvent.attributes);
+        }
+      }
 
       // Debug logging if enabled
       if (this.config?.debug) {
-        console.log('EdgeTelemetry: Tracking event:', {
-          eventName: telemetryEvent.eventName,
+        const logPrefix = isInternalEvent ? '[EdgeTelemetry] Internal event captured' : 'EdgeTelemetry: Tracking event';
+        const logSuffix = isInternalEvent ? '→ added to batch' : '';
+        
+        console.log(`${logPrefix}: ${eventName} ${logSuffix}`, {
+          eventName,
           timestamp: telemetryEvent.timestamp,
-          attributeCount: attributes ? Object.keys(attributes).length : 0,
+          isInternal: isInternalEvent,
+          attributeCount: telemetryEvent.attributes ? Object.keys(telemetryEvent.attributes).length : 0,
         });
       }
 
       // Queue the event for export via JsonExporter
       this.exporter.export(telemetryEvent);
 
-      // Also send to the underlying telemetry client (Embrace)
-      if (this.telemetryClient) {
+      // Also send to the underlying telemetry client (Embrace) for non-internal events
+      if (this.telemetryClient && !isInternalEvent && typeof eventNameOrEvent === 'string') {
         this.telemetryClient.trackEvent(eventName, attributes);
       }
     } catch (error) {
-      console.error('EdgeTelemetry: Failed to track event:', eventName, error);
+      const eventIdentifier = typeof eventNameOrEvent === 'string' ? eventNameOrEvent : eventNameOrEvent.type || 'unknown';
+      console.error('EdgeTelemetry: Failed to track event:', eventIdentifier, error);
     }
   }
 

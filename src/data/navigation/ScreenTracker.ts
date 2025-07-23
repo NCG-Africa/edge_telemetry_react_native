@@ -6,6 +6,8 @@
  * screen changes, timestamps, and user flow data.
  */
 
+import { EdgeTelemetry } from '../../core/EdgeTelemetry';
+
 // Optional React Navigation types - these will be available when the consuming app has React Navigation installed
 type NavigationContainerRef = {
   getCurrentState(): NavigationState | undefined;
@@ -89,17 +91,15 @@ function handleScreenChange(screenName: string, previousScreenName?: string): vo
     ? now - trackingState.screenStartTime 
     : undefined;
 
-  // Create screen tracking event
-  const screenEvent: ScreenTrackingEvent = {
-    screenName,
-    previousScreenName,
-    timestamp: now,
+  // Send screen tracking event to EdgeTelemetry system
+  EdgeTelemetry.trackEvent({
+    type: 'screen.view',
+    screen: screenName,
+    previousScreen: previousScreenName,
+    timestamp: new Date(now).toISOString(),
     timeOnPreviousScreen,
-  };
-
-  // TODO: Send screen tracking event to telemetry system
-  // This will be integrated with EdgeTelemetry.trackEvent() in the future
-  console.log('Screen Tracking Event:', screenEvent);
+    source: 'internal'
+  });
 
   // Update tracking state
   trackingState.previousScreen = trackingState.currentScreen;

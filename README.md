@@ -1,96 +1,229 @@
-# 📡 EdgeTelemetry SDK (React Native)
+# EdgeTelemetry SDK (React Native)
 
-**EdgeTelemetry** is a lightweight, open-source React Native SDK for collecting mobile app telemetry and exporting it to your own backend in JSON format — with full control and no vendor lock-in.
+**EdgeTelemetry** is a lightweight, production-ready React Native SDK that automatically collects mobile app telemetry and exports it to your backend in JSON format. Built with developer experience in mind, it provides comprehensive observability with zero vendor lock-in.
+
+## Features / Telemetry Collected
+
+EdgeTelemetry automatically instruments your React Native app to collect:
+
+- **Crashes** - JavaScript errors and native crashes
+- **ANRs** - Application Not Responding events
+- **Screen Views** - Automatic React Navigation tracking
+- **Network Requests** - HTTP requests with timing and status codes
+- **Custom Events** - Track business metrics via `trackEvent()` API
+- **Performance Data** - App launch times and user interactions
+
+**Key Benefits:**
+- **Auto-setup** - Works out of the box with minimal configuration
+- **JSON Export** - Send data to any backend endpoint
+- **Configurable Batching** - Control batch sizes and export frequency
+- **Debug Mode** - Comprehensive logging for development
+- **Clean Architecture** - Extensible and maintainable codebase
+
+## Installation
+
+### npm
+```bash
+npm install edge-telemetry-react-native
+```
+
+### yarn
+```bash
+yarn add edge-telemetry-react-native
+```
+
+## Configuration & Initialization
+
+Initialize EdgeTelemetry in your app's root component (typically `App.tsx` or `index.js`):
+
+```typescript
+import { EdgeTelemetry } from 'edge-telemetry-react-native';
+
+// Initialize the SDK
+const initTelemetry = async () => {
+  await EdgeTelemetry.init({
+    appName: 'MyAwesomeApp',
+    exportUrl: 'https://api.mycompany.com/telemetry',
+    debug: __DEV__, // Enable debug logging in development
+    batchSize: 30   // Optional: customize batch size
+  });
+};
+
+// Call during app startup
+initTelemetry();
+```
+
+### Configuration Options
+
+| Option | Type | Required | Default | Description |
+|--------|------|----------|---------|-------------|
+| `appName` | `string` | | - | Your application name for telemetry identification |
+| `exportUrl` | `string` | | - | Backend endpoint URL where telemetry data will be sent |
+| `debug` | `boolean` | | `false` | Enable detailed logging for development and debugging |
+| `batchSize` | `number` | | `30` | Number of events to batch before sending to backend |
+
+## Usage Examples
+
+### Track Custom Events
+
+```typescript
+import { EdgeTelemetry } from 'edge-telemetry-react-native';
+
+// Track user interactions
+EdgeTelemetry.trackEvent('user.button_click', {
+  buttonId: 'checkout-button',
+  screen: 'ProductDetails',
+  userId: '12345'
+});
+
+// Track business metrics
+EdgeTelemetry.trackEvent('purchase.completed', {
+  orderId: 'order-789',
+  amount: 99.99,
+  currency: 'USD',
+  paymentMethod: 'credit_card'
+});
+
+// Track feature usage
+EdgeTelemetry.trackEvent('feature.used', {
+  featureName: 'dark_mode',
+  enabled: true
+});
+```
+
+### Automatic Telemetry
+
+Once initialized, EdgeTelemetry automatically tracks:
+
+```typescript
+// Screen navigation (automatic)
+// No code needed - works with React Navigation
+
+// Network requests (automatic)
+fetch('https://api.example.com/data')
+  .then(response => response.json())
+  .then(data => {
+    // Request automatically tracked with timing and status
+  });
+
+// Errors and crashes (automatic)
+throw new Error('Something went wrong'); // Automatically captured
+```
+
+## Export Format
+
+Telemetry data is sent to your backend in the following JSON format:
+
+```json
+{
+  "timestamp": "2025-01-23T15:30:00.000Z",
+  "data": {
+    "type": "batch",
+    "events": [
+      {
+        "eventName": "user.button_click",
+        "timestamp": "2025-01-23T15:29:45.123Z",
+        "appName": "MyAwesomeApp",
+        "attributes": {
+          "buttonId": "checkout-button",
+          "screen": "ProductDetails"
+        }
+      },
+      {
+        "type": "screen.view",
+        "screen": "HomeScreen",
+        "previousScreen": "LoginScreen",
+        "timestamp": "2025-01-23T15:29:50.456Z",
+        "timeOnPreviousScreen": 5000,
+        "source": "internal"
+      },
+      {
+        "type": "network.request",
+        "url": "https://api.example.com/users",
+        "method": "GET",
+        "status": 200,
+        "duration": 245,
+        "timestamp": "2025-01-23T15:29:55.789Z",
+        "source": "internal"
+      }
+    ],
+    "batch_size": 3,
+    "timestamp": "2025-01-23T15:30:00.000Z"
+  }
+}
+```
+
+### Event Types
+
+- **User Events**: Custom events tracked via `trackEvent()`
+- **Internal Events**: Automatically collected telemetry marked with `"source": "internal"`
+  - `screen.view` - Screen navigation events
+  - `network.request` - HTTP request telemetry
+  - `error.javascript` - JavaScript errors
+  - `error.unhandled_promise` - Unhandled promise rejections
+
+## Architecture
+
+EdgeTelemetry follows Clean Architecture principles for maintainability and extensibility:
+
+- **Core Layer**: `EdgeTelemetry` coordinator and configuration
+- **Domain Layer**: `TelemetryClient` interface defining telemetry contracts
+- **Data Layer**: Concrete implementations (`EmbraceClient`, `JsonExporter`)
+- **Infrastructure**: Platform-specific integrations and network handling
+
+### Internal Dependencies
+
+- **Embrace SDK**: Used internally for robust crash reporting and native telemetry
+- **React Navigation**: Optional integration for automatic screen tracking
+- **Fetch API**: Intercepted for automatic network request monitoring
+
+## Future Work & Enhancements
+
+- **Enhanced Error Handling**: Add support for handled exceptions and custom error boundaries
+- **Expo Web Support**: Optional polyfills for web platform compatibility
+- **Advanced Filtering**: Opt-in screen and network request filtering capabilities
+- **Plugin System**: Third-party enrichers and custom telemetry processors
+- **OpenTelemetry Integration**: Export OpenTelemetry-compatible spans (experimental)
+- **Offline Support**: Queue telemetry when network is unavailable
+- **Performance Metrics**: Detailed app performance and user experience metrics
+- **Custom Sampling**: Configurable sampling rates for high-volume applications
+
+## Troubleshooting
+
+### Enable Debug Mode
+
+```typescript
+await EdgeTelemetry.init({
+  appName: 'MyApp',
+  exportUrl: 'https://api.example.com/telemetry',
+  debug: true // Enable detailed logging
+});
+```
+
+Debug mode provides detailed console logs:
+- `[EdgeTelemetry] Internal event captured: screen.view → added to batch`
+- `JsonExporter: Exporting batch of 30 events to https://api.example.com/telemetry`
+- `EdgeTelemetry: SDK initialized successfully`
+
+### Common Issues
+
+**SDK not collecting data?**
+- Ensure `EdgeTelemetry.init()` is called before any other SDK usage
+- Check that `exportUrl` is a valid, reachable endpoint
+- Enable debug mode to see detailed logs
+
+**Network requests not being tracked?**
+- Ensure you're using the standard `fetch` API
+- Custom HTTP libraries may require manual integration
+
+**Screen tracking not working?**
+- Ensure React Navigation is properly set up
+- Screen tracking requires React Navigation v5+ integration
+
+## License
+
+MIT License - see LICENSE file for details.
 
 ---
 
-## 🎯 Project Goal
-
-> Build a developer-friendly SDK that automatically collects app telemetry such as:
-> - Crashes
-> - ANRs
-> - Navigation events
-> - Network requests
-> - Custom events
-> 
-> And exports all telemetry data to a custom backend endpoint in JSON format, with minimal setup.
-
----
-
-## ✅ What We’ve Achieved So Far
-
-- [x] Created project using `create-react-native-library`
-- [x] Established clean and simple architecture based on Clean Architecture principles
-- [x] Installed Embrace SDK (used internally for telemetry collection)
-- [x] Defined project structure for maintainability
-- [x] Created `EdgeTelemetryConfig` with `appName`, `exportUrl`, and `debug` options
-- [x] Defined `TelemetryClient` interface to enforce a telemetry contract
-- [x] Implemented `EmbraceClient` using the Embrace SDK v6.1.0
-- [x] Created `EdgeTelemetry` coordinator with an `init()` method
-- [x] Exported the SDK's public API via `index.ts`
-- [x] Started and verified Embrace SDK inside `EmbraceClient`
-- [x] Set up global config persistence and debug logging
-- [x] Enabled:
-  - Crash & ANR monitoring (via Embrace)
-  - Network monitoring (with auto `fetch` interception)
-  - Screen tracking (React Navigation)
-
----
-
-## 🚧 What's Coming Next
-
-- [ ] Create `JsonExporter` to send telemetry to `exportUrl`
-- [ ] Add public `trackEvent()` method
-- [ ] Route telemetry events to your backend in JSON format
-- [ ] Add debug logging and extensible configuration support
-
----
-
-## 🛠️ SDK Implementation Plan
-
-A lightweight React Native SDK that auto-collects telemetry and sends it to a custom backend.
-
-### ✅ Phase 1: Foundation Setup
-
-| Step | Task | Output |
-|------|------|--------|
-| 1️⃣ | Define `EdgeTelemetryConfig` type | `EdgeTelemetryConfig.ts` with `appName`, `exportUrl`, `debug` |
-| 2️⃣ | Define `TelemetryClient` interface | Abstract contract for telemetry actions |
-| 3️⃣ | Create `EmbraceClient` | Implements `TelemetryClient` using Embrace SDK |
-| 4️⃣ | Create `EdgeTelemetry.ts` | `init(config)` sets up `EmbraceClient` and stores config |
-| 5️⃣ | Export public API | `index.ts` re-exports `EdgeTelemetry` class |
-
----
-
-### ✅ Phase 2: Default Auto-Instrumentation (Triggered by `init()`)
-
-| Step | Task | What Happens |
-|------|------|--------------|
-| 6️⃣ | Start Embrace SDK | `EmbraceClient.start()` calls `initialize()` |
-| 7️⃣ | Set global config (app name, export URL) | Passed to internal modules |
-| 8️⃣ | Enable crash & ANR monitoring | Done automatically via Embrace |
-| 9️⃣ | Enable network monitoring | `interceptFetch()` patches global fetch |
-| 🔟 | Enable screen tracking | Listens to React Navigation events |
-
----
-
-### 📤 Phase 3: Export Telemetry to Custom Backend
-
-| Step | Task | What It Does |
-|------|------|--------------|
-| 1️⃣1️⃣ | Create `JsonExporter` | Sends events/spans as JSON to `config.exportUrl` |
-| 1️⃣2️⃣ | Add `trackEvent()` API | Track custom spans or events |
-| 1️⃣3️⃣ | Wire `JsonExporter` to auto-send | Hook into span creation or telemetry emitters |
-
----
-
-### 🧩 Phase 4: Flexibility and Enhancements
-
-| Step | Task | Purpose |
-|------|------|---------|
-| 1️⃣4️⃣ | Add `debug` logging | Controlled via `config.debug` |
-| 1️⃣5️⃣ | Add optional config flags (later) | Allow turning off auto features if needed |
-| 1️⃣6️⃣ | Add public types | Export `EdgeTelemetryConfig` for SDK users |
-| 1️⃣7️⃣ | Update README.md | Document SDK usage
-
----
+**Built with ❤️ for the React Native community**

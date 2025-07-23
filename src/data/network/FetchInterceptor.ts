@@ -6,6 +6,8 @@
  * beyond what Embrace provides natively for libraries like Axios.
  */
 
+import { EdgeTelemetry } from '../../core/EdgeTelemetry';
+
 // Store reference to original fetch function
 let originalFetch: typeof fetch | null = null;
 
@@ -20,18 +22,53 @@ export function interceptFetch(): void {
     
     // Replace global.fetch with wrapper function
     global.fetch = function(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
-      // TODO: Add timing logic here (start time)
-      // TODO: Extract request details (URL, method, headers) for telemetry
+      const startTime = Date.now();
+      
+      // Extract request details for telemetry
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+      const method = init?.method || 'GET';
       
       // Call original fetch with the same arguments
       const fetchPromise = originalFetch!(input, init);
       
-      // TODO: Add response handling and timing logic here
-      // TODO: Record telemetry data (response time, status code, errors)
-      // TODO: Send telemetry to configured export URL
-      
-      // Return the same Promise to maintain compatibility
-      return fetchPromise;
+      // Handle response and track telemetry
+      return fetchPromise
+        .then((response) => {
+          const endTime = Date.now();
+          const duration = endTime - startTime;
+          
+          // Track successful network request
+          EdgeTelemetry.trackEvent({
+            type: 'network.request',
+            url,
+            method,
+            status: response.status,
+            statusText: response.statusText,
+            duration,
+            timestamp: new Date(startTime).toISOString(),
+            source: 'internal'
+          });
+          
+          return response;
+        })
+        .catch((error) => {
+          const endTime = Date.now();
+          const duration = endTime - startTime;
+          
+          // Track failed network request
+          EdgeTelemetry.trackEvent({
+            type: 'network.request',
+            url,
+            method,
+            status: 0,
+            error: error.message || 'Network request failed',
+            duration,
+            timestamp: new Date(startTime).toISOString(),
+            source: 'internal'
+          });
+          
+          throw error;
+        });
     };
   }
 }
