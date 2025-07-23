@@ -1,5 +1,6 @@
 import { initialize, logMessage } from '@embrace-io/react-native';
 import type { TelemetryClient } from '../domain/TelemetryClient';
+import { interceptFetch } from './network/FetchInterceptor';
 
 /**
  * Implementation of TelemetryClient using the Embrace React Native SDK
@@ -55,6 +56,14 @@ export class EmbraceClient implements TelemetryClient {
       // Throw error if initialization failed
       if (!isStarted) {
         throw new Error('Embrace SDK initialization failed');
+      }
+
+      // Enable automatic fetch tracking
+      interceptFetch();
+
+      // Log fetch tracking enablement if debug mode is enabled
+      if (this.debugMode) {
+        console.log('[EdgeTelemetry] Embrace initialized with fetch tracking');
       }
     } catch (error) {
       // Handle errors gracefully with try/catch
