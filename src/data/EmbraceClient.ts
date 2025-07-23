@@ -8,7 +8,10 @@ export class EmbraceClient implements TelemetryClient {
   private isInitialized = false;
   private debugMode = false;
 
-  /** Initializes the Embrace telemetry system and starts a session */
+  /** 
+   * Initializes the Embrace telemetry system and starts a session.
+   * Crash and ANR monitoring are automatically enabled by default.
+   */
   async start(debugMode = false): Promise<void> {
     // Store debug mode for use in other methods
     this.debugMode = debugMode;
@@ -26,7 +29,8 @@ export class EmbraceClient implements TelemetryClient {
         console.log('EmbraceClient: Initializing Embrace SDK...');
       }
 
-      // Await the initialize() function properly
+      // Crash and ANR monitoring are enabled by default via Embrace.initialize()
+      // This is a deliberate choice to ensure these critical features are always on
       const isStarted = await initialize({
         sdkConfig: {
           // Configuration will be provided by the main EdgeTelemetry.init() method
@@ -39,6 +43,7 @@ export class EmbraceClient implements TelemetryClient {
       if (this.debugMode) {
         if (isStarted) {
           console.log('EmbraceClient: Embrace SDK initialized successfully');
+          console.log('EmbraceClient: Crash and ANR monitoring are enabled by default');
         } else {
           console.warn('EmbraceClient: Embrace SDK initialization returned false');
         }
