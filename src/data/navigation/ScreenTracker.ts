@@ -6,7 +6,21 @@
  * screen changes, timestamps, and user flow data.
  */
 
-import type { NavigationContainerRef, NavigationState } from '@react-navigation/native';
+// Optional React Navigation types - these will be available when the consuming app has React Navigation installed
+type NavigationContainerRef = {
+  getCurrentState(): NavigationState | undefined;
+  addListener(type: string, listener: (...args: any[]) => void): void;
+  removeListener?(type: string, listener: (...args: any[]) => void): void;
+};
+
+type NavigationState = {
+  index?: number;
+  routes: Array<{
+    name: string;
+    params?: Record<string, any>;
+    state?: NavigationState;
+  }>;
+};
 
 /**
  * Screen tracking data structure
@@ -49,7 +63,12 @@ function getCurrentRouteName(state: NavigationState | undefined): string | undef
     return undefined;
   }
 
-  const route = state.routes[state.index || 0];
+  const routeIndex = state.index || 0;
+  const route = state.routes[routeIndex];
+  
+  if (!route) {
+    return undefined;
+  }
   
   // Handle nested navigators
   if (route.state) {
@@ -92,7 +111,7 @@ function handleScreenChange(screenName: string, previousScreenName?: string): vo
  * Starts automatic screen tracking using React Navigation
  * @param navigationContainerRef Reference to the NavigationContainer
  */
-export function startScreenTracking(navigationContainerRef: NavigationContainerRef<any>): void {
+export function startScreenTracking(navigationContainerRef: NavigationContainerRef): void {
   if (trackingState.isTracking) {
     console.warn('ScreenTracker: Screen tracking is already enabled');
     return;
@@ -140,7 +159,7 @@ export function startScreenTracking(navigationContainerRef: NavigationContainerR
  * Stops screen tracking and cleans up listeners
  * @param navigationContainerRef Reference to the NavigationContainer
  */
-export function stopScreenTracking(navigationContainerRef: NavigationContainerRef<any>): void {
+export function stopScreenTracking(navigationContainerRef: NavigationContainerRef): void {
   if (!trackingState.isTracking) {
     return;
   }

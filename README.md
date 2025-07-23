@@ -28,17 +28,21 @@
 - [x] Implemented `EmbraceClient` using the Embrace SDK v6.1.0
 - [x] Created `EdgeTelemetry` coordinator with an `init()` method
 - [x] Exported the SDK's public API via `index.ts`
+- [x] Started and verified Embrace SDK inside `EmbraceClient`
+- [x] Set up global config persistence and debug logging
+- [x] Enabled:
+  - Crash & ANR monitoring (via Embrace)
+  - Network monitoring (with auto `fetch` interception)
+  - Screen tracking (React Navigation)
 
 ---
 
 ## 🚧 What's Coming Next
 
-- [ ] Start and verify Embrace SDK telemetry flow
-- [ ] Enable auto-instrumentation (crash/ANR, screen, network)
-- [ ] Create `JsonExporter` to send data to `exportUrl`
+- [ ] Create `JsonExporter` to send telemetry to `exportUrl`
 - [ ] Add public `trackEvent()` method
 - [ ] Route telemetry events to your backend in JSON format
-- [ ] Add `debug` logging and extensible configuration support
+- [ ] Add debug logging and extensible configuration support
 
 ---
 
@@ -58,15 +62,15 @@ A lightweight React Native SDK that auto-collects telemetry and sends it to a cu
 
 ---
 
-### 🔁 Phase 2: Default Auto-Instrumentation (Triggered by `init()`)
+### ✅ Phase 2: Default Auto-Instrumentation (Triggered by `init()`)
 
 | Step | Task | What Happens |
 |------|------|--------------|
-| 6️⃣ | Start Embrace SDK | `Embrace.start()` called internally |
-| 7️⃣ | Set global config (app name, export URL) | Passed to exporter + logger |
-| 8️⃣ | Enable crash & ANR monitoring | Leverage Embrace built-in features |
-| 9️⃣ | Enable network monitoring | Use Embrace or instrument `fetch`/`Axios` manually |
-| 🔟 | Enable screen tracking | Use React Navigation listeners or expo-router hooks |
+| 6️⃣ | Start Embrace SDK | `EmbraceClient.start()` calls `initialize()` |
+| 7️⃣ | Set global config (app name, export URL) | Passed to internal modules |
+| 8️⃣ | Enable crash & ANR monitoring | Done automatically via Embrace |
+| 9️⃣ | Enable network monitoring | `interceptFetch()` patches global fetch |
+| 🔟 | Enable screen tracking | Listens to React Navigation events |
 
 ---
 
@@ -76,7 +80,7 @@ A lightweight React Native SDK that auto-collects telemetry and sends it to a cu
 |------|------|--------------|
 | 1️⃣1️⃣ | Create `JsonExporter` | Sends events/spans as JSON to `config.exportUrl` |
 | 1️⃣2️⃣ | Add `trackEvent()` API | Track custom spans or events |
-| 1️⃣3️⃣ | Wire `JsonExporter` to auto-send | Hook into span creation or OTel tracer if exposed |
+| 1️⃣3️⃣ | Wire `JsonExporter` to auto-send | Hook into span creation or telemetry emitters |
 
 ---
 
