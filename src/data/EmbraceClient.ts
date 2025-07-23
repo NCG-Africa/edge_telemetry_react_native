@@ -11,6 +11,7 @@ export class EmbraceClient implements TelemetryClient {
   /** 
    * Initializes the Embrace telemetry system and starts a session.
    * Crash and ANR monitoring are automatically enabled by default.
+   * Network monitoring is enabled for supported libraries like Axios.
    */
   async start(debugMode = false): Promise<void> {
     // Store debug mode for use in other methods
@@ -30,6 +31,7 @@ export class EmbraceClient implements TelemetryClient {
       }
 
       // Crash and ANR monitoring are enabled by default via Embrace.initialize()
+      // Network monitoring is enabled by default in Embrace for supported libraries like Axios
       // This is a deliberate choice to ensure these critical features are always on
       const isStarted = await initialize({
         sdkConfig: {
@@ -44,6 +46,7 @@ export class EmbraceClient implements TelemetryClient {
         if (isStarted) {
           console.log('EmbraceClient: Embrace SDK initialized successfully');
           console.log('EmbraceClient: Crash and ANR monitoring are enabled by default');
+          console.log('EmbraceClient: Network monitoring enabled for supported libraries (Axios, etc.)');
         } else {
           console.warn('EmbraceClient: Embrace SDK initialization returned false');
         }
