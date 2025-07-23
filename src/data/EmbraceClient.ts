@@ -6,20 +6,62 @@ import type { TelemetryClient } from '../domain/TelemetryClient';
  */
 export class EmbraceClient implements TelemetryClient {
   private isInitialized = false;
+  private debugMode = false;
 
   /** Initializes the Embrace telemetry system and starts a session */
-  async start(): Promise<void> {
+  async start(debugMode = false): Promise<void> {
+    // Store debug mode for use in other methods
+    this.debugMode = debugMode;
+
+    // Prevent re-initialization if already started
+    if (this.isInitialized) {
+      if (this.debugMode) {
+        console.log('EmbraceClient: Already initialized, skipping...');
+      }
+      return;
+    }
+
     try {
+      if (this.debugMode) {
+        console.log('EmbraceClient: Initializing Embrace SDK...');
+      }
+
+      // Await the initialize() function properly
       const isStarted = await initialize({
         sdkConfig: {
           // Configuration will be provided by the main EdgeTelemetry.init() method
           // This is a minimal setup for the client
         },
       });
+      
       this.isInitialized = isStarted;
+
+      if (this.debugMode) {
+        if (isStarted) {
+          console.log('EmbraceClient: Embrace SDK initialized successfully');
+        } else {
+          console.warn('EmbraceClient: Embrace SDK initialization returned false');
+        }
+      }
+
+      // Throw error if initialization failed
+      if (!isStarted) {
+        throw new Error('Embrace SDK initialization failed');
+      }
     } catch (error) {
-      console.warn('Failed to initialize Embrace SDK:', error);
+      // Handle errors gracefully with try/catch
+      const errorMessage = `Failed to initialize Embrace SDK: ${error instanceof Error ? error.message : String(error)}`;
+      
+      if (this.debugMode) {
+        console.error('EmbraceClient:', errorMessage);
+      } else {
+        console.warn('EmbraceClient:', errorMessage);
+      }
+      
       this.isInitialized = false;
+      
+      // Re-throw to allow EdgeTelemetry to handle the error
+      throw new Error(errorMessage);
     }
   }
 

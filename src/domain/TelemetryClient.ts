@@ -3,7 +3,7 @@
  */
 export interface TelemetryClient {
   /** Initializes the telemetry system (e.g., starts a session) */
-  start(): void;
+  start(debugMode?: boolean): Promise<void>;
 
   /** Tracks a custom telemetry event with optional key-value attributes */
   trackEvent(name: string, attributes?: Record<string, any>): void;

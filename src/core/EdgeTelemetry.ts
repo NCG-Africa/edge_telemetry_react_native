@@ -17,10 +17,11 @@ class EdgeTelemetryCoordinator {
    * @param config Configuration object containing appName, exportUrl, and optional debug flag
    */
   async init(config: EdgeTelemetryConfig): Promise<void> {
-    // Prevent double initialization
+    // Prevent double initialization and config overwrite
     if (this.isInitialized) {
       if (config.debug) {
         console.log('EdgeTelemetry: SDK already initialized, skipping...');
+        console.log('EdgeTelemetry: Current config will not be overwritten');
       }
       return;
     }
@@ -36,7 +37,8 @@ class EdgeTelemetryCoordinator {
       this.telemetryClient = new EmbraceClient();
 
       // Call the start method (which uses initialize() internally)
-      await this.telemetryClient.start();
+      // Pass debug mode to enable proper logging
+      await this.telemetryClient.start(config.debug);
 
       // Mark as initialized
       this.isInitialized = true;
@@ -88,10 +90,58 @@ class EdgeTelemetryCoordinator {
 
   /**
    * Gets the current configuration
+   * @returns The current configuration
+   * @throws Error if SDK is not initialized
+   */
+  getConfig(): EdgeTelemetryConfig {
+    if (!this.config || !this.isInitialized) {
+      throw new Error('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.init() first.');
+    }
+    return this.config;
+  }
+
+  /**
+   * Gets the current configuration safely (without throwing)
    * @returns The current configuration or null if not initialized
    */
-  getConfig(): EdgeTelemetryConfig | null {
+  getConfigSafe(): EdgeTelemetryConfig | null {
     return this.config;
+  }
+
+  /**
+   * Gets the debug mode setting
+   * @returns True if debug mode is enabled, false otherwise
+   * @throws Error if SDK is not initialized
+   */
+  getDebugMode(): boolean {
+    if (!this.config || !this.isInitialized) {
+      throw new Error('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.init() first.');
+    }
+    return this.config.debug || false;
+  }
+
+  /**
+   * Gets the application name from config
+   * @returns The application name
+   * @throws Error if SDK is not initialized
+   */
+  getAppName(): string {
+    if (!this.config || !this.isInitialized) {
+      throw new Error('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.init() first.');
+    }
+    return this.config.appName;
+  }
+
+  /**
+   * Gets the export URL from config
+   * @returns The export URL for telemetry data
+   * @throws Error if SDK is not initialized
+   */
+  getExportUrl(): string {
+    if (!this.config || !this.isInitialized) {
+      throw new Error('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.init() first.');
+    }
+    return this.config.exportUrl;
   }
 
   /**
