@@ -12,6 +12,8 @@ import type { ManualNavigationOptions } from './navigation/types/NavigationTypes
 import type { NavigationContainerRef } from '@react-navigation/native';
 import { ErrorMonitorManager } from './error/ErrorMonitorManager';
 import type { ManualErrorOptions } from './error/types/ErrorTypes';
+import { PerformanceMonitorManager } from './performance/PerformanceMonitorManager';
+import type { ManualPerformanceOptions } from './performance/types/PerformanceTypes';
 
 /**
  * EdgeTelemetry - Main SDK class
@@ -31,6 +33,7 @@ export class EdgeTelemetry {
   private networkMonitorManager?: NetworkMonitorManager;
   private navigationMonitorManager?: NavigationMonitorManager;
   private errorMonitorManager?: ErrorMonitorManager;
+  private performanceMonitorManager?: PerformanceMonitorManager;
   
   // Event queue for batching
   private eventQueue: TelemetryEvent[] = [];
@@ -157,7 +160,34 @@ export class EdgeTelemetry {
         console.log('EdgeTelemetry: Error monitoring initialized');
       }
 
-      // 9. Setup batch processing
+      // 9. Setup performance monitoring if enabled
+      instance.performanceMonitorManager = new PerformanceMonitorManager(
+        (event) => instance.handleNavigationTelemetryEvent(event),
+        {
+          enableStartupMonitoring: true,
+          enableMemoryMonitoring: true,
+          enableBridgeMonitoring: true,
+          enableBundleMonitoring: true,
+          enableRenderMonitoring: false,
+          enableNetworkMonitoring: false,
+          memoryMonitoringInterval: 30000,
+          bridgeMonitoringInterval: 10000,
+          memoryWarningThreshold: 100,
+          bridgeCallTimeThreshold: 100,
+          renderTimeThreshold: 16,
+          performanceSampleRate: 1.0,
+          enablePerformanceTracing: true,
+          debugMode: config.debugMode
+        }
+      );
+      
+      instance.performanceMonitorManager.initialize();
+      
+      if (config.debugMode) {
+        console.log('EdgeTelemetry: Performance monitoring initialized');
+      }
+
+      // 10. Setup batch processing
       instance.setupBatchProcessing();
 
       instance.initialized = true;
@@ -404,6 +434,12 @@ export class EdgeTelemetry {
       if (this.navigationMonitorManager) {
         this.navigationMonitorManager.dispose();
         this.navigationMonitorManager = undefined;
+      }
+
+      // Dispose performance monitoring
+      if (this.performanceMonitorManager) {
+        this.performanceMonitorManager.dispose();
+        this.performanceMonitorManager = undefined;
       }
 
       // Clear network monitoring reference
@@ -764,6 +800,71 @@ export class EdgeTelemetry {
       return { initialized: false, error: 'Error monitoring not initialized' };
     }
     return instance.errorMonitorManager.getStatus();
+  }
+
+  // =============================================================================
+  // PERFORMANCE MONITORING METHODS
+  // =============================================================================
+
+  /**
+   * Track a manual performance metric
+   */
+  static trackPerformance(options: ManualPerformanceOptions): void {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.performanceMonitorManager) {
+      if (instance.config?.debugMode) {
+        console.warn('EdgeTelemetry: Performance monitoring not initialized');
+      }
+      return;
+    }
+    instance.performanceMonitorManager.trackManualPerformance(options);
+  }
+
+  /**
+   * Force collection of all performance metrics
+   */
+  static forcePerformanceCollection(): void {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.performanceMonitorManager) {
+      if (instance.config?.debugMode) {
+        console.warn('EdgeTelemetry: Performance monitoring not initialized');
+      }
+      return;
+    }
+    instance.performanceMonitorManager.forcePerformanceCollection();
+  }
+
+  /**
+   * Get comprehensive performance metrics
+   */
+  static getPerformanceMetrics(): Record<string, any> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.performanceMonitorManager) {
+      return {};
+    }
+    return instance.performanceMonitorManager.getPerformanceMetrics();
+  }
+
+  /**
+   * Clear performance statistics
+   */
+  static clearPerformanceStats(): void {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.performanceMonitorManager) {
+      return;
+    }
+    instance.performanceMonitorManager.clearPerformanceStats();
+  }
+
+  /**
+   * Get performance monitoring status
+   */
+  static getPerformanceMonitoringStatus(): Record<string, any> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.performanceMonitorManager) {
+      return { initialized: false, error: 'Performance monitoring not initialized' };
+    }
+    return instance.performanceMonitorManager.getStatus();
   }
 
   /**
