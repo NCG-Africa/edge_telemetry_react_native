@@ -7,6 +7,9 @@ import { UserIdManager } from './managers/UserIdManager';
 import { SessionManager } from './managers/SessionManager';
 import { ReactNativeDeviceInfoCollector } from './collectors/ReactNativeDeviceInfoCollector';
 import { NetworkMonitorManager } from './http/NetworkMonitorManager';
+import { NavigationMonitorManager } from './navigation/NavigationMonitorManager';
+import type { ManualNavigationOptions } from './navigation/types/NavigationTypes';
+import type { NavigationContainerRef } from '@react-navigation/native';
 
 /**
  * EdgeTelemetry - Main SDK class
@@ -24,6 +27,7 @@ export class EdgeTelemetry {
   private sessionManager: SessionManager;
   private deviceInfoCollector: ReactNativeDeviceInfoCollector;
   private networkMonitorManager?: NetworkMonitorManager;
+  private navigationMonitorManager?: NavigationMonitorManager;
   
   // Event queue for batching
   private eventQueue: TelemetryEvent[] = [];
@@ -112,7 +116,25 @@ export class EdgeTelemetry {
         }
       }
 
-      // 7. Setup batch processing
+      // 7. Setup navigation tracking if enabled
+      if (config.enableNavigationTracking) {
+        instance.navigationMonitorManager = new NavigationMonitorManager(
+          (event) => instance.handleNavigationTelemetryEvent(event),
+          {
+            enableAutomaticTracking: true,
+            enableScreenDuration: config.enablePerformanceMonitoring,
+            enableRouteParams: true,
+            ignoredRoutes: [],
+            debugMode: config.debugMode
+          }
+        );
+        
+        if (config.debugMode) {
+          console.log('EdgeTelemetry: Navigation tracking initialized');
+        }
+      }
+
+      // 8. Setup batch processing
       instance.setupBatchProcessing();
 
       instance.initialized = true;
@@ -502,6 +524,39 @@ export class EdgeTelemetry {
   }
 
   /**
+   * Handle single telemetry event from navigation tracking
+   */
+  private handleNavigationTelemetryEvent(event: TelemetryEvent): void {
+    if (!this.initialized) {
+      return;
+    }
+
+    // Set session ID if not already set
+    if (!event.sessionId) {
+      event.sessionId = this.sessionManager.getCurrentSession()?.sessionId || '';
+    }
+
+    // Set user ID if available (use custom user ID if set)
+    const customUserId = this.userIdManager.getCustomUserId();
+    if (!event.userId && customUserId) {
+      event.userId = customUserId;
+    }
+
+    // Add to event queue
+    this.eventQueue.push(event);
+
+    if (this.config?.debugMode) {
+      console.log('EdgeTelemetry: Received navigation telemetry event:', event.eventName);
+    }
+
+    // Check if we should flush immediately
+    const maxBatchSize = this.config?.maxBatchSize || 100;
+    if (this.eventQueue.length >= maxBatchSize) {
+      this.flushEvents();
+    }
+  }
+
+  /**
    * Install Axios interceptor for HTTP monitoring
    */
   installAxiosInterceptor(axiosInstance: any): void {
@@ -526,6 +581,73 @@ export class EdgeTelemetry {
     }
 
     return this.networkMonitorManager.getStatus();
+  }
+
+  /**
+   * Initialize React Navigation tracking
+   * Public API - Must match Flutter exactly
+   */
+  initializeNavigationTracking(navigationRef: NavigationContainerRef<any>): void {
+    if (!this.initialized) {
+      console.warn('EdgeTelemetry: SDK not initialized, cannot initialize navigation tracking');
+      return;
+    }
+
+    if (this.navigationMonitorManager) {
+      this.navigationMonitorManager.initializeReactNavigation(navigationRef);
+    } else {
+      console.warn('EdgeTelemetry: Navigation tracking not enabled, cannot initialize React Navigation');
+    }
+  }
+
+  /**
+   * Track manual navigation (for non-React Navigation apps)
+   * Public API - Must match Flutter exactly
+   */
+  trackManualNavigation(options: ManualNavigationOptions): void {
+    if (!this.initialized) {
+      console.warn('EdgeTelemetry: SDK not initialized, cannot track manual navigation');
+      return;
+    }
+
+    if (this.navigationMonitorManager) {
+      this.navigationMonitorManager.trackManualNavigation(options);
+    } else {
+      console.warn('EdgeTelemetry: Navigation tracking not enabled, cannot track manual navigation');
+    }
+  }
+
+  /**
+   * Get current screen name
+   * Public API - Must match Flutter exactly
+   */
+  getCurrentScreen(): string | null {
+    if (!this.navigationMonitorManager) {
+      return null;
+    }
+    return this.navigationMonitorManager.getCurrentScreen();
+  }
+
+  /**
+   * Get screen duration statistics
+   * Public API - Must match Flutter exactly
+   */
+  getScreenDurationStats(): Record<string, any> {
+    if (!this.navigationMonitorManager) {
+      return {};
+    }
+    return this.navigationMonitorManager.getScreenDurationStats();
+  }
+
+  /**
+   * Get navigation tracking status
+   * Public API - Must match Flutter exactly
+   */
+  getNavigationTrackingStatus(): Record<string, any> {
+    if (!this.navigationMonitorManager) {
+      return { enabled: false, message: 'Navigation tracking not enabled' };
+    }
+    return this.navigationMonitorManager.getStatus();
   }
 
   /**
