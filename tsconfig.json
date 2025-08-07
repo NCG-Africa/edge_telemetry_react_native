@@ -4,6 +4,7 @@
     "paths": {
       "edge-telemetry-ncg": ["./src/index"]
     },
+    "typeRoots": ["./node_modules/@types"],
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
     "esModuleInterop": true,
