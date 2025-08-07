@@ -54,6 +54,12 @@ export interface TelemetryConfig {
   /** Enable local crash reporting */
   enableLocalReporting: boolean;
   
+  /** Enable error and crash reporting */
+  enableErrorReporting: boolean;
+  
+  /** Enable storage and caching layer */
+  enableStorageAndCaching: boolean;
+  
   /** Use JSON format instead of OpenTelemetry */
   useJsonFormat: boolean;
   
@@ -98,6 +104,12 @@ export interface TelemetryInitConfig {
   /** Enable local reporting (default: true) */
   enableLocalReporting?: boolean;
   
+  /** Enable error and crash reporting (default: true) */
+  enableErrorReporting?: boolean;
+  
+  /** Enable storage and caching layer (default: true) */
+  enableStorageAndCaching?: boolean;
+  
   /** Use JSON format (default: false, uses OpenTelemetry) */
   useJsonFormat?: boolean;
   
@@ -124,6 +136,8 @@ export const DEFAULT_CONFIG: Omit<TelemetryConfig, 'serviceName' | 'endpoint'> =
   httpIgnoredUrls: [],
   httpIgnoredDomains: [],
   enableLocalReporting: true,
+  enableErrorReporting: true,
+  enableStorageAndCaching: true,
   useJsonFormat: false,
   eventBatchSize: 30,
 };

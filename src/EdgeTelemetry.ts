@@ -8,12 +8,13 @@ import { SessionManager } from './managers/SessionManager';
 import { ReactNativeDeviceInfoCollector } from './collectors/ReactNativeDeviceInfoCollector';
 import { NetworkMonitorManager } from './http/NetworkMonitorManager';
 import { NavigationMonitorManager } from './navigation/NavigationMonitorManager';
-import type { ManualNavigationOptions } from './navigation/types/NavigationTypes';
 import type { NavigationContainerRef } from '@react-navigation/native';
 import { ErrorMonitorManager } from './error/ErrorMonitorManager';
 import type { ManualErrorOptions } from './error/types/ErrorTypes';
 import { PerformanceMonitorManager } from './performance/PerformanceMonitorManager';
 import type { ManualPerformanceOptions } from './performance/types/PerformanceTypes';
+import { StorageManager } from './storage';
+import type { StorageManagerConfig, EventBatch } from './storage';
 
 /**
  * EdgeTelemetry - Main SDK class
@@ -34,10 +35,10 @@ export class EdgeTelemetry {
   private navigationMonitorManager?: NavigationMonitorManager;
   private errorMonitorManager?: ErrorMonitorManager;
   private performanceMonitorManager?: PerformanceMonitorManager;
+  private storageManager?: StorageManager;
   
-  // Event queue for batching
-  private eventQueue: TelemetryEvent[] = [];
-  private batchTimer?: any;
+  // User profile management
+  private currentUserProfile?: UserProfile;
 
   private constructor() {
     this.userIdManager = UserIdManager.getInstance();
@@ -82,8 +83,8 @@ export class EdgeTelemetry {
         enableNavigationTracking: initConfig.enableNavigationTracking ?? DEFAULT_CONFIG.enableNavigationTracking,
         enableHttpMonitoring: initConfig.enableHttpMonitoring ?? DEFAULT_CONFIG.enableHttpMonitoring,
         enableLocalReporting: initConfig.enableLocalReporting ?? DEFAULT_CONFIG.enableLocalReporting,
-        useJsonFormat: initConfig.useJsonFormat ?? DEFAULT_CONFIG.useJsonFormat,
-        eventBatchSize: initConfig.eventBatchSize ?? DEFAULT_CONFIG.eventBatchSize,
+        enableErrorReporting: initConfig.enableErrorReporting ?? DEFAULT_CONFIG.enableErrorReporting,
+        enableStorageAndCaching: initConfig.enableStorageAndCaching ?? DEFAULT_CONFIG.enableStorageAndCaching,
       };
 
       instance.config = config;
@@ -92,103 +93,170 @@ export class EdgeTelemetry {
         console.log('EdgeTelemetry: Initializing SDK with config:', config);
       }
 
-      // 2. Initialize user ID manager
-      await instance.userIdManager.getUserId();
-
-      // 3. Collect device info
-      const deviceInfo = await instance.deviceInfoCollector.collectAllDeviceInfo();
-      const appInfo = await instance.deviceInfoCollector.collectAppInfo();
-
-      // 4. Initialize session manager and start session
+      // 2. Initialize core managers (they are singletons that self-initialize)
+      // Load any existing session data
       await instance.sessionManager.loadSession();
-      const sessionId = await instance.sessionManager.startSession(deviceInfo, appInfo);
-
-      if (config.debugMode) {
-        console.log('EdgeTelemetry: Session started with ID:', sessionId);
-      }
-
-      // 5. Setup automatic crash handling
-      instance.setupGlobalErrorHandler();
-
-      // 6. Setup HTTP monitoring if enabled
-      if (config.httpMonitoring) {
-        instance.networkMonitorManager = new NetworkMonitorManager(config);
-        await instance.networkMonitorManager.initialize((events) => {
-          instance.handleTelemetryEvents(events);
+      
+      // Get minimal device info for quick startup
+      const deviceInfo = await instance.deviceInfoCollector.getMinimalDeviceInfo();
+      
+      // Start a new session if none exists
+      if (!instance.sessionManager.getCurrentSession()) {
+        await instance.sessionManager.startSession(deviceInfo, {
+          'service.name': config.serviceName,
+          'service.version': '2.0.0',
         });
         
         if (config.debugMode) {
-          console.log('EdgeTelemetry: HTTP monitoring initialized');
+          console.log('EdgeTelemetry: New session started');
         }
       }
 
-      // 7. Setup navigation tracking if enabled
+      // 3. Initialize storage manager if enabled
+      if (config.enableStorageAndCaching) {
+        const storageConfig: StorageManagerConfig = {
+          storageProvider: 'asyncstorage',
+          cacheConfig: {
+            maxSize: 10 * 1024 * 1024, // 10MB
+            maxEntries: 1000,
+            defaultTTL: 24 * 60 * 60 * 1000, // 24 hours
+            cleanupInterval: 60 * 60 * 1000, // 1 hour
+            enableCompression: false,
+            enablePersistence: true,
+            debugMode: config.debugMode,
+          },
+          batchConfig: {
+            maxBatchSize: config.maxBatchSize,
+            maxBatchSizeBytes: 1024 * 1024, // 1MB
+            batchTimeout: config.batchTimeout,
+            maxRetries: 3,
+            retryBackoffMs: 1000,
+            enableCompression: false,
+            debugMode: config.debugMode,
+          },
+          cleanupConfig: {
+            enabled: true,
+            retentionDays: 7,
+            maxStorageSize: 50 * 1024 * 1024, // 50MB
+            cleanupInterval: 24 * 60 * 60 * 1000, // 24 hours
+            batchSize: 100,
+            debugMode: config.debugMode,
+          },
+          enableOfflineStorage: true,
+          maxOfflineEvents: 10000,
+          syncOnNetworkReconnect: true,
+          debugMode: config.debugMode,
+        };
+
+        instance.storageManager = new StorageManager(storageConfig);
+        await instance.storageManager.initialize();
+
+        // Set up batch ready handler for network transmission
+        instance.storageManager.setBatchReadyHandler(async (batch: EventBatch) => {
+          await instance.handleBatchTransmission(batch);
+        });
+
+        if (config.debugMode) {
+          console.log('EdgeTelemetry: Storage manager initialized');
+        }
+      }
+
+      // 4. Initialize network monitoring if enabled
+      if (config.enableNetworkMonitoring || config.enableHttpMonitoring) {
+        instance.networkMonitorManager = new NetworkMonitorManager(config);
+        
+        // Initialize with telemetry event handler
+        await instance.networkMonitorManager.initialize((events: TelemetryEvent[]) => {
+          // Handle multiple events from network monitoring
+          events.forEach(event => {
+            instance.handleTelemetryEvent(event);
+          });
+        });
+
+        if (config.debugMode) {
+          console.log('EdgeTelemetry: Network monitoring initialized');
+        }
+      }
+
+      // 5. Initialize navigation tracking if enabled
       if (config.enableNavigationTracking) {
+        // NavigationMonitorManager expects callback as first parameter, config as second
         instance.navigationMonitorManager = new NavigationMonitorManager(
-          (event) => instance.handleNavigationTelemetryEvent(event),
+          (event: TelemetryEvent) => {
+            instance.handleTelemetryEvent(event);
+          },
           {
             enableAutomaticTracking: true,
-            enableScreenDuration: config.enablePerformanceMonitoring,
+            enableScreenDuration: true,
             enableRouteParams: true,
             ignoredRoutes: [],
-            debugMode: config.debugMode
+            debugMode: config.debugMode,
           }
         );
-        
+
         if (config.debugMode) {
           console.log('EdgeTelemetry: Navigation tracking initialized');
         }
       }
 
-      // 8. Setup error monitoring if enabled
-      instance.errorMonitorManager = new ErrorMonitorManager(
-        (event) => instance.handleNavigationTelemetryEvent(event),
-        {
-          enableJavaScriptErrors: true,
-          enablePromiseRejections: true,
-          enableReactErrors: true,
-          enableNativeErrors: false,
-          captureStackTraces: true,
-          maxStackTraceLength: 10000,
-          debugMode: config.debugMode
+      // 6. Initialize error monitoring if enabled
+      if (config.enableErrorReporting) {
+        // ErrorMonitorManager expects callback as first parameter, config as second
+        instance.errorMonitorManager = new ErrorMonitorManager(
+          (event: TelemetryEvent) => {
+            instance.handleTelemetryEvent(event);
+          },
+          {
+            enableJavaScriptErrors: true,
+            enablePromiseRejections: true,
+            enableReactErrors: true,
+            enableNativeErrors: false,
+            captureStackTraces: true,
+            maxStackTraceLength: 10000,
+            debugMode: config.debugMode,
+          }
+        );
+        
+        // Initialize error monitoring
+        instance.errorMonitorManager.initialize();
+
+        if (config.debugMode) {
+          console.log('EdgeTelemetry: Error monitoring initialized');
         }
-      );
-      
-      instance.errorMonitorManager.initialize();
-      
-      if (config.debugMode) {
-        console.log('EdgeTelemetry: Error monitoring initialized');
       }
 
-      // 9. Setup performance monitoring if enabled
-      instance.performanceMonitorManager = new PerformanceMonitorManager(
-        (event) => instance.handleNavigationTelemetryEvent(event),
-        {
-          enableStartupMonitoring: true,
-          enableMemoryMonitoring: true,
-          enableBridgeMonitoring: true,
-          enableBundleMonitoring: true,
-          enableRenderMonitoring: false,
-          enableNetworkMonitoring: false,
-          memoryMonitoringInterval: 30000,
-          bridgeMonitoringInterval: 10000,
-          memoryWarningThreshold: 100,
-          bridgeCallTimeThreshold: 100,
-          renderTimeThreshold: 16,
-          performanceSampleRate: 1.0,
-          enablePerformanceTracing: true,
-          debugMode: config.debugMode
-        }
-      );
-      
-      instance.performanceMonitorManager.initialize();
-      
-      if (config.debugMode) {
-        console.log('EdgeTelemetry: Performance monitoring initialized');
-      }
+      // 7. Initialize performance monitoring if enabled
+      if (config.enablePerformanceMonitoring) {
+        // PerformanceMonitorManager expects callback as first parameter, config as second
+        instance.performanceMonitorManager = new PerformanceMonitorManager(
+          (event: TelemetryEvent) => {
+            instance.handleTelemetryEvent(event);
+          },
+          {
+            enableStartupMonitoring: true,
+            enableMemoryMonitoring: true,
+            enableBridgeMonitoring: true,
+            enableBundleMonitoring: true,
+            enableRenderMonitoring: false,
+            enableNetworkMonitoring: false,
+            memoryMonitoringInterval: 30000,
+            bridgeMonitoringInterval: 10000,
+            memoryWarningThreshold: 100,
+            bridgeCallTimeThreshold: 100,
+            renderTimeThreshold: 16,
+            performanceSampleRate: 1.0,
+            enablePerformanceTracing: true,
+            debugMode: config.debugMode,
+          }
+        );
+        
+        // Initialize performance monitoring
+        await instance.performanceMonitorManager.initialize();
 
-      // 10. Setup batch processing
-      instance.setupBatchProcessing();
+        if (config.debugMode) {
+          console.log('EdgeTelemetry: Performance monitoring initialized');
+        }
+      }
 
       instance.initialized = true;
 
@@ -203,28 +271,23 @@ export class EdgeTelemetry {
   }
 
   /**
-   * Track a custom event with optional attributes
+   * Track a custom event with attributes
    * Public API - Must match Flutter exactly
    */
-  trackEvent(eventName: string, attributes?: any): void {
-    if (!this.initialized || !this.config) {
-      console.warn('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.initialize() first.');
+  static async trackEvent(eventName: string, attributes?: any): Promise<void> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.initialized) {
+      console.warn('EdgeTelemetry: SDK not initialized. Call initialize() first.');
       return;
     }
 
     try {
-      this.createTelemetryEvent(eventName, attributes).then(event => {
-        this.queueEvent(event);
-        this.sessionManager.recordEvent();
-
-        if (this.config?.debugMode) {
-          console.log('EdgeTelemetry: Event tracked:', eventName, attributes);
-        }
-      }).catch(error => {
-        console.error('EdgeTelemetry: Failed to create telemetry event:', error);
-      });
+      const event = await instance.createTelemetryEvent(eventName, attributes);
+      instance.handleTelemetryEvent(event);
     } catch (error) {
-      console.error('EdgeTelemetry: Failed to track event:', error);
+      if (instance.config?.debugMode) {
+        console.error('EdgeTelemetry: Failed to track event:', error);
+      }
     }
   }
 
@@ -232,29 +295,27 @@ export class EdgeTelemetry {
    * Track a metric with numeric value
    * Public API - Must match Flutter exactly
    */
-  trackMetric(metricName: string, value: number, attributes?: any): void {
-    if (!this.initialized || !this.config) {
-      console.warn('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.initialize() first.');
+  static async trackMetric(metricName: string, value: number, attributes?: any): Promise<void> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.initialized) {
+      console.warn('EdgeTelemetry: SDK not initialized. Call initialize() first.');
       return;
     }
 
     try {
-      const metricAttributes = AttributeConverter.convertToStringMap(attributes || {});
-      metricAttributes['metric.value'] = String(value);
-      metricAttributes['metric.type'] = 'gauge'; // Default metric type
+      const metricAttributes = {
+        ...attributes,
+        'metric.name': metricName,
+        'metric.value': value,
+        'metric.type': 'gauge',
+      };
 
-      this.createTelemetryEvent(`metric.${metricName}`, metricAttributes).then(event => {
-        this.queueEvent(event);
-        this.sessionManager.recordMetric();
-
-        if (this.config?.debugMode) {
-          console.log('EdgeTelemetry: Metric tracked:', metricName, value, attributes);
-        }
-      }).catch(error => {
-        console.error('EdgeTelemetry: Failed to create metric event:', error);
-      });
+      const event = await instance.createTelemetryEvent('metric.recorded', metricAttributes);
+      instance.handleTelemetryEvent(event);
     } catch (error) {
-      console.error('EdgeTelemetry: Failed to track metric:', error);
+      if (instance.config?.debugMode) {
+        console.error('EdgeTelemetry: Failed to track metric:', error);
+      }
     }
   }
 
@@ -262,30 +323,33 @@ export class EdgeTelemetry {
    * Track an error or exception
    * Public API - Must match Flutter exactly
    */
-  trackError(error: Error, stackTrace?: string, attributes?: Record<string, string>): void {
-    if (!this.initialized || !this.config) {
-      console.warn('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.initialize() first.');
+  static async trackError(error: Error, stackTrace?: string, attributes?: Record<string, string>): Promise<void> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.initialized) {
+      console.warn('EdgeTelemetry: SDK not initialized. Call initialize() first.');
       return;
     }
 
-    try {
-      const errorAttributes = AttributeConverter.convertToStringMap(attributes || {});
-      errorAttributes['error.message'] = error.message;
-      errorAttributes['error.name'] = error.name;
-      errorAttributes['error.stack'] = stackTrace || error.stack || 'No stack trace available';
+    if (instance.errorMonitorManager) {
+      instance.errorMonitorManager.trackError(error, attributes);
+    } else {
+      // Fallback to manual error tracking
+      try {
+        const errorAttributes = {
+          ...attributes,
+          'error.type': error.name || 'Error',
+          'error.message': error.message || 'Unknown error',
+          'error.stack_trace': stackTrace || error.stack || '',
+          'error.source': 'manual',
+        };
 
-      this.createTelemetryEvent('error.exception', errorAttributes).then(event => {
-        this.queueEvent(event);
-        this.sessionManager.recordError();
-
-        if (this.config?.debugMode) {
-          console.log('EdgeTelemetry: Error tracked:', error.message);
+        const event = await instance.createTelemetryEvent('error.occurred', errorAttributes);
+        instance.handleTelemetryEvent(event);
+      } catch (trackingError) {
+        if (instance.config?.debugMode) {
+          console.error('EdgeTelemetry: Failed to track error:', trackingError);
         }
-      }).catch(trackingError => {
-        console.error('EdgeTelemetry: Failed to create error event:', trackingError);
-      });
-    } catch (trackingError) {
-      console.error('EdgeTelemetry: Failed to track error:', trackingError);
+      }
     }
   }
 
@@ -293,28 +357,32 @@ export class EdgeTelemetry {
    * Set user profile information
    * Public API - Must match Flutter exactly
    */
-  setUserProfile(profile: UserProfile): void {
-    if (!this.initialized) {
-      console.warn('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.initialize() first.');
+  static async setUserProfile(profile: UserProfile): Promise<void> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.initialized) {
+      console.warn('EdgeTelemetry: SDK not initialized. Call initialize() first.');
       return;
     }
 
     try {
-      this.userIdManager.setCustomUserId(profile.userId);
+      // Store user profile internally
+      instance.currentUserProfile = {
+        ...profile,
+        updatedAt: new Date()
+      };
       
-      // Track user profile update as an event
-      const profileAttributes = AttributeConverter.convertToStringMap(profile.attributes);
-      profileAttributes['user.id'] = profile.userId;
-      if (profile.email) profileAttributes['user.email'] = profile.email;
-      if (profile.name) profileAttributes['user.name'] = profile.name;
-
-      this.trackEvent('user.profile_updated', profileAttributes);
-
-      if (this.config?.debugMode) {
-        console.log('EdgeTelemetry: User profile set:', profile.userId);
+      // Set the user ID in UserIdManager if provided
+      if (profile.userId) {
+        await instance.userIdManager.setCustomUserId(profile.userId);
+      }
+      
+      if (instance.config?.debugMode) {
+        console.log('EdgeTelemetry: User profile set:', profile);
       }
     } catch (error) {
-      console.error('EdgeTelemetry: Failed to set user profile:', error);
+      if (instance.config?.debugMode) {
+        console.error('EdgeTelemetry: Failed to set user profile:', error);
+      }
     }
   }
 
@@ -322,21 +390,27 @@ export class EdgeTelemetry {
    * Clear user profile information
    * Public API - Must match Flutter exactly
    */
-  clearUserProfile(): void {
-    if (!this.initialized) {
-      console.warn('EdgeTelemetry: SDK not initialized. Call EdgeTelemetry.initialize() first.');
+  static async clearUserProfile(): Promise<void> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.initialized) {
+      console.warn('EdgeTelemetry: SDK not initialized. Call initialize() first.');
       return;
     }
 
     try {
-      this.userIdManager.clearCustomUserId();
-      this.trackEvent('user.profile_cleared');
-
-      if (this.config?.debugMode) {
+      // Clear user profile internally
+      instance.currentUserProfile = undefined;
+      
+      // Clear custom user ID from UserIdManager
+      await instance.userIdManager.clearCustomUserId();
+      
+      if (instance.config?.debugMode) {
         console.log('EdgeTelemetry: User profile cleared');
       }
     } catch (error) {
-      console.error('EdgeTelemetry: Failed to clear user profile:', error);
+      if (instance.config?.debugMode) {
+        console.error('EdgeTelemetry: Failed to clear user profile:', error);
+      }
     }
   }
 
@@ -344,15 +418,18 @@ export class EdgeTelemetry {
    * Get current user ID
    * Public API - Must match Flutter exactly
    */
-  get currentUserId(): string | null {
-    if (!this.initialized) {
+  static async currentUserId(): Promise<string | null> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.initialized) {
       return null;
     }
 
     try {
-      return this.userIdManager.getCustomUserId() || null;
+      return await instance.userIdManager.getUserId();
     } catch (error) {
-      console.error('EdgeTelemetry: Failed to get current user ID:', error);
+      if (instance.config?.debugMode) {
+        console.error('EdgeTelemetry: Failed to get current user ID:', error);
+      }
       return null;
     }
   }
@@ -361,23 +438,28 @@ export class EdgeTelemetry {
    * Get current user profile attributes
    * Public API - Must match Flutter exactly
    */
-  get currentUserProfile(): Record<string, string> {
-    if (!this.initialized) {
+  static currentUserProfile(): Record<string, string> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.initialized) {
       return {};
     }
 
     try {
-      const userId = this.userIdManager.getCustomUserId();
-      if (!userId) {
-        return {};
+      // Return user profile attributes from internal storage
+      if (instance.currentUserProfile) {
+        return {
+          userId: instance.currentUserProfile.userId,
+          email: instance.currentUserProfile.email || '',
+          name: instance.currentUserProfile.name || '',
+          ...instance.currentUserProfile.attributes,
+          updatedAt: instance.currentUserProfile.updatedAt.toISOString(),
+        };
       }
-
-      return {
-        'user.id': userId,
-        // Additional profile attributes would be stored separately in a real implementation
-      };
+      return {};
     } catch (error) {
-      console.error('EdgeTelemetry: Failed to get current user profile:', error);
+      if (instance.config?.debugMode) {
+        console.error('EdgeTelemetry: Failed to get current user profile:', error);
+      }
       return {};
     }
   }
@@ -386,15 +468,19 @@ export class EdgeTelemetry {
    * Get current session information
    * Public API - Must match Flutter exactly
    */
-  get currentSessionInfo(): Record<string, any> {
-    if (!this.initialized) {
+  static currentSessionInfo(): Record<string, any> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.initialized) {
       return {};
     }
 
     try {
-      return this.sessionManager.getCurrentSessionInfo();
+      // Use the existing getCurrentSessionInfo method from SessionManager
+      return instance.sessionManager.getCurrentSessionInfo();
     } catch (error) {
-      console.error('EdgeTelemetry: Failed to get current session info:', error);
+      if (instance.config?.debugMode) {
+        console.error('EdgeTelemetry: Failed to get session info:', error);
+      }
       return {};
     }
   }
@@ -403,53 +489,40 @@ export class EdgeTelemetry {
    * Dispose of the SDK and clean up resources
    * Public API - Must match Flutter exactly
    */
-  dispose(): void {
-    if (!this.initialized) {
-      return;
-    }
-
+  static async dispose(): Promise<void> {
+    const instance = EdgeTelemetry.getInstance();
+    
     try {
-      // Clear batch timer
-      if (this.batchTimer) {
-        clearTimeout(this.batchTimer);
-        this.batchTimer = undefined;
+      // Dispose of all managers (note: NetworkMonitorManager uses shutdown())
+      if (instance.storageManager) {
+        await instance.storageManager.dispose();
+      }
+      if (instance.networkMonitorManager) {
+        instance.networkMonitorManager.shutdown();
+      }
+      if (instance.navigationMonitorManager) {
+        instance.navigationMonitorManager.dispose();
+      }
+      if (instance.errorMonitorManager) {
+        instance.errorMonitorManager.dispose();
+      }
+      if (instance.performanceMonitorManager) {
+        instance.performanceMonitorManager.dispose();
       }
 
-      // Flush remaining events
-      this.flushEvents();
+      // Log before clearing config
+      const debugMode = instance.config?.debugMode;
+      
+      // Reset state
+      instance.initialized = false;
+      instance.config = undefined;
+      instance.storageManager = undefined;
+      instance.networkMonitorManager = undefined;
+      instance.navigationMonitorManager = undefined;
+      instance.errorMonitorManager = undefined;
+      instance.performanceMonitorManager = undefined;
 
-      // End current session
-      this.sessionManager.endSession();
-
-      // Clear global error handler
-      this.clearGlobalErrorHandler();
-
-      // Dispose error monitoring
-      if (this.errorMonitorManager) {
-        this.errorMonitorManager.dispose();
-        this.errorMonitorManager = undefined;
-      }
-
-      // Dispose navigation monitoring
-      if (this.navigationMonitorManager) {
-        this.navigationMonitorManager.dispose();
-        this.navigationMonitorManager = undefined;
-      }
-
-      // Dispose performance monitoring
-      if (this.performanceMonitorManager) {
-        this.performanceMonitorManager.dispose();
-        this.performanceMonitorManager = undefined;
-      }
-
-      // Clear network monitoring reference
-      if (this.networkMonitorManager) {
-        this.networkMonitorManager = undefined;
-      }
-
-      this.initialized = false;
-
-      if (this.config?.debugMode) {
+      if (debugMode) {
         console.log('EdgeTelemetry: SDK disposed');
       }
     } catch (error) {
@@ -457,303 +530,38 @@ export class EdgeTelemetry {
     }
   }
 
-  /**
-   * Create a telemetry event with standard attributes
-   */
-  private async createTelemetryEvent(eventName: string, attributes?: any): Promise<TelemetryEvent> {
-    const sessionId = this.sessionManager.getCurrentSessionId() || 'unknown';
-    const userId = await this.userIdManager.getUserId();
-    
-    const eventAttributes = AttributeConverter.mergeAttributes(
-      this.config?.globalAttributes || {},
-      attributes || {}
-    );
-
-    const standardAttributes = AttributeConverter.addStandardAttributes(
-      eventAttributes,
-      sessionId,
-      userId
-    );
-
-    return {
-      id: this.generateEventId(),
-      sessionId,
-      eventName,
-      timestamp: new Date(),
-      attributes: AttributeConverter.validateStringMap(standardAttributes),
-      userId,
-    };
-  }
+  // =============================================================================
+  // NAVIGATION TRACKING METHODS
+  // =============================================================================
 
   /**
-   * Queue an event for batch processing
+   * Initialize navigation tracking with React Navigation container ref
    */
-  private queueEvent(event: TelemetryEvent): void {
-    this.eventQueue.push(event);
-
-    // Check if we should flush immediately
-    if (this.eventQueue.length >= (this.config?.eventBatchSize || 30)) {
-      this.flushEvents();
-    }
-  }
-
-  /**
-   * Setup batch processing timer
-   */
-  private setupBatchProcessing(): void {
-    if (this.batchTimer) {
-      clearTimeout(this.batchTimer);
-    }
-
-    const batchTimeout = this.config?.batchTimeout || 30000;
-    this.batchTimer = setTimeout(() => {
-      this.flushEvents();
-      this.setupBatchProcessing(); // Restart timer
-    }, batchTimeout);
-  }
-
-  /**
-   * Flush queued events to the backend
-   */
-  private flushEvents(): void {
-    if (this.eventQueue.length === 0) {
+  static initializeNavigationTracking(navigationRef: NavigationContainerRef<any>): void {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.navigationMonitorManager) {
+      if (instance.config?.debugMode) {
+        console.warn('EdgeTelemetry: Navigation monitoring not initialized');
+      }
       return;
     }
-
-    const eventsToFlush = [...this.eventQueue];
-    this.eventQueue = [];
-
-    if (this.config?.debugMode) {
-      console.log(`EdgeTelemetry: Flushing ${eventsToFlush.length} events`);
-    }
-
-    // TODO: Implement actual event sending to backend
-    // This will be implemented in Phase 6 with OpenTelemetry integration
-    console.log('EdgeTelemetry: Events to send:', eventsToFlush);
-  }
-
-  /**
-   * Setup global error handler for automatic crash detection
-   */
-  private setupGlobalErrorHandler(): void {
-    // Handle unhandled promise rejections
-    if (typeof global !== 'undefined' && 'addEventListener' in global) {
-      (global as any).addEventListener('unhandledrejection', this.handleUnhandledRejection);
-    }
-
-    // Handle JavaScript errors
-    if (typeof ErrorUtils !== 'undefined') {
-      const originalHandler = ErrorUtils.getGlobalHandler();
-      ErrorUtils.setGlobalHandler((error: Error, isFatal?: boolean) => {
-        this.trackError(error, error.stack, {
-          'error.is_fatal': String(isFatal || false),
-          'error.source': 'global_handler'
-        });
-        
-        // Call original handler
-        if (originalHandler) {
-          originalHandler(error, isFatal);
-        }
-      });
-    }
-  }
-
-  /**
-   * Clear global error handler
-   */
-  private clearGlobalErrorHandler(): void {
-    if (typeof global !== 'undefined' && 'removeEventListener' in global) {
-      (global as any).removeEventListener('unhandledrejection', this.handleUnhandledRejection);
-    }
-  }
-
-  /**
-   * Handle unhandled promise rejections
-   */
-  private handleUnhandledRejection = (event: any): void => {
-    const error = event.reason instanceof Error ? event.reason : new Error(String(event.reason));
-    this.trackError(error, error.stack, {
-      'error.source': 'unhandled_rejection'
-    });
-  };
-
-  /**
-   * Handle telemetry events from HTTP monitoring
-   */
-  private handleTelemetryEvents(events: TelemetryEvent[]): void {
-    if (!this.initialized || !events.length) {
-      return;
-    }
-
-    // Add events to queue for batch processing
-    this.eventQueue.push(...events);
-
-    if (this.config?.debugMode) {
-      console.log(`EdgeTelemetry: Received ${events.length} HTTP telemetry events`);
-    }
-
-    // Check if we should flush immediately
-    const maxBatchSize = this.config?.maxBatchSize || 100;
-    if (this.eventQueue.length >= maxBatchSize) {
-      this.flushEvents();
-    }
-  }
-
-  /**
-   * Handle single telemetry event from navigation tracking
-   */
-  private handleNavigationTelemetryEvent(event: TelemetryEvent): void {
-    if (!this.initialized) {
-      return;
-    }
-
-    // Set session ID if not already set
-    if (!event.sessionId) {
-      event.sessionId = this.sessionManager.getCurrentSession()?.sessionId || '';
-    }
-
-    // Set user ID if available (use custom user ID if set)
-    const customUserId = this.userIdManager.getCustomUserId();
-    if (!event.userId && customUserId) {
-      event.userId = customUserId;
-    }
-
-    // Add to event queue
-    this.eventQueue.push(event);
-
-    if (this.config?.debugMode) {
-      console.log('EdgeTelemetry: Received navigation telemetry event:', event.eventName);
-    }
-
-    // Check if we should flush immediately
-    const maxBatchSize = this.config?.maxBatchSize || 100;
-    if (this.eventQueue.length >= maxBatchSize) {
-      this.flushEvents();
-    }
-  }
-
-  /**
-   * Install Axios interceptor for HTTP monitoring
-   */
-  installAxiosInterceptor(axiosInstance: any): void {
-    if (!this.initialized) {
-      console.warn('EdgeTelemetry: SDK not initialized, cannot install Axios interceptor');
-      return;
-    }
-
-    if (this.networkMonitorManager) {
-      this.networkMonitorManager.installAxiosInterceptor(axiosInstance);
-    } else {
-      console.warn('EdgeTelemetry: HTTP monitoring not enabled, cannot install Axios interceptor');
-    }
-  }
-
-  /**
-   * Get HTTP monitoring status and metrics
-   */
-  getHttpMonitoringStatus(): any {
-    if (!this.networkMonitorManager) {
-      return { enabled: false, message: 'HTTP monitoring not enabled' };
-    }
-
-    return this.networkMonitorManager.getStatus();
-  }
-
-  /**
-   * Initialize React Navigation tracking
-   * Public API - Must match Flutter exactly
-   */
-  initializeNavigationTracking(navigationRef: NavigationContainerRef<any>): void {
-    if (!this.initialized) {
-      console.warn('EdgeTelemetry: SDK not initialized, cannot initialize navigation tracking');
-      return;
-    }
-
-    if (this.navigationMonitorManager) {
-      this.navigationMonitorManager.initializeReactNavigation(navigationRef);
-    } else {
-      console.warn('EdgeTelemetry: Navigation tracking not enabled, cannot initialize React Navigation');
-    }
-  }
-
-  /**
-   * Track manual navigation (for non-React Navigation apps)
-   * Public API - Must match Flutter exactly
-   */
-  trackManualNavigation(options: ManualNavigationOptions): void {
-    if (!this.initialized) {
-      console.warn('EdgeTelemetry: SDK not initialized, cannot track manual navigation');
-      return;
-    }
-
-    if (this.navigationMonitorManager) {
-      this.navigationMonitorManager.trackManualNavigation(options);
-    } else {
-      console.warn('EdgeTelemetry: Navigation tracking not enabled, cannot track manual navigation');
-    }
+    instance.navigationMonitorManager.initializeReactNavigation(navigationRef);
   }
 
   /**
    * Get current screen name
-   * Public API - Must match Flutter exactly
    */
-  getCurrentScreen(): string | null {
-    if (!this.navigationMonitorManager) {
-      return null;
-    }
-    return this.navigationMonitorManager.getCurrentScreen();
-  }
-
-  /**
-   * Get screen duration statistics
-   * Public API - Must match Flutter exactly
-   */
-  getScreenDurationStats(): Record<string, any> {
-    if (!this.navigationMonitorManager) {
-      return {};
-    }
-    return this.navigationMonitorManager.getScreenDurationStats();
-  }
-
-  /**
-   * Get navigation tracking status
-   * Public API - Must match Flutter exactly
-   */
-  getNavigationTrackingStatus(): Record<string, any> {
-    if (!this.navigationMonitorManager) {
-      return { enabled: false, message: 'Navigation tracking not enabled' };
-    }
-    return this.navigationMonitorManager.getStatus();
-  }
-
-  /**
-   * Get navigation tracking status
-   */
-  static getNavigationTrackingStatus(): Record<string, any> {
+  static getCurrentScreen(): string | null {
     const instance = EdgeTelemetry.getInstance();
     if (!instance.navigationMonitorManager) {
-      return { initialized: false, error: 'Navigation monitoring not initialized' };
+      return null;
     }
-    return instance.navigationMonitorManager.getStatus();
+    return instance.navigationMonitorManager.getCurrentScreen();
   }
 
   // =============================================================================
   // ERROR TRACKING METHODS
   // =============================================================================
-
-  /**
-   * Track a manual error
-   */
-  static trackError(error: Error, context?: Record<string, any>): void {
-    const instance = EdgeTelemetry.getInstance();
-    if (!instance.errorMonitorManager) {
-      if (instance.config?.debugMode) {
-        console.warn('EdgeTelemetry: Error monitoring not initialized');
-      }
-      return;
-    }
-    instance.errorMonitorManager.trackError(error, context);
-  }
 
   /**
    * Track a manual error with options
@@ -780,28 +588,6 @@ export class EdgeTelemetry {
     return instance.errorMonitorManager.getErrorStats();
   }
 
-  /**
-   * Clear error statistics
-   */
-  static clearErrorStats(): void {
-    const instance = EdgeTelemetry.getInstance();
-    if (!instance.errorMonitorManager) {
-      return;
-    }
-    instance.errorMonitorManager.clearErrorStats();
-  }
-
-  /**
-   * Get error monitoring status
-   */
-  static getErrorMonitoringStatus(): Record<string, any> {
-    const instance = EdgeTelemetry.getInstance();
-    if (!instance.errorMonitorManager) {
-      return { initialized: false, error: 'Error monitoring not initialized' };
-    }
-    return instance.errorMonitorManager.getStatus();
-  }
-
   // =============================================================================
   // PERFORMANCE MONITORING METHODS
   // =============================================================================
@@ -821,20 +607,6 @@ export class EdgeTelemetry {
   }
 
   /**
-   * Force collection of all performance metrics
-   */
-  static forcePerformanceCollection(): void {
-    const instance = EdgeTelemetry.getInstance();
-    if (!instance.performanceMonitorManager) {
-      if (instance.config?.debugMode) {
-        console.warn('EdgeTelemetry: Performance monitoring not initialized');
-      }
-      return;
-    }
-    instance.performanceMonitorManager.forcePerformanceCollection();
-  }
-
-  /**
    * Get comprehensive performance metrics
    */
   static getPerformanceMetrics(): Record<string, any> {
@@ -845,26 +617,168 @@ export class EdgeTelemetry {
     return instance.performanceMonitorManager.getPerformanceMetrics();
   }
 
+  // =============================================================================
+  // STORAGE AND CACHING METHODS
+  // =============================================================================
+
   /**
-   * Clear performance statistics
+   * Force sync of cached events to storage and network
    */
-  static clearPerformanceStats(): void {
+  static async forceSync(): Promise<void> {
     const instance = EdgeTelemetry.getInstance();
-    if (!instance.performanceMonitorManager) {
+    if (!instance.storageManager) {
+      if (instance.config?.debugMode) {
+        console.warn('EdgeTelemetry: Storage manager not initialized');
+      }
       return;
     }
-    instance.performanceMonitorManager.clearPerformanceStats();
+
+    try {
+      await instance.storageManager.forceSync();
+      if (instance.config?.debugMode) {
+        console.log('EdgeTelemetry: Force sync completed');
+      }
+    } catch (error) {
+      if (instance.config?.debugMode) {
+        console.error('EdgeTelemetry: Force sync failed:', error);
+      }
+    }
   }
 
   /**
-   * Get performance monitoring status
+   * Clear all cached and stored telemetry data
    */
-  static getPerformanceMonitoringStatus(): Record<string, any> {
+  static async clearStoredData(): Promise<void> {
     const instance = EdgeTelemetry.getInstance();
-    if (!instance.performanceMonitorManager) {
-      return { initialized: false, error: 'Performance monitoring not initialized' };
+    if (!instance.storageManager) {
+      if (instance.config?.debugMode) {
+        console.warn('EdgeTelemetry: Storage manager not initialized');
+      }
+      return;
     }
-    return instance.performanceMonitorManager.getStatus();
+
+    try {
+      await instance.storageManager.clearAllData();
+      if (instance.config?.debugMode) {
+        console.log('EdgeTelemetry: All stored data cleared');
+      }
+    } catch (error) {
+      if (instance.config?.debugMode) {
+        console.error('EdgeTelemetry: Failed to clear stored data:', error);
+      }
+    }
+  }
+
+  /**
+   * Get storage statistics
+   */
+  static getStorageStats(): Record<string, any> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.storageManager) {
+      return {};
+    }
+    return instance.storageManager.getStatus();
+  }
+
+  // =============================================================================
+  // PRIVATE METHODS
+  // =============================================================================
+
+  /**
+   * Create a telemetry event with standard attributes
+   */
+  private async createTelemetryEvent(eventName: string, attributes?: any): Promise<TelemetryEvent> {
+    const sessionId = this.sessionManager.getCurrentSessionId() || 'unknown';
+    const userId = await this.userIdManager.getUserId();
+
+    // Convert and sanitize attributes
+    const eventAttributes = AttributeConverter.convertToStringMap(attributes || {});
+    
+    // Add global attributes
+    const standardAttributes = {
+      ...eventAttributes,
+      ...this.config?.globalAttributes,
+      sessionId,
+      userId,
+    };
+
+    return {
+      id: this.generateEventId(),
+      sessionId,
+      eventName,
+      timestamp: new Date(),
+      attributes: AttributeConverter.convertToStringMap(standardAttributes),
+      userId,
+    };
+  }
+
+  /**
+   * Handle telemetry event (store or queue)
+   */
+  private handleTelemetryEvent(event: TelemetryEvent): void {
+    if (this.storageManager) {
+      // Store event using storage manager
+      this.storageManager.storeEvent(event).catch((error) => {
+        if (this.config?.debugMode) {
+          console.error('EdgeTelemetry: Failed to store event:', error);
+        }
+      });
+    } else {
+      // Fallback: send directly to network (placeholder)
+      this.sendEventToNetwork(event).catch((error) => {
+        if (this.config?.debugMode) {
+          console.error('EdgeTelemetry: Failed to send event to network:', error);
+        }
+      });
+    }
+  }
+
+  /**
+   * Handle batch transmission to network
+   */
+  private async handleBatchTransmission(batch: EventBatch): Promise<void> {
+    try {
+      if (this.config?.debugMode) {
+        console.log(`EdgeTelemetry: Transmitting batch with ${batch.events.length} events`);
+      }
+
+      // TODO: Implement actual network transmission
+      // For now, just log the batch
+      await this.sendBatchToNetwork(batch);
+
+      if (this.config?.debugMode) {
+        console.log('EdgeTelemetry: Batch transmission successful');
+      }
+    } catch (error) {
+      if (this.config?.debugMode) {
+        console.error('EdgeTelemetry: Batch transmission failed:', error);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Send single event to network (placeholder)
+   */
+  private async sendEventToNetwork(event: TelemetryEvent): Promise<void> {
+    // TODO: Implement actual network sending
+    if (this.config?.debugMode) {
+      console.log('EdgeTelemetry: Sending event to network:', event);
+    }
+  }
+
+  /**
+   * Send batch to network (placeholder)
+   */
+  private async sendBatchToNetwork(batch: EventBatch): Promise<void> {
+    // TODO: Implement actual batch network sending
+    if (this.config?.debugMode) {
+      console.log('EdgeTelemetry: Sending batch to network:', {
+        batchId: batch.id,
+        eventCount: batch.events.length,
+        size: batch.size,
+      });
+    }
   }
 
   /**
