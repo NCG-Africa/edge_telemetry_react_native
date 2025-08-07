@@ -10,6 +10,8 @@ import { NetworkMonitorManager } from './http/NetworkMonitorManager';
 import { NavigationMonitorManager } from './navigation/NavigationMonitorManager';
 import type { ManualNavigationOptions } from './navigation/types/NavigationTypes';
 import type { NavigationContainerRef } from '@react-navigation/native';
+import { ErrorMonitorManager } from './error/ErrorMonitorManager';
+import type { ManualErrorOptions } from './error/types/ErrorTypes';
 
 /**
  * EdgeTelemetry - Main SDK class
@@ -28,6 +30,7 @@ export class EdgeTelemetry {
   private deviceInfoCollector: ReactNativeDeviceInfoCollector;
   private networkMonitorManager?: NetworkMonitorManager;
   private navigationMonitorManager?: NavigationMonitorManager;
+  private errorMonitorManager?: ErrorMonitorManager;
   
   // Event queue for batching
   private eventQueue: TelemetryEvent[] = [];
@@ -134,7 +137,27 @@ export class EdgeTelemetry {
         }
       }
 
-      // 8. Setup batch processing
+      // 8. Setup error monitoring if enabled
+      instance.errorMonitorManager = new ErrorMonitorManager(
+        (event) => instance.handleNavigationTelemetryEvent(event),
+        {
+          enableJavaScriptErrors: true,
+          enablePromiseRejections: true,
+          enableReactErrors: true,
+          enableNativeErrors: false,
+          captureStackTraces: true,
+          maxStackTraceLength: 10000,
+          debugMode: config.debugMode
+        }
+      );
+      
+      instance.errorMonitorManager.initialize();
+      
+      if (config.debugMode) {
+        console.log('EdgeTelemetry: Error monitoring initialized');
+      }
+
+      // 9. Setup batch processing
       instance.setupBatchProcessing();
 
       instance.initialized = true;
@@ -370,6 +393,23 @@ export class EdgeTelemetry {
 
       // Clear global error handler
       this.clearGlobalErrorHandler();
+
+      // Dispose error monitoring
+      if (this.errorMonitorManager) {
+        this.errorMonitorManager.dispose();
+        this.errorMonitorManager = undefined;
+      }
+
+      // Dispose navigation monitoring
+      if (this.navigationMonitorManager) {
+        this.navigationMonitorManager.dispose();
+        this.navigationMonitorManager = undefined;
+      }
+
+      // Clear network monitoring reference
+      if (this.networkMonitorManager) {
+        this.networkMonitorManager = undefined;
+      }
 
       this.initialized = false;
 
@@ -648,6 +688,82 @@ export class EdgeTelemetry {
       return { enabled: false, message: 'Navigation tracking not enabled' };
     }
     return this.navigationMonitorManager.getStatus();
+  }
+
+  /**
+   * Get navigation tracking status
+   */
+  static getNavigationTrackingStatus(): Record<string, any> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.navigationMonitorManager) {
+      return { initialized: false, error: 'Navigation monitoring not initialized' };
+    }
+    return instance.navigationMonitorManager.getStatus();
+  }
+
+  // =============================================================================
+  // ERROR TRACKING METHODS
+  // =============================================================================
+
+  /**
+   * Track a manual error
+   */
+  static trackError(error: Error, context?: Record<string, any>): void {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.errorMonitorManager) {
+      if (instance.config?.debugMode) {
+        console.warn('EdgeTelemetry: Error monitoring not initialized');
+      }
+      return;
+    }
+    instance.errorMonitorManager.trackError(error, context);
+  }
+
+  /**
+   * Track a manual error with options
+   */
+  static trackManualError(options: ManualErrorOptions): void {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.errorMonitorManager) {
+      if (instance.config?.debugMode) {
+        console.warn('EdgeTelemetry: Error monitoring not initialized');
+      }
+      return;
+    }
+    instance.errorMonitorManager.trackManualError(options);
+  }
+
+  /**
+   * Get error statistics
+   */
+  static getErrorStats(): Record<string, number> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.errorMonitorManager) {
+      return {};
+    }
+    return instance.errorMonitorManager.getErrorStats();
+  }
+
+  /**
+   * Clear error statistics
+   */
+  static clearErrorStats(): void {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.errorMonitorManager) {
+      return;
+    }
+    instance.errorMonitorManager.clearErrorStats();
+  }
+
+  /**
+   * Get error monitoring status
+   */
+  static getErrorMonitoringStatus(): Record<string, any> {
+    const instance = EdgeTelemetry.getInstance();
+    if (!instance.errorMonitorManager) {
+      return { initialized: false, error: 'Error monitoring not initialized' };
+    }
+    return instance.errorMonitorManager.getStatus();
   }
 
   /**
