@@ -1,4 +1,4 @@
-import type { NavigationState, NavigationContainerRef, EventArg } from '@react-navigation/native';
+import type { NavigationState, PartialState, NavigationContainerRef, EventArg } from '@react-navigation/native';
 import type { NavigationEvent, NavigationMethod, RouteType } from '../types/NavigationTypes';
 import { NavigationTracker } from '../tracking/NavigationTracker';
 
@@ -124,12 +124,17 @@ export class ReactNavigationObserver {
   /**
    * Get current route from navigation state
    */
-  private getCurrentRouteFromState(state: NavigationState): any {
+  private getCurrentRouteFromState(state: NavigationState | PartialState<NavigationState>): any {
     if (!state || !state.routes || state.routes.length === 0) {
       return null;
     }
 
     const route = state.routes[state.index || 0];
+    
+    // Check if route exists
+    if (!route) {
+      return null;
+    }
     
     // Handle nested navigators
     if (route.state) {
@@ -178,7 +183,7 @@ export class ReactNavigationObserver {
   /**
    * Determine if navigation is a back operation
    */
-  private isBackNavigation(state: NavigationState): boolean {
+  private isBackNavigation(_state: NavigationState): boolean {
     // This is a heuristic - React Navigation doesn't provide direct back detection
     // We can improve this by tracking route stack depth
     return false; // Simplified for now
@@ -187,7 +192,7 @@ export class ReactNavigationObserver {
   /**
    * Determine if navigation is a replace operation
    */
-  private isReplaceNavigation(state: NavigationState, previousRoute: string, newRoute: string): boolean {
+  private isReplaceNavigation(_state: NavigationState, _previousRoute: string, _newRoute: string): boolean {
     // Check if route stack size remained the same but route changed
     return false; // Simplified for now
   }
