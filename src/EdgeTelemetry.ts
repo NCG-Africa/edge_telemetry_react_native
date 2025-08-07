@@ -6,6 +6,7 @@ import { AttributeConverter } from './core/AttributeConverter';
 import { UserIdManager } from './managers/UserIdManager';
 import { SessionManager } from './managers/SessionManager';
 import { ReactNativeDeviceInfoCollector } from './collectors/ReactNativeDeviceInfoCollector';
+import { NetworkMonitorManager } from './http/NetworkMonitorManager';
 
 /**
  * EdgeTelemetry - Main SDK class
@@ -22,10 +23,11 @@ export class EdgeTelemetry {
   private userIdManager: UserIdManager;
   private sessionManager: SessionManager;
   private deviceInfoCollector: ReactNativeDeviceInfoCollector;
+  private networkMonitorManager?: NetworkMonitorManager;
   
   // Event queue for batching
   private eventQueue: TelemetryEvent[] = [];
-  private batchTimer?: NodeJS.Timeout;
+  private batchTimer?: any;
 
   private constructor() {
     this.userIdManager = UserIdManager.getInstance();
@@ -98,7 +100,19 @@ export class EdgeTelemetry {
       // 5. Setup automatic crash handling
       instance.setupGlobalErrorHandler();
 
-      // 6. Setup batch processing
+      // 6. Setup HTTP monitoring if enabled
+      if (config.httpMonitoring) {
+        instance.networkMonitorManager = new NetworkMonitorManager(config);
+        await instance.networkMonitorManager.initialize((events) => {
+          instance.handleTelemetryEvents(events);
+        });
+        
+        if (config.debugMode) {
+          console.log('EdgeTelemetry: HTTP monitoring initialized');
+        }
+      }
+
+      // 7. Setup batch processing
       instance.setupBatchProcessing();
 
       instance.initialized = true;
@@ -464,6 +478,55 @@ export class EdgeTelemetry {
       'error.source': 'unhandled_rejection'
     });
   };
+
+  /**
+   * Handle telemetry events from HTTP monitoring
+   */
+  private handleTelemetryEvents(events: TelemetryEvent[]): void {
+    if (!this.initialized || !events.length) {
+      return;
+    }
+
+    // Add events to queue for batch processing
+    this.eventQueue.push(...events);
+
+    if (this.config?.debugMode) {
+      console.log(`EdgeTelemetry: Received ${events.length} HTTP telemetry events`);
+    }
+
+    // Check if we should flush immediately
+    const maxBatchSize = this.config?.maxBatchSize || 100;
+    if (this.eventQueue.length >= maxBatchSize) {
+      this.flushEvents();
+    }
+  }
+
+  /**
+   * Install Axios interceptor for HTTP monitoring
+   */
+  installAxiosInterceptor(axiosInstance: any): void {
+    if (!this.initialized) {
+      console.warn('EdgeTelemetry: SDK not initialized, cannot install Axios interceptor');
+      return;
+    }
+
+    if (this.networkMonitorManager) {
+      this.networkMonitorManager.installAxiosInterceptor(axiosInstance);
+    } else {
+      console.warn('EdgeTelemetry: HTTP monitoring not enabled, cannot install Axios interceptor');
+    }
+  }
+
+  /**
+   * Get HTTP monitoring status and metrics
+   */
+  getHttpMonitoringStatus(): any {
+    if (!this.networkMonitorManager) {
+      return { enabled: false, message: 'HTTP monitoring not enabled' };
+    }
+
+    return this.networkMonitorManager.getStatus();
+  }
 
   /**
    * Generate a unique event ID

@@ -12,6 +12,9 @@ export interface TelemetryConfig {
   /** Enable debug mode with verbose logging */
   debugMode: boolean;
   
+  /** Debug mode alias for compatibility */
+  debug: boolean;
+  
   /** Global attributes added to all events */
   globalAttributes: Record<string, string>;
   
@@ -20,6 +23,9 @@ export interface TelemetryConfig {
   
   /** Maximum number of events per batch */
   maxBatchSize: number;
+  
+  /** Batch size for telemetry events */
+  batchSize: number;
   
   /** Enable automatic network request monitoring */
   enableNetworkMonitoring: boolean;
@@ -32,6 +38,18 @@ export interface TelemetryConfig {
   
   /** Enable HTTP request/response monitoring */
   enableHttpMonitoring: boolean;
+  
+  /** HTTP monitoring alias for compatibility */
+  httpMonitoring: boolean;
+  
+  /** Performance monitoring alias for compatibility */
+  performanceMonitoring: boolean;
+  
+  /** URLs to ignore in HTTP monitoring */
+  httpIgnoredUrls: string[];
+  
+  /** Domains to ignore in HTTP monitoring */
+  httpIgnoredDomains: string[];
   
   /** Enable local crash reporting */
   enableLocalReporting: boolean;
@@ -92,13 +110,19 @@ export interface TelemetryInitConfig {
  */
 export const DEFAULT_CONFIG: Omit<TelemetryConfig, 'serviceName' | 'endpoint'> = {
   debugMode: false,
+  debug: false, // Alias for debugMode
   globalAttributes: {},
   batchTimeout: 30000, // 30 seconds
   maxBatchSize: 100,
+  batchSize: 50, // For HTTP monitoring
   enableNetworkMonitoring: true,
   enablePerformanceMonitoring: true,
+  performanceMonitoring: true, // Alias for enablePerformanceMonitoring
   enableNavigationTracking: true,
   enableHttpMonitoring: true,
+  httpMonitoring: true, // Alias for enableHttpMonitoring
+  httpIgnoredUrls: [],
+  httpIgnoredDomains: [],
   enableLocalReporting: true,
   useJsonFormat: false,
   eventBatchSize: 30,
