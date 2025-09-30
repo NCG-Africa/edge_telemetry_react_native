@@ -1,6 +1,10 @@
 // src/index.web.ts
+import { TelemetryMemoryUsageWeb } from "./adapters/web/memoryWeb";
+
 export class TelemetryWeb {
     private instancePromise: Promise<any>;
+
+    private memoryTracker?: TelemetryMemoryUsageWeb;
 
     constructor(opts?: {
         sender?: any;
@@ -24,6 +28,10 @@ export class TelemetryWeb {
 
             // 🔥 Auto-init HTTP + XHR interception
             interceptHttp(telemetry);
+            // auto init memory tracker
+            this.memoryTracker = new TelemetryMemoryUsageWeb(telemetry);
+            this.memoryTracker.start(); // runs every 30s by default
+
 
             return telemetry;
         })();

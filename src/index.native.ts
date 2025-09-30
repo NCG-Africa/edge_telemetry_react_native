@@ -1,5 +1,8 @@
+import { TelemetryMemoryUsageNative } from "./adapters/native/memoryNative";
+
 export class TelemetryNative {
     private instancePromise: Promise<any>;
+    private memoryTracker?: TelemetryMemoryUsageNative;
 
     constructor(opts?: {
         sender?: any;
@@ -23,6 +26,10 @@ export class TelemetryNative {
 
             // 🔥 Auto-init HTTP interception
             interceptFetch(telemetry);
+            // auto init memory tracker
+            this.memoryTracker = new TelemetryMemoryUsageNative(telemetry);
+            this.memoryTracker.start();
+
 
             return telemetry;
         })();
