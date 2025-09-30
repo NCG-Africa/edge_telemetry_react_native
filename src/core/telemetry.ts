@@ -1,12 +1,14 @@
 import { NavigationTracker } from "../adapters/navigationTracker";
 
 export type TelemetryEvent = {
-    name: string;
-    data?: Record<string, any>;
+    eventName: string;
+    // data?: Record<string, any>;
     timestamp: number;
     // injected metadata
     userId?: string | null;
     sessionId?: string;
+    type: 'event' | 'metric';
+    attributes?: Record<string, any>;
 };
 
 export interface Sender {
@@ -14,6 +16,8 @@ export interface Sender {
     onFailure?(events: TelemetryEvent[]): Promise<void>;
     replayFailed?(): Promise<void>;
 }
+
+
 
 export interface CrashHandler {
     attach(): Promise<void>;
@@ -354,7 +358,6 @@ export class Telemetry {
     async log(name: string, data?: Record<string, any>) {
         this.eventCount++;
 
-        // 🔹 Collect global context (device + network)
         let deviceInfo: Record<string, any> = {};
         let networkInfo: Record<string, any> = {};
 
@@ -370,30 +373,53 @@ export class Telemetry {
             console.warn("Telemetry: failed to fetch network info", err);
         }
 
-        // 🔹 Merge event-specific data with global context
-        const mergedData = {
-            ...data,
-            device: deviceInfo,
-            network: networkInfo,
+        // 🔄 Flatten all properties into a single `attributes` object
+        const attributes: Record<string, any> = {
+            ...this.flattenWithPrefix('device', deviceInfo),
+            ...this.flattenWithPrefix('network', networkInfo),
+            ...this.flattenWithPrefix('', data || {}),
+            'user.id': this.userId ?? null,
+            'session.id': this.sessionId,
+            'session.event_count': this.eventCount,
+            'timestamp': new Date().toISOString(),
         };
 
         const e: TelemetryEvent = {
-            name,
-            data: mergedData,
+            eventName: name,
+            type: 'event',
             timestamp: Date.now(),
-            userId: this.userId ?? null,
-            sessionId: this.sessionId,
+            attributes,
         };
 
         this.queue.push(e);
 
         console.log("Telemetry queued event:", name, "Queue size:", this.queue.length);
-        console.log("Event data:", mergedData);
-        console.log("Event userId:", e.userId, "sessionId:", e.sessionId, "timestamp:", e.timestamp, "batchSize:", this.batchSize);
+        console.log("Event attributes:", attributes);
 
         if (this.queue.length >= this.batchSize) {
             void this.flush();
         }
+
+
+    }
+
+    private flattenWithPrefix(prefix: string, obj: Record<string, any>): Record<string, any> {
+        const result: Record<string, any> = {};
+
+        for (const key in obj) {
+            if (!Object.prototype.hasOwnProperty.call(obj, key)) continue;
+
+            const value = obj[key];
+            const prefixedKey = prefix ? `${prefix}.${key}` : key;
+
+            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                Object.assign(result, this.flattenWithPrefix(prefixedKey, value));
+            } else {
+                result[prefixedKey] = value;
+            }
+        }
+
+        return result;
     }
 
 
