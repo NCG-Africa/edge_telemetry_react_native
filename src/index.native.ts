@@ -1,15 +1,8 @@
+import { error } from "console";
 
 
 export class TelemetryNative {
     private instancePromise: Promise<any>;
-    // private memoryTracker?: TelemetryMemoryUsageNative;
-
-    // private frameDrops?: FrameDropTrackerNative;
-    // private screens?: ScreenTimingTracker;
-    // private navigation?: NavigationTracker;
-    // private crashHandler?: CrashHandlerNative;
-
-
 
     constructor(opts?: {
         sender?: any;
@@ -22,16 +15,16 @@ export class TelemetryNative {
         this.instancePromise = (async () => {
             const { Telemetry } = await import("./core/telemetry");
             const { nativeSender } = await import("./adapters/nativeSender");
-            const { interceptFetch } = await import("./adapters/native/interceptFetchNative.native");
-            const { generateId } = await import("./core/utils/uuid.native");
-            const sender = opts?.sender ?? nativeSender(opts?.endpoint);
 
-            //metrics and trackers
-            const { TelemetryMemoryUsageNative } = await import("./adapters/native/memoryNative.native");
-            const { FrameDropTrackerNative } = await import("./adapters/native/frameDropsNative.native");
-            const { ScreenTimingTracker } = await import("./adapters/screenTiming");
-            const { NavigationTrackerNative } = await import("./adapters/native/navigationNative.native");
-            const { CrashHandlerNative } = await import("./adapters/native/crashHandlerNative.native");
+            const { replayFailedNative } = await import("./adapters/nativeSender");
+            const { generateId } = await import("./core/utils/uuid.native");
+            const { DeviceInfoTrackerNative } = await import("./adapters/native/deviceInfo.native");
+            const { NetworkInfoTrackerNative } = await import("./adapters/native/networkInfo.native");
+
+            const networkInfoTrackerNative = new NetworkInfoTrackerNative();
+            const deviceInfoTrackerNative = new DeviceInfoTrackerNative();
+
+            const sender = opts?.sender ?? nativeSender(opts?.endpoint);
 
 
             const telemetry = new Telemetry({
@@ -40,28 +33,71 @@ export class TelemetryNative {
                 flushIntervalMs: opts?.flushIntervalMs,
                 endpoint: opts?.endpoint,
                 RandomnStringGenerator: { generate: generateId },
+                deviceInfoHandler: deviceInfoTrackerNative,
+                networkInfoHandler: networkInfoTrackerNative,
             });
 
-            // 🔥 Auto-init HTTP interception
-            interceptFetch(telemetry);
-            // auto init memory tracker
-            const memoryTracker = new TelemetryMemoryUsageNative(telemetry);
-            memoryTracker.start();
+            // 🔄 recover failed events right after init
+            replayFailedNative(opts?.endpoint).catch(err => {
+                console.warn("Native replay failed:", err);
+            });
 
-            // --- auto initialize modules ---
-            const frameDrops = new FrameDropTrackerNative(telemetry);
-            frameDrops.start();
-
-            const screens = new ScreenTimingTracker(telemetry);
-
-            const navigationTracker = new NavigationTrackerNative(telemetry);
-
-            const crashHandler = new CrashHandlerNative(telemetry);
-            crashHandler.attach();
-
-
+            // … attach interceptors, trackers, crash handlers, etc.
             return telemetry;
         })();
+
+        this.trackErrors().catch(err => {
+            console.warn("Native TelemetryNative trackErrors failed:", err);
+        });
+
+        this.trackFrameDrops().catch(err => {
+            console.log("Native trackFrameDrops(frameDropsHandler: FrameDropsHandler) errors", err);
+        })
+        this.trackNetworkRequests().catch(err => {
+            console.log("Native trackNetworkRequests(networkHandler: NetworkHandler) errors", err);
+        })
+        this.trackMemoryUsage().catch(err => {
+            console.log("Native rackMemoryUsage(memoryHandler: MemoryHandler) errors", err);
+        })
+    }
+
+    async getDeviceInfo() {
+        const { DeviceInfoTrackerNative } = await import("./adapters/native/deviceInfo.native");
+        const inst = await this.instancePromise;
+        const deviceInfoTrackerNative = new DeviceInfoTrackerNative();
+        return inst.getDeviceInfo(deviceInfoTrackerNative);
+    }
+
+    async getNetworkInfo() {
+        const { NetworkInfoTrackerNative } = await import("./adapters/native/networkInfo.native");
+        const inst = await this.instancePromise;
+        const networkInfoTrackerNative = new NetworkInfoTrackerNative();
+        return inst.getNetworkInfo(networkInfoTrackerNative);
+    }
+
+    async trackErrors() {
+        const { CrashHandlerNative } = await import("./adapters/native/crashHandlerNative.native");
+        const inst = await this.instancePromise;
+        const crashHandler = new CrashHandlerNative(inst);
+        return inst.trackErrors(crashHandler);
+    }
+    async trackFrameDrops() {
+        const { FrameDropTrackerNative } = await import("./adapters/native/frameDropsNative.native");
+        const inst = await this.instancePromise;
+        const frameDropTracker = new FrameDropTrackerNative(inst);
+        return inst.trackFrameDrops(frameDropTracker);
+    }
+    async trackNetworkRequests() {
+        const { NetworkTrackerNative } = await import("./adapters/native/interceptFetchNative.native");
+        const inst = await this.instancePromise;
+        const networkTracker = new NetworkTrackerNative(inst);
+        return inst.trackNetworkRequests(networkTracker);
+    }
+    async trackMemoryUsage() {
+        const { TelemetryMemoryUsageNative } = await import("./adapters/native/memoryNative.native");
+        const inst = await this.instancePromise;
+        const memoryTracker = new TelemetryMemoryUsageNative(inst);
+        return inst.trackMemoryUsage(memoryTracker);
     }
 
     async log(event: string, data?: Record<string, any>) {
@@ -110,6 +146,11 @@ export class TelemetryNative {
 
     // index.native.ts
     async attachNavigation(navigationRef: any) {
+        console.log("Attaching navigation tracker");
+        if (!navigationRef) {
+            console.warn("Navigation reference is undefined. Cannot attach navigation tracker.");
+            return;
+        }
         const inst = await this.instancePromise;
         const { NavigationTrackerNative } = await import("./adapters/native/navigationNative.native");
         const tracker = new NavigationTrackerNative(inst);

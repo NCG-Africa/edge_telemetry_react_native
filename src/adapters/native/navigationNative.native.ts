@@ -16,9 +16,12 @@ export class NavigationTrackerNative {
     attach(navigationRef: any) {
         if (!navigationRef) return;
 
+        console.log("NavigationTrackerNative: attaching to navigationRef");
         navigationRef.addListener("state", () => {
             const route = this.getActiveRouteName(navigationRef.getCurrentRoute());
             if (route && route !== this.currentRoute) {
+
+                console.log(`NavigationTrackerNative: route changed to ${route}`);
                 this.tracker.recordRouteChange(this.currentRoute ?? "init", route);
                 this.currentRoute = route;
             }
