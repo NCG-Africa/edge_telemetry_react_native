@@ -1,5 +1,5 @@
 // src/index.web.ts
-import { TelemetryMemoryUsageWeb } from "./adapters/web/memoryWeb";
+import { TelemetryMemoryUsageWeb } from "./adapters/web/memoryWeb.web";
 
 export class TelemetryWeb {
     private instancePromise: Promise<any>;
@@ -12,10 +12,14 @@ export class TelemetryWeb {
         flushIntervalMs?: number;
         endpoint?: string;
     }) {
+
+        console.log("🌍 Running Web Telemetry");
+
         this.instancePromise = (async () => {
             const { Telemetry } = await import("./core/telemetry");
             const { webSender } = await import("./adapters/webSender");
-            const { interceptHttp } = await import("./adapters/web/interceptFetchWeb");
+            const { interceptHttp } = await import("./adapters/web/interceptFetchWeb.web");
+            const { generateId } = await import("./core/utils/uuid.web");
 
             const sender = opts?.sender ?? webSender(opts?.endpoint);
 
@@ -24,6 +28,7 @@ export class TelemetryWeb {
                 batchSize: opts?.batchSize,
                 flushIntervalMs: opts?.flushIntervalMs,
                 endpoint: opts?.endpoint,
+                RandomnStringGenerator: { generate: generateId }
             });
 
             // 🔥 Auto-init HTTP + XHR interception

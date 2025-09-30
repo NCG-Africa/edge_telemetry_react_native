@@ -9,10 +9,21 @@
   "react-native": "dist/index.native.js",
   "exports": {
     ".": {
-      "types": "./dist/index.web.d.ts",
-      "react-native": "./dist/index.native.js",
-      "import": "./dist/index.web.js",
-      "require": "./dist/index.web.js"
+      "types": {
+        "web": "./dist/index.web.d.ts",
+        "react-native": "./dist/index.native.d.ts",
+        "default": "./dist/index.web.d.ts"
+      },
+      "import": {
+        "web": "./dist/index.web.js",
+        "react-native": "./dist/index.native.js",
+        "default": "./dist/index.web.js"
+      },
+      "require": {
+        "web": "./dist/index.web.cjs",
+        "react-native": "./dist/index.native.cjs",
+        "default": "./dist/index.web.cjs"
+      }
     }
   },
   "files": [
@@ -36,12 +47,13 @@
     "react-native",
     "library"
   ],
-  "author": "",
   "license": "ISC",
   "devDependencies": {
     "@types/node": "^24.4.0",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
+    "@types/react-navigation": "^3.0.8",
+    "@types/uuid": "^10.0.0",
     "@vitejs/plugin-react": "^5.0.2",
     "rimraf": "^6.0.1",
     "typescript": "^5.9.2",
@@ -49,6 +61,8 @@
     "vite-plugin-dts": "^4.5.4"
   },
   "dependencies": {
-    "@react-native-async-storage/async-storage": "^2.2.0"
+    "@react-native-async-storage/async-storage": "^2.2.0",
+    "react-native-get-random-values": "^1.11.0",
+    "uuid": "^13.0.0"
   }
 }

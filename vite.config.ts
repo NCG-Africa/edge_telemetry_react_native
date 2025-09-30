@@ -2,12 +2,26 @@ import { defineConfig } from "vite";
 import dts from "vite-plugin-dts";
 import path from "path";
 
-export default defineConfig({
+export default defineConfig(({ mode }) => ({
     plugins: [
         dts({
             insertTypesEntry: true,
         }),
     ],
+    resolve: {
+        extensions: [".web.ts", ".web.js", ".ts", ".js", ".json"],
+        alias: {
+            ...(process.env.BUILD_TARGET === "web"
+                ? {
+                    // 👇 Only apply for web builds
+                    "react-native": path.resolve(
+                        __dirname,
+                        "src/shims/react-native-web-shim.ts"
+                    ),
+                }
+                : {}),
+        },
+    },
     build: {
         lib: {
             entry: {
@@ -18,15 +32,14 @@ export default defineConfig({
             formats: ["es", "cjs"],
         },
         rollupOptions: {
-            // mark only externals as external, bundle everything else
             external: [
                 "react",
                 "react-dom",
                 "@react-native-async-storage/async-storage",
+                "react-native"
             ],
             output: {
                 entryFileNames: "[name].js",
-                // 🚀 ensure one file per entry (no extra chunks)
                 manualChunks: undefined,
                 assetFileNames: "assets/[name]-[hash][extname]",
             },
@@ -34,4 +47,4 @@ export default defineConfig({
         outDir: "dist",
         sourcemap: true,
     },
-});
+}));
