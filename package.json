@@ -1,7 +1,7 @@
 {
-  "name": "react-telemetry-lib",
-  "version": "1.0.0",
-  "description": "Cross-platform React telemetry library (web + React Native)",
+  "name": "edge-telemetry-sdk",
+  "version": "2.1.0",
+  "description": "A lightweight React Native SDK for collecting mobile app telemetry and exporting it to custom backends in JSON format. Built for flexible and developer-friendly observability.",
   "private": false,
   "main": "dist/index.web.js",
   "module": "dist/index.web.js",
@@ -48,13 +48,21 @@
     "test": "echo \"No tests yet\" && exit 0"
   },
   "keywords": [
-    "react",
-    "telemetry",
-    "analytics",
     "react-native",
-    "library"
+    "telemetry",
+    "monitoring",
+    "sdk",
+    "observability",
+    "analytics",
+    "crash-reporting",
+    "performance",
+    "ios",
+    "android",
+    "user-profiles",
+    "react",
+    "web"
   ],
-  "license": "ISC",
+  "license": "MIT",
   "devDependencies": {
     "@types/node": "^24.4.0",
     "@types/react": "^19.1.13",
