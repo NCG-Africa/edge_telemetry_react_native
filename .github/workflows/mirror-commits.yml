@@ -30,12 +30,17 @@ jobs:
           # Use the default GITHUB_TOKEN for source repo access
           token: ${{ secrets.TOKEN }}
 
-      # Step 2: Configure Git with your identity
-      - name: Configure Git identity
+      # Step 2: Configure Git with your identity and cleanup
+      - name: Configure Git identity and cleanup
         run: |
           git config --global user.name "${{ env.GIT_USER_NAME }}"
           git config --global user.email "${{ env.GIT_USER_EMAIL }}"
           echo "Git configured with user: ${{ env.GIT_USER_NAME }} <${{ env.GIT_USER_EMAIL }}>"
+          
+          # Cleanup any leftover temporary branches
+          git branch -D temp-rewrite-main 2>/dev/null || true
+          git branch -D temp-rewrite-develop 2>/dev/null || true
+          echo "Cleaned up any existing temporary branches"
 
       # Step 3: Add NCG-Africa repository as a remote
       - name: Add NCG-Africa repository remote
@@ -82,15 +87,17 @@ jobs:
           echo "New commits to process:"
           echo "$NEW_COMMITS"
           
-          # Create a temporary branch for rewriting
-          git checkout -b temp-rewrite-$CURRENT_BRANCH
+          # Create a temporary branch for rewriting (cleanup any existing one first)
+          TEMP_BRANCH="temp-rewrite-$CURRENT_BRANCH"
+          git branch -D $TEMP_BRANCH 2>/dev/null || true
+          git checkout -b $TEMP_BRANCH
           
           # Reset to the last destination commit if branch exists, otherwise to root
           if git show-ref --verify --quiet refs/remotes/destination/$CURRENT_BRANCH; then
             git reset --hard destination/$CURRENT_BRANCH
           else
             # For new branches, create an orphan branch
-            git checkout --orphan temp-rewrite-$CURRENT_BRANCH
+            git checkout --orphan $TEMP_BRANCH
             git rm -rf . 2>/dev/null || true
           fi
           
