@@ -1,7 +1,4 @@
-Got it ✅
-Here’s the complete **README.md** file you can copy–paste directly into your GitHub repo:
 
-````markdown
 # React Telemetry Lib
 
 A **cross-platform telemetry library** for React and React Native.  
