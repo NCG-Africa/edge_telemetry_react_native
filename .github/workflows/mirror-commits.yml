@@ -1,0 +1,163 @@
+name: Mirror Commits to Destination Repository
+
+# Trigger the workflow on push events to specified branches
+on:
+  push:
+    branches:
+      - main          # Trigger on main branch
+      - develop       # Add other branches as needed
+      - 'feature/**'  # Trigger on all feature branches
+      - 'release/**'  # Trigger on all release branches
+
+# Define environment variables
+env:
+  # Your Git identity - update these with your actual details
+  GIT_USER_NAME: "KiplangatSang"
+  GIT_USER_EMAIL: "your-email@example.com"  # Replace with your actual email
+
+jobs:
+  mirror-commits:
+    name: Mirror commits to destination repository
+    runs-on: ubuntu-latest
+    
+    steps:
+      # Step 1: Checkout the source repository with full history
+      - name: Checkout source repository
+        uses: actions/checkout@v4
+        with:
+          # Fetch full history to preserve all commits
+          fetch-depth: 0
+          # Use the default GITHUB_TOKEN for source repo access
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      # Step 2: Configure Git with your identity
+      - name: Configure Git identity
+        run: |
+          git config --global user.name "${{ env.GIT_USER_NAME }}"
+          git config --global user.email "${{ env.GIT_USER_EMAIL }}"
+          echo "Git configured with user: ${{ env.GIT_USER_NAME }} <${{ env.GIT_USER_EMAIL }}>"
+
+      # Step 3: Add destination repository as a remote
+      - name: Add destination repository remote
+        run: |
+          # Add the destination repository as a remote named 'destination'
+          git remote add destination https://${{ secrets.DEST_REPO_TOKEN }}@github.com/KiplangatSang/react_telemetry.git
+          echo "Added destination remote successfully"
+
+      # Step 4: Fetch destination repository to check for existing commits
+      - name: Fetch destination repository
+        run: |
+          # Fetch the destination repository to understand its current state
+          git fetch destination
+          echo "Fetched destination repository"
+
+      # Step 5: Rewrite commit history to change author information
+      - name: Rewrite commit authors
+        run: |
+          # Get the current branch name
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          echo "Processing branch: $CURRENT_BRANCH"
+          
+          # Check if the branch exists on destination
+          if git show-ref --verify --quiet refs/remotes/destination/$CURRENT_BRANCH; then
+            echo "Branch $CURRENT_BRANCH exists on destination"
+            # Get the last commit hash from destination
+            LAST_DEST_COMMIT=$(git rev-parse destination/$CURRENT_BRANCH)
+            echo "Last destination commit: $LAST_DEST_COMMIT"
+            
+            # Get commits that are new (not in destination)
+            NEW_COMMITS=$(git rev-list $LAST_DEST_COMMIT..$CURRENT_BRANCH --reverse)
+          else
+            echo "Branch $CURRENT_BRANCH is new, processing all commits"
+            # If branch doesn't exist on destination, process all commits
+            NEW_COMMITS=$(git rev-list $CURRENT_BRANCH --reverse)
+          fi
+          
+          if [ -z "$NEW_COMMITS" ]; then
+            echo "No new commits to mirror"
+            echo "skip_push=true" >> $GITHUB_ENV
+            exit 0
+          fi
+          
+          echo "New commits to process:"
+          echo "$NEW_COMMITS"
+          
+          # Create a temporary branch for rewriting
+          git checkout -b temp-rewrite-$CURRENT_BRANCH
+          
+          # Reset to the last destination commit if branch exists, otherwise to root
+          if git show-ref --verify --quiet refs/remotes/destination/$CURRENT_BRANCH; then
+            git reset --hard destination/$CURRENT_BRANCH
+          else
+            # For new branches, create an orphan branch
+            git checkout --orphan temp-rewrite-$CURRENT_BRANCH
+            git rm -rf . 2>/dev/null || true
+          fi
+          
+          # Cherry-pick each new commit and rewrite the author
+          for commit in $NEW_COMMITS; do
+            echo "Processing commit: $commit"
+            
+            # Get original commit message
+            COMMIT_MSG=$(git log --format=%B -n 1 $commit)
+            
+            # Cherry-pick the commit
+            if git cherry-pick --no-commit $commit; then
+              # Commit with new author information
+              git commit --author="${{ env.GIT_USER_NAME }} <${{ env.GIT_USER_EMAIL }}>" -m "$COMMIT_MSG"
+              echo "Successfully processed commit: $commit"
+            else
+              echo "Failed to cherry-pick commit: $commit"
+              # Handle merge conflicts or other issues
+              git cherry-pick --abort 2>/dev/null || true
+              echo "Skipping problematic commit: $commit"
+            fi
+          done
+          
+          echo "Commit rewriting completed"
+
+      # Step 6: Push to destination repository
+      - name: Push to destination repository
+        if: env.skip_push != 'true'
+        run: |
+          CURRENT_BRANCH=$(git rev-parse --abbrev-ref HEAD)
+          # Remove the temp prefix from branch name
+          DEST_BRANCH=${CURRENT_BRANCH#temp-rewrite-}
+          
+          echo "Pushing to destination repository branch: $DEST_BRANCH"
+          
+          # Push the rewritten commits to destination
+          git push destination HEAD:$DEST_BRANCH
+          
+          echo "Successfully mirrored commits to destination repository"
+
+      # Step 7: Cleanup
+      - name: Cleanup temporary branches
+        if: always()
+        run: |
+          # Switch back to original branch and cleanup
+          ORIGINAL_BRANCH=$(echo "${{ github.ref }}" | sed 's/refs\/heads\///')
+          git checkout $ORIGINAL_BRANCH 2>/dev/null || true
+          
+          # Remove temporary branch
+          TEMP_BRANCH="temp-rewrite-$ORIGINAL_BRANCH"
+          git branch -D $TEMP_BRANCH 2>/dev/null || true
+          
+          echo "Cleanup completed"
+
+      # Step 8: Summary
+      - name: Mirror summary
+        if: always()
+        run: |
+          echo "=== Mirror Operation Summary ==="
+          echo "Source Repository: ${{ github.repository }}"
+          echo "Destination Repository: KiplangatSang/react_telemetry"
+          echo "Branch: ${{ github.ref_name }}"
+          echo "Commit SHA: ${{ github.sha }}"
+          echo "Author rewritten to: ${{ env.GIT_USER_NAME }} <${{ env.GIT_USER_EMAIL }}>"
+          
+          if [ "${{ env.skip_push }}" = "true" ]; then
+            echo "Status: No new commits to mirror"
+          else
+            echo "Status: Mirror operation completed"
+          fi
