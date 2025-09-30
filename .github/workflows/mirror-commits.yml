@@ -41,7 +41,7 @@ jobs:
       - name: Add destination repository remote
         run: |
           # Add the destination repository as a remote named 'destination'
-          git remote add destination https://${{ secrets.DEST_REPO_TOKEN }}@github.com/KiplangatSang/react_telemetry.git
+          git remote add destination https://${{ secrets.TOKEN }}@github.com/KiplangatSang/react_telemetry.git
           echo "Added destination remote successfully"
 
       # Step 4: Fetch destination repository to check for existing commits
