@@ -6,8 +6,10 @@ export type TelemetryEvent = {
 
 export interface Sender {
     send(events: TelemetryEvent[]): Promise<void>;
-    onFailure?(events: TelemetryEvent[]): Promise<void>; // optional persistence
+    onFailure?(events: TelemetryEvent[]): Promise<void>;
+    replayFailed?(): Promise<void>; // <-- unify API
 }
+
 
 type Opts = {
     sender?: Sender;
@@ -30,6 +32,7 @@ export class Telemetry {
         this.batchSize = opts?.batchSize ?? 10;
         this.flushIntervalMs = opts?.flushIntervalMs ?? 10000;
         this.retryCount = opts?.retryCount ?? 3;
+
 
         // 👇 auto replay if supported
         if (this.sender && "replayFailed" in this.sender) {

@@ -1,4 +1,3 @@
-
 import type { TelemetryEvent, Sender } from "../core/telemetry";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 
@@ -10,19 +9,66 @@ async function persistFailed(events: TelemetryEvent[]) {
     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([...existing, ...events]));
 }
 
-export function nativeSender(endpoint: string = DEFAULT_ENDPOINT): Sender {
-    return {
-        async send(events: TelemetryEvent[]) {
+// ⬇️ Helper: send with retries (exponential backoff + jitter)
+async function sendWithRetry(endpoint: string, events: TelemetryEvent[], retryCount: number = 3) {
+    let attempts = 0;
+    let lastError: any;
+
+    while (attempts < retryCount) {
+        try {
             const res = await fetch(endpoint, {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ events }),
             });
 
-            if (!res.ok) throw new Error(`Telemetry send failed: ${res.status}`);
+            if (!res.ok) {
+                throw new Error(`Telemetry send failed: ${res.status}`);
+            }
+
+            return; // ✅ success
+        } catch (err) {
+            lastError = err;
+            attempts++;
+            if (attempts < retryCount) {
+                // ⬇️ exponential backoff with jitter
+                await new Promise(res =>
+                    setTimeout(res, 500 * 2 ** attempts + Math.random() * 200)
+                );
+            }
+        }
+    }
+
+    // ❌ after retries still failed
+    throw lastError;
+}
+
+export function nativeSender(endpoint: string = DEFAULT_ENDPOINT): Sender {
+    return {
+        async send(events) {
+            try {
+                await sendWithRetry(endpoint, events);
+            } catch (err) {
+                // Persist if final attempt fails
+                await persistFailed(events);
+                throw err;
+            }
         },
-        async onFailure(events: TelemetryEvent[]) {
+        async onFailure(events) {
             await persistFailed(events);
+        },
+        async replayFailed() {
+            const stored = JSON.parse((await AsyncStorage.getItem(STORAGE_KEY)) || "[]");
+            if (stored.length > 0) {
+                await AsyncStorage.removeItem(STORAGE_KEY);
+                try {
+                    await sendWithRetry(endpoint, stored);
+                } catch (err) {
+                    // If replay fails again, re-store
+                    await persistFailed(stored);
+                    throw err;
+                }
+            }
         },
     };
 }
@@ -32,13 +78,68 @@ export async function replayFailedNative(endpoint: string = DEFAULT_ENDPOINT) {
     const stored = JSON.parse((await AsyncStorage.getItem(STORAGE_KEY)) || "[]");
     if (stored.length > 0) {
         await AsyncStorage.removeItem(STORAGE_KEY);
-        return fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ events: stored }),
-        });
+        try {
+            await sendWithRetry(endpoint, stored);
+        } catch (err) {
+            // If replay fails again, re-store
+            await persistFailed(stored);
+            throw err;
+        }
     }
 }
+
+// import type { TelemetryEvent, Sender } from "../core/telemetry";
+// import AsyncStorage from "@react-native-async-storage/async-storage";
+
+// const DEFAULT_ENDPOINT = "https://your.telemetry.endpoint/collect";
+// const STORAGE_KEY = "telemetry_failed_events";
+
+// async function persistFailed(events: TelemetryEvent[]) {
+//     const existing = JSON.parse((await AsyncStorage.getItem(STORAGE_KEY)) || "[]");
+//     await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([...existing, ...events]));
+// }
+
+// export function nativeSender(endpoint: string = DEFAULT_ENDPOINT): Sender {
+//     return {
+//         async send(events) {
+//             const res = await fetch(endpoint, {
+//                 method: "POST",
+//                 headers: { "Content-Type": "application/json" },
+//                 body: JSON.stringify({ events }),
+//             });
+//             if (!res.ok) throw new Error(`Telemetry send failed: ${res.status}`);
+//         },
+//         async onFailure(events) {
+//             const existing = JSON.parse((await AsyncStorage.getItem(STORAGE_KEY)) || "[]");
+//             await AsyncStorage.setItem(STORAGE_KEY, JSON.stringify([...existing, ...events]));
+//         },
+//         async replayFailed() {
+//             const stored = JSON.parse((await AsyncStorage.getItem(STORAGE_KEY)) || "[]");
+//             if (stored.length > 0) {
+//                 await AsyncStorage.removeItem(STORAGE_KEY);
+//                 await fetch(endpoint, {
+//                     method: "POST",
+//                     headers: { "Content-Type": "application/json" },
+//                     body: JSON.stringify({ events: stored }),
+//                 });
+//             }
+//         },
+//     };
+// }
+
+
+// // Recover failed events on app start
+// export async function replayFailedNative(endpoint: string = DEFAULT_ENDPOINT) {
+//     const stored = JSON.parse((await AsyncStorage.getItem(STORAGE_KEY)) || "[]");
+//     if (stored.length > 0) {
+//         await AsyncStorage.removeItem(STORAGE_KEY);
+//         return fetch(endpoint, {
+//             method: "POST",
+//             headers: { "Content-Type": "application/json" },
+//             body: JSON.stringify({ events: stored }),
+//         });
+//     }
+// }
 
 // import type { TelemetryEvent, Sender } from "../core/telemetry";
 
