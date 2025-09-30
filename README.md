@@ -250,14 +250,3 @@ The package exports both **Web** and **Native** entry points:
 Your bundler (Metro for RN, Webpack/Vite for Web) will automatically pick the correct one based on the platform.
 
 ---
-
-## 📄 License
-
-ISC
-
-```
-
----
-
-👉 Do you also want me to include a **Getting Started example repo link** (with CRA for web + Expo for RN) in the README, so developers can test integration quickly?
-```
