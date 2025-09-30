@@ -12,8 +12,8 @@ on:
 # Define environment variables
 env:
   # Your Git identity - update these with your actual details
-  GIT_USER_NAME: "KiplangatSang"
-  GIT_USER_EMAIL: "your-email@example.com"  # Replace with your actual email
+  GIT_USER_NAME: "mktowett"
+  GIT_USER_EMAIL: "marvintowett@gmail.com"
 
 jobs:
   mirror-commits:
@@ -28,7 +28,7 @@ jobs:
           # Fetch full history to preserve all commits
           fetch-depth: 0
           # Use the default GITHUB_TOKEN for source repo access
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GIT_TOKEN }}
 
       # Step 2: Configure Git with your identity
       - name: Configure Git identity
