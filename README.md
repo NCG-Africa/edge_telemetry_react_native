@@ -21,6 +21,7 @@ A comprehensive, production-ready cross-platform telemetry library for React and
 - **🎯 Custom Events**: Track custom business events and user interactions
 - **💥 Crash Reporting**: Comprehensive error detection and reporting with stack traces
 - **🧠 Memory Intelligence**: Enhanced memory tracking with detailed insights
+- **👤 User Profile Management**: Complete user profile system with automatic event enrichment
 
 ### Advanced Capabilities
 - **🌐 Network Resilience**: Robust HTTP client with exponential backoff retry logic
@@ -86,22 +87,22 @@ A comprehensive, production-ready cross-platform telemetry library for React and
 #### **React Web Projects**
 
 ```bash
-npm install react-telemetry-lib
+npm install edge-telemetry-sdk
 # or
-yarn add react-telemetry-lib
+yarn add edge-telemetry-sdk
 ```
 
 **Requirements:**
 - **React**: 17+
 - **React DOM**: 17+
-- **Features**: ✅ Full web support
+- **Features**: ✅ Full web support with user profiles
 
 #### **React Native Projects**
 
 ```bash
-npm install react-telemetry-lib
+npm install edge-telemetry-sdk
 # or
-yarn add react-telemetry-lib
+yarn add edge-telemetry-sdk
 ```
 
 **Install peer dependencies:**
@@ -121,7 +122,7 @@ cd ios && pod install
 - **React Native**: 0.64+
 - **iOS**: 11.0+
 - **Android**: API 24+
-- **Features**: ✅ Full native support
+- **Features**: ✅ Full native support with user profiles
 
 ### 🎯 **When to Use Each Platform**
 
@@ -138,7 +139,7 @@ cd ios && pod install
 
 #### React Web
 ```typescript
-import { TelemetryWeb } from "react-telemetry-lib";
+import { TelemetryWeb } from "edge-telemetry-sdk";
 
 // Initialize in your main App component or index file
 const telemetry = new TelemetryWeb({
@@ -153,7 +154,7 @@ telemetry.log("app_started", { platform: "web" });
 
 #### React Native
 ```typescript
-import { TelemetryNative } from "react-telemetry-lib";
+import { TelemetryNative } from "edge-telemetry-sdk";
 
 // Initialize in your App.js or App.tsx
 const telemetry = new TelemetryNative({
@@ -242,11 +243,54 @@ function App() {
 }
 ```
 
-### 4. Custom Event Tracking
+### 4. Set User Profile (Recommended)
+
+Setting user profile information enriches all telemetry events with user context:
+
+#### React Native
+```typescript
+import { TelemetryNative } from "edge-telemetry-sdk";
+
+const telemetry = new TelemetryNative({
+  endpoint: "https://your-telemetry-endpoint.com/api/telemetry"
+});
+
+// Set complete user profile after login
+await telemetry.setUserProfile({
+  fullName: "John Doe",
+  firstName: "John",
+  lastName: "Doe", 
+  email: "john.doe@example.com",
+  phone: "+1234567890",
+  customAttributes: {
+    subscription: "premium",
+    signupDate: "2024-01-15",
+    accountType: "business"
+  }
+});
+```
+
+#### React Web
+```typescript
+import { TelemetryWeb } from "edge-telemetry-sdk";
+
+const telemetry = new TelemetryWeb({
+  endpoint: "https://your-telemetry-endpoint.com/api/telemetry"
+});
+
+// Set user details
+await telemetry.setUserDetails({
+  fullName: "Jane Smith",
+  email: "jane.smith@example.com",
+  phone: "+1987654321"
+});
+```
+
+### 5. Custom Event Tracking
 
 #### TypeScript
 ```typescript
-// Track custom events
+// Track custom events - user profile data automatically included
 await telemetry.log("user_login", {
   method: "google",
   user_type: "premium",
@@ -263,7 +307,7 @@ await telemetry.log("api_response_time", {
 
 #### JavaScript
 ```javascript
-// Track custom events
+// Track custom events - user profile data automatically included
 telemetry.log("user_login", {
   method: "google",
   user_type: "premium",
@@ -337,21 +381,102 @@ const telemetry = new TelemetryWeb({
 });
 ```
 
-### User Management
+### User Profile Management
 
+#### Complete Profile Setup
 ```typescript
-// Set user information
-await telemetry.setUserId("user_12345");
+// Set complete user profile with all details
+await telemetry.setUserProfile({
+  userId: "user_12345",           // Optional: custom user ID
+  fullName: "John Doe",
+  firstName: "John", 
+  lastName: "Doe",
+  email: "john.doe@example.com",
+  phone: "+1234567890",
+  avatar: "https://example.com/avatar.jpg",
+  customAttributes: {
+    subscription: "premium",
+    signupDate: "2024-01-15",
+    accountType: "business",
+    preferences: {
+      notifications: true,
+      theme: "dark"
+    }
+  }
+});
+```
 
+#### Convenience Methods
+```typescript
+// Set just name information
+await telemetry.setUserName("John Doe", "John", "Doe");
+
+// Set contact information only
+await telemetry.setUserContact("john@example.com", "+1234567890");
+
+// Set user details (alias for setUserProfile)
+await telemetry.setUserDetails({
+  fullName: "John Doe",
+  email: "john@example.com"
+});
+```
+
+#### Update Profile
+```typescript
+// Update specific fields without overwriting others
+await telemetry.updateUserProfile({
+  email: "newemail@example.com",
+  customAttributes: {
+    lastLogin: Date.now(),
+    subscription: "enterprise"
+  }
+});
+
+// Get current profile
+const profile = await telemetry.getUserProfile();
+console.log("Current user profile:", profile);
+```
+
+#### Profile Lifecycle
+```typescript
 // Generate automatic user ID
 const userId = await telemetry.generateUserId();
 console.log("Generated user ID:", userId);
 
-// Track user-specific events
-await telemetry.log("profile_updated", {
-  user_id: userId,
-  fields_changed: ["email", "preferences"]
-});
+// Set custom user ID
+await telemetry.setUserId("custom_user_123");
+
+// Clear profile on logout
+await telemetry.clearUserProfile();
+```
+
+#### Real-World Example
+```typescript
+// Login flow
+async function handleUserLogin(user) {
+  await telemetry.setUserProfile({
+    fullName: user.name,
+    email: user.email,
+    phone: user.phone,
+    customAttributes: {
+      subscription: user.subscription,
+      signupDate: user.createdAt,
+      lastLogin: Date.now()
+    }
+  });
+  
+  // This event will now include all user profile data
+  await telemetry.log("user_login", {
+    method: "email",
+    success: true
+  });
+}
+
+// Logout flow
+async function handleUserLogout() {
+  await telemetry.log("user_logout", { reason: "manual" });
+  await telemetry.clearUserProfile();
+}
 ```
 
 ### Screen Timing
@@ -451,6 +576,53 @@ The SDK collects various event types:
 
 ### Data Schema
 
+#### Event with User Profile Data
+```json
+{
+  "eventName": "user_login",
+  "timestamp": 1704067200000,
+  "type": "event",
+  "userId": "user_1704067200000_abcd1234",
+  "sessionId": "session_1704067200000_x9y8z7w6",
+  "attributes": {
+    "method": "google",
+    "success": true,
+    
+    // User Profile Data (automatically included)
+    "user.id": "user_1704067200000_abcd1234",
+    "user.fullName": "John Doe",
+    "user.firstName": "John",
+    "user.lastName": "Doe",
+    "user.email": "john.doe@example.com",
+    "user.phone": "+1234567890",
+    "user.avatar": "https://example.com/avatar.jpg",
+    "user.createdAt": 1704067200000,
+    "user.updatedAt": 1704067205000,
+    "user.custom.subscription": "premium",
+    "user.custom.signupDate": "2024-01-15",
+    "user.custom.accountType": "business",
+    
+    // Device Information
+    "device.id": "device_1704067200000_a8b9c2d1",
+    "device.platform": "ios",
+    "device.platformVersion": "17.0",
+    "device.model": "iPhone 15 Pro",
+    "device.manufacturer": "Apple",
+    
+    // Network Information
+    "network.type": "wifi",
+    "network.isConnected": true,
+    "network.isInternetReachable": true,
+    
+    // Session Information
+    "session.id": "session_1704067200000_x9y8z7w6",
+    "session.event_count": 1,
+    "timestamp": "2024-01-15T10:30:00.000Z"
+  }
+}
+```
+
+#### Event without User Profile
 ```json
 {
   "eventName": "screen.view",
@@ -461,27 +633,14 @@ The SDK collects various event types:
   "attributes": {
     "screen.name": "ProductDetails",
     "previous.screen": "ProductList",
-    "app": {
-      "name": "MyApp",
-      "version": "1.0.0",
-      "packageName": "com.example.myapp"
-    },
-    "device": {
-      "id": "device_1704067200000_a8b9c2d1",
-      "platform": "ios",
-      "platformVersion": "17.0",
-      "model": "iPhone 15 Pro",
-      "manufacturer": "Apple"
-    },
-    "network": {
-      "type": "wifi",
-      "isConnected": true,
-      "isInternetReachable": true
-    },
-    "session": {
-      "startTime": 1704067200000,
-      "duration": 45000
-    }
+    
+    // Only basic user ID when no profile is set
+    "user.id": "user_1704067200000_abcd1234",
+    
+    "device.id": "device_1704067200000_a8b9c2d1",
+    "device.platform": "ios",
+    "session.id": "session_1704067200000_x9y8z7w6",
+    "timestamp": "2024-01-15T10:30:00.000Z"
   }
 }
 ```
