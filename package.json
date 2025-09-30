@@ -1,0 +1,54 @@
+{
+  "name": "react-telemetry-lib",
+  "version": "1.0.0",
+  "description": "Cross-platform React telemetry library (web + React Native)",
+  "private": false,
+  "main": "dist/index.web.js",
+  "module": "dist/index.web.js",
+  "types": "dist/index.web.d.ts",
+  "react-native": "dist/index.native.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.web.d.ts",
+      "react-native": "./dist/index.native.js",
+      "import": "./dist/index.web.js",
+      "require": "./dist/index.web.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "react": ">=17",
+    "react-dom": ">=17"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "vite",
+    "clean": "rimraf dist",
+    "prepare": "npm run build",
+    "test": "echo \"No tests yet\" && exit 0"
+  },
+  "keywords": [
+    "react",
+    "telemetry",
+    "analytics",
+    "react-native",
+    "library"
+  ],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "@types/node": "^24.4.0",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.2",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5",
+    "vite-plugin-dts": "^4.5.4"
+  },
+  "dependencies": {
+    "@react-native-async-storage/async-storage": "^2.2.0"
+  }
+}
