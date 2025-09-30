@@ -90,10 +90,10 @@ jobs:
           # Create a temporary branch for rewriting (cleanup any existing one first)
           TEMP_BRANCH="temp-rewrite-$CURRENT_BRANCH"
           git branch -D $TEMP_BRANCH 2>/dev/null || true
-          git checkout -b $TEMP_BRANCH
           
-          # Reset to the last destination commit if branch exists, otherwise to root
+          # Reset to the last destination commit if branch exists, otherwise create orphan
           if git show-ref --verify --quiet refs/remotes/destination/$CURRENT_BRANCH; then
+            git checkout -b $TEMP_BRANCH
             git reset --hard destination/$CURRENT_BRANCH
           else
             # For new branches, create an orphan branch
