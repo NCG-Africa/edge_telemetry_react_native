@@ -1,11 +1,11 @@
 # GitHub Actions Mirror Setup Guide
 
-This guide will help you set up the GitHub Action to automatically mirror commits from your source repository to your destination repository with author rewriting.
+This guide will help you set up the GitHub Action to automatically mirror commits from KiplangatSang/react_telemetry to NCG-Africa/edge_telemetry_react_native with author rewriting.
 
 ## 📋 Prerequisites
 
-- Admin access to the source repository: `https://github.com/NCG-Africa/edge_telemetry_react_native.git`
-- Admin access to the destination repository: `https://github.com/KiplangatSang/react_telemetry.git`
+- Admin access to the source repository: `https://github.com/KiplangatSang/react_telemetry.git`
+- Admin access to the destination repository: `https://github.com/NCG-Africa/edge_telemetry_react_native.git`
 - A GitHub account with Personal Access Token creation permissions
 
 ## 🔧 Step 1: Create Personal Access Token
@@ -39,25 +39,19 @@ This guide will help you set up the GitHub Action to automatically mirror commit
 
 ## 🔐 Step 2: Configure GitHub Secrets
 
-### In the SOURCE repository (NCG-Africa/edge_telemetry_react_native):
+### In the SOURCE repository (KiplangatSang/react_telemetry):
 
 1. **Navigate to Repository Settings**:
-   - Go to `https://github.com/NCG-Africa/edge_telemetry_react_native`
+   - Go to `https://github.com/KiplangatSang/react_telemetry`
    - Click "Settings" tab
    - Click "Secrets and variables" → "Actions"
 
-2. **Add Repository Secrets**:
+2. **Add Repository Secret**:
    
-   **Secret 1: DEST_REPO_TOKEN**
+   **Secret: TOKEN**
    - Click "New repository secret"
-   - Name: `DEST_REPO_TOKEN`
+   - Name: `TOKEN`
    - Value: Paste the Personal Access Token from Step 1
-   - Click "Add secret"
-
-   **Secret 2: DEST_REPO_URL** (Optional - already hardcoded in workflow)
-   - Click "New repository secret"
-   - Name: `DEST_REPO_URL`
-   - Value: `https://github.com/KiplangatSang/react_telemetry.git`
    - Click "Add secret"
 
 ## ⚙️ Step 3: Configure Your Git Identity
@@ -74,11 +68,7 @@ env:
 
 ## 📁 Step 4: Deploy the Workflow
 
-1. **Copy the workflow file** from this repository to your source repository:
-   - Copy `.github/workflows/mirror-commits.yml`
-   - Place it in the same path in `NCG-Africa/edge_telemetry_react_native`
-
-2. **Commit and push** the workflow file to the source repository
+The workflow is already in this repository (`KiplangatSang/react_telemetry`). Just commit and push any changes.
 
 ## 🧪 Step 5: Test the Setup
 
