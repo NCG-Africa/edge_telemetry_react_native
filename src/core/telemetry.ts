@@ -94,6 +94,19 @@ export interface DeviceInfo {
     };
 }
 
+export interface UserProfile {
+    userId?: string;
+    fullName?: string;
+    firstName?: string;
+    lastName?: string;
+    email?: string;
+    phone?: string;
+    avatar?: string;
+    customAttributes?: Record<string, any>;
+    createdAt?: number;
+    updatedAt?: number;
+}
+
 
 type Opts = {
     sender?: Sender;
@@ -135,6 +148,7 @@ export class Telemetry {
 
     // session / user state
     private userId?: string | null = undefined;
+    private userProfile?: UserProfile = undefined;
     private sessionId: string;
     private sessionStart: number;
     private visitedScreens: Set<string> = new Set();
@@ -328,8 +342,104 @@ export class Telemetry {
         return `user_${Date.now()}_${randomnString.slice(0, 8)}`;
     }
 
-    // Optional: set user profile fields if you want to extend later
-    // public setUserProfile(...) { ... }
+    // ---------- User Profile Management ----------
+
+    /**
+     * Set complete user profile information
+     */
+    public setUserProfile(profile: Partial<UserProfile>): void {
+        const now = Date.now();
+        
+        // If this is a new profile or userId changed, set createdAt
+        const isNewProfile = !this.userProfile || (profile.userId && profile.userId !== this.userProfile.userId);
+        
+        this.userProfile = {
+            ...this.userProfile,
+            ...profile,
+            updatedAt: now,
+            ...(isNewProfile && { createdAt: now })
+        };
+
+        // Update userId if provided in profile
+        if (profile.userId) {
+            this.userId = profile.userId;
+        } else if (this.userProfile && !this.userProfile.userId) {
+            // Set current userId in profile if not provided
+            this.userProfile.userId = this.userId || undefined;
+        }
+
+        console.log("Telemetry: User profile updated", this.userProfile);
+    }
+
+    /**
+     * Set user details with individual parameters
+     */
+    public setUserDetails(details: {
+        fullName?: string;
+        firstName?: string;
+        lastName?: string;
+        email?: string;
+        phone?: string;
+        avatar?: string;
+        customAttributes?: Record<string, any>;
+    }): void {
+        this.setUserProfile(details);
+    }
+
+    /**
+     * Update specific user profile fields
+     */
+    public updateUserProfile(updates: Partial<UserProfile>): void {
+        if (!this.userProfile) {
+            // If no profile exists, create one
+            this.setUserProfile(updates);
+            return;
+        }
+
+        this.userProfile = {
+            ...this.userProfile,
+            ...updates,
+            updatedAt: Date.now()
+        };
+
+        console.log("Telemetry: User profile updated", this.userProfile);
+    }
+
+    /**
+     * Get current user profile
+     */
+    public getUserProfile(): UserProfile | undefined {
+        return this.userProfile;
+    }
+
+    /**
+     * Clear user profile data
+     */
+    public clearUserProfile(): void {
+        this.userProfile = undefined;
+        console.log("Telemetry: User profile cleared");
+    }
+
+    /**
+     * Set user name (convenience method)
+     */
+    public setUserName(fullName: string, firstName?: string, lastName?: string): void {
+        this.setUserProfile({
+            fullName,
+            firstName,
+            lastName
+        });
+    }
+
+    /**
+     * Set user contact info (convenience method)
+     */
+    public setUserContact(email?: string, phone?: string): void {
+        this.setUserProfile({
+            email,
+            phone
+        });
+    }
 
     // ---------- Logging APIs ----------
 
@@ -383,6 +493,28 @@ export class Telemetry {
             'session.event_count': this.eventCount,
             'timestamp': new Date().toISOString(),
         };
+
+        // Add user profile data if available
+        if (this.userProfile) {
+            const userProfileData = {
+                'user.fullName': this.userProfile.fullName,
+                'user.firstName': this.userProfile.firstName,
+                'user.lastName': this.userProfile.lastName,
+                'user.email': this.userProfile.email,
+                'user.phone': this.userProfile.phone,
+                'user.avatar': this.userProfile.avatar,
+                'user.createdAt': this.userProfile.createdAt,
+                'user.updatedAt': this.userProfile.updatedAt,
+                ...this.flattenWithPrefix('user.custom', this.userProfile.customAttributes || {})
+            };
+
+            // Only add non-undefined values
+            Object.entries(userProfileData).forEach(([key, value]) => {
+                if (value !== undefined) {
+                    attributes[key] = value;
+                }
+            });
+        }
 
         const e: TelemetryEvent = {
             eventName: name,

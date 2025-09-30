@@ -1,4 +1,4 @@
-import { error } from "console";
+// React Native telemetry implementation
 
 
 export class TelemetryNative {
@@ -122,6 +122,70 @@ export class TelemetryNative {
         return inst.generateUserId();
     }
 
+    // ---------- User Profile Management ----------
+
+    async setUserProfile(profile: {
+        userId?: string;
+        fullName?: string;
+        firstName?: string;
+        lastName?: string;
+        email?: string;
+        phone?: string;
+        avatar?: string;
+        customAttributes?: Record<string, any>;
+    }) {
+        const inst = await this.instancePromise;
+        inst.setUserProfile(profile);
+    }
+
+    async setUserDetails(details: {
+        fullName?: string;
+        firstName?: string;
+        lastName?: string;
+        email?: string;
+        phone?: string;
+        avatar?: string;
+        customAttributes?: Record<string, any>;
+    }) {
+        const inst = await this.instancePromise;
+        inst.setUserDetails(details);
+    }
+
+    async updateUserProfile(updates: {
+        userId?: string;
+        fullName?: string;
+        firstName?: string;
+        lastName?: string;
+        email?: string;
+        phone?: string;
+        avatar?: string;
+        customAttributes?: Record<string, any>;
+    }) {
+        const inst = await this.instancePromise;
+        inst.updateUserProfile(updates);
+    }
+
+    async getUserProfile() {
+        const inst = await this.instancePromise;
+        return inst.getUserProfile();
+    }
+
+    async clearUserProfile() {
+        const inst = await this.instancePromise;
+        inst.clearUserProfile();
+    }
+
+    async setUserName(fullName: string, firstName?: string, lastName?: string) {
+        const inst = await this.instancePromise;
+        inst.setUserName(fullName, firstName, lastName);
+    }
+
+    async setUserContact(email?: string, phone?: string) {
+        const inst = await this.instancePromise;
+        inst.setUserContact(email, phone);
+    }
+
+    // ---------- Screen Management ----------
 
     async screenStart(name: string) {
         const inst = await this.instancePromise;

@@ -131,6 +131,79 @@ export class TelemetryWeb {
         return inst.flush();
     }
 
+    // ---------- User Profile Management ----------
+
+    async setUserProfile(profile: {
+        userId?: string;
+        fullName?: string;
+        firstName?: string;
+        lastName?: string;
+        email?: string;
+        phone?: string;
+        avatar?: string;
+        customAttributes?: Record<string, any>;
+    }) {
+        const inst = await this.instancePromise;
+        inst.setUserProfile(profile);
+    }
+
+    async setUserDetails(details: {
+        fullName?: string;
+        firstName?: string;
+        lastName?: string;
+        email?: string;
+        phone?: string;
+        avatar?: string;
+        customAttributes?: Record<string, any>;
+    }) {
+        const inst = await this.instancePromise;
+        inst.setUserDetails(details);
+    }
+
+    async updateUserProfile(updates: {
+        userId?: string;
+        fullName?: string;
+        firstName?: string;
+        lastName?: string;
+        email?: string;
+        phone?: string;
+        avatar?: string;
+        customAttributes?: Record<string, any>;
+    }) {
+        const inst = await this.instancePromise;
+        inst.updateUserProfile(updates);
+    }
+
+    async getUserProfile() {
+        const inst = await this.instancePromise;
+        return inst.getUserProfile();
+    }
+
+    async clearUserProfile() {
+        const inst = await this.instancePromise;
+        inst.clearUserProfile();
+    }
+
+    async setUserName(fullName: string, firstName?: string, lastName?: string) {
+        const inst = await this.instancePromise;
+        inst.setUserName(fullName, firstName, lastName);
+    }
+
+    async setUserContact(email?: string, phone?: string) {
+        const inst = await this.instancePromise;
+        inst.setUserContact(email, phone);
+    }
+
+    async setUserId(id: string) {
+        const inst = await this.instancePromise;
+        inst.setUserId(id);
+    }
+
+    async generateUserId() {
+        const inst = await this.instancePromise;
+        return inst.generateUserId();
+    }
+
     async shutdown() {
         const inst = await this.instancePromise;
         return inst.shutdown();
