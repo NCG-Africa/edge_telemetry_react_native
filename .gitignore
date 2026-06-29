@@ -90,3 +90,8 @@ dist/
 
 # Packed tarballs (`npm pack` output)
 *.tgz
+
+# Local agent tooling (Claude Code / skills) — not part of the published SDK
+.agents/
+.claude/skills/
+skills-lock.json
