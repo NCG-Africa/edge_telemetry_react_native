@@ -94,6 +94,18 @@ describe("log()", () => {
   });
 });
 
+describe("id generation", () => {
+  it("produces well-formed session/user ids without the injectable abstraction", () => {
+    const t = new Telemetry({ flushIntervalMs: 0 });
+
+    expect(t.getSessionId()).toMatch(/^session_\d+_[a-z0-9]{1,8}$/);
+    expect(t.generateUserId()).toMatch(/^user_\d+_[a-z0-9]{1,8}$/);
+
+    // distinct user ids across calls
+    expect(t.generateUserId()).not.toBe(t.generateUserId());
+  });
+});
+
 describe("flush() retry/persistence", () => {
   it("calls the sender exactly once on success (no core-level retry layer)", async () => {
     const sender = { send: vi.fn(async () => undefined), onFailure: vi.fn(async () => undefined) };

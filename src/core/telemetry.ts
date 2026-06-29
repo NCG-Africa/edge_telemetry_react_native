@@ -1,4 +1,5 @@
 import { NavigationTracker } from "../adapters/navigationTracker";
+import { generateId } from "./utils/uuid";
 
 export type TelemetryEvent = {
     eventName: string;
@@ -66,10 +67,6 @@ export interface NavigationHandler {
 }
 
 
-export interface RandomStringGenerator {
-    generate(): String;
-}
-
 export interface DeviceInfo {
     app: {
         name: string;
@@ -115,7 +112,6 @@ type Opts = {
     endpoint?: string;
     sessionId?: string;
     userId?: string | null;
-    RandomnStringGenerator?: RandomStringGenerator;
     deviceInfoHandler?: DeviceInfoHandler;
     networkInfoHandler?: NetworkInfoHandler;
 };
@@ -131,7 +127,6 @@ export class Telemetry {
     private flushIntervalMs: number;
     private intervalId: any = null;
     private endpoint?: string;
-    private generateRandomString?: RandomStringGenerator;
     private crashHandler?: CrashHandler;
     private navigationTracker?: NavigationTracker;
 
@@ -158,9 +153,6 @@ export class Telemetry {
         this.batchSize = opts?.batchSize ?? 2;
         this.flushIntervalMs = opts?.flushIntervalMs ?? 10000;
         this.endpoint = opts?.endpoint;
-        this.generateRandomString = opts?.RandomnStringGenerator ?? {
-            generate: () => Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
-        };
 
         // start a session
         this.sessionId = opts?.sessionId ?? this.generateSessionId();
@@ -248,8 +240,7 @@ export class Telemetry {
 
 
     private generateSessionId(): string {
-        const randomnString = this.generateRandomString?.generate() ?? Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-        return `session_${Date.now()}_${randomnString.slice(0, 8)}`;
+        return `session_${Date.now()}_${generateId().slice(0, 8)}`;
     }
 
     public setSessionId(id: string) {
@@ -276,8 +267,7 @@ export class Telemetry {
     }
 
     public generateUserId(): string {
-        const randomnString = this.generateRandomString?.generate() ?? Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15);
-        return `user_${Date.now()}_${randomnString.slice(0, 8)}`;
+        return `user_${Date.now()}_${generateId().slice(0, 8)}`;
     }
 
     // ---------- User Profile Management ----------

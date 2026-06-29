@@ -15,7 +15,6 @@ export class TelemetryWeb extends TelemetryBase {
         this.instancePromise = (async () => {
             const { Telemetry } = await import("./core/telemetry");
             const { webSender } = await import("./adapters/webSender");
-            const { generateId } = await import("./core/utils/uuid");
 
             const { DeviceInfoTrackerWeb } = await import("./adapters/web/deviceInfo.web");
             const { NetworkInfoTrackerWeb } = await import("./adapters/web/networkInfo.web");
@@ -29,7 +28,6 @@ export class TelemetryWeb extends TelemetryBase {
                 batchSize: opts?.batchSize,
                 flushIntervalMs: opts?.flushIntervalMs,
                 endpoint: opts?.endpoint,
-                RandomnStringGenerator: { generate: generateId },
                 deviceInfoHandler: deviceInfoTrackerWeb,
                 networkInfoHandler: networkInfoTrackerWeb,
             });
