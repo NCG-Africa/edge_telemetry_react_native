@@ -200,112 +200,53 @@ export class Telemetry {
 
     // ---------- Session & User APIs ----------
 
-    public trackErrors(crashHandler: CrashHandler): Promise<void> {
-
-        console.log("Telemetry: attaching crash handler");
+    public trackErrors(crashHandler: CrashHandler) {
         this.crashHandler = crashHandler;
-        if (this.crashHandler) {
-            console.log("Telemetry: attaching crash handler");
-            void this.crashHandler.attach().catch((err) => {
-                console.warn("Telemetry crashHandler attach failed:", err);
-            });
-        }
-        if (this.crashHandler) {
-            return this.crashHandler.attach();
-        }
-
-        console.warn("Telemetry: no crash handler provided");
-        return Promise.resolve();
-    }
-
-    async getDeviceInfo(deviceInfoHandler: DeviceInfoHandler) {
-
-
-        console.log(" Telemetry: starting device info tracking");
-
-        return new Promise((resolve) => {
-
-            this.deviceInfoHandler = deviceInfoHandler;
-            if (this.deviceInfoHandler) {
-                console.log("Telemetry: starting device info tracking");
-                void this.deviceInfoHandler.start(this).catch((err) => {
-                    console.warn("Telemetry deviceInfo tracking start failed:", err);
-                });
-            }
-        }
-        );
-    }
-
-    async getNetworkInfo(networkInfoHandler: NetworkInfoHandler) {
-        console.log("Telemetry: Launching network info tracking");
-        return new Promise((resolve) => {
-            this.networkInfoHandler = networkInfoHandler;
-            if (this.networkInfoHandler) {
-                console.log("Telemetry: starting network info tracking");
-                void this.networkInfoHandler.start(this).catch((err) => {
-                    console.warn("Telemetry networkInfoHandler start failed:", err);
-                });
-            }
-        }
-        );
-    }
-
-
-    public trackFrameDrops(frameDropsHandler: FrameDropsHandler): Promise<void> {
-        console.log(" Telemetry: starting frame drop tracking");
-
-        return new Promise((resolve) => {
-            this.frameDropsHandler = frameDropsHandler;
-            if (this.frameDropsHandler) {
-                console.log("Telemetry: starting frame drop tracking");
-                void this.frameDropsHandler.start().catch((err) => {
-                    console.warn("Telemetry frameDropsHandler start failed:", err);
-                });
-            }
-        }
-        );
-    }
-    public trackNetworkRequests(networkHandler: NetworkHandler): Promise<void> {
-        console.log(" Telemetry: starting network request tracking");
-
-        return new Promise((resolve) => {
-            this.networkHandler = networkHandler;
-            if (this.networkHandler) {
-                console.log("Telemetry: starting network request tracking");
-                void this.networkHandler.start().catch((err) => {
-                    console.warn("Telemetry networkHandler start failed:", err);
-                });
-            }
-            resolve();
+        void crashHandler.attach().catch((err) => {
+            console.warn("Telemetry crashHandler attach failed:", err);
         });
     }
-    public trackMemoryUsage(memoryHandler: MemoryHandler): Promise<void> {
-        console.log(" Telemetry: starting memory usage tracking");
-        return new Promise((resolve) => {
-            this.memoryHandler = memoryHandler;
-            if (this.memoryHandler) {
-                console.log("Telemetry: starting memory usage tracking");
-                void this.memoryHandler.recordMemoryUsage().catch((err) => {
-                    console.warn("Telemetry memoryHandler recordMemoryUsage failed:", err);
-                });
-            }
-            resolve();
-        }
-        );
+
+    getDeviceInfo(deviceInfoHandler: DeviceInfoHandler) {
+        this.deviceInfoHandler = deviceInfoHandler;
+        void deviceInfoHandler.start(this).catch((err) => {
+            console.warn("Telemetry deviceInfo tracking start failed:", err);
+        });
     }
-    public autoTrackNavigation(navigationHandler?: NavigationHandler): Promise<void> {
-        console.log(" Telemetry: starting navigation tracking");
-        return new Promise((resolve) => {
-            this.navigationHandler = navigationHandler;
-            if (this.navigationHandler) {
-                console.log("Telemetry: starting navigation tracking");
-                void this.navigationHandler.start().catch((err) => {
-                    console.warn("Telemetry navigationHandler recordMemoryUsage failed:", err);
-                });
-            }
-            resolve();
-        }
-        );
+
+    getNetworkInfo(networkInfoHandler: NetworkInfoHandler) {
+        this.networkInfoHandler = networkInfoHandler;
+        void networkInfoHandler.start(this).catch((err) => {
+            console.warn("Telemetry networkInfoHandler start failed:", err);
+        });
+    }
+
+    public trackFrameDrops(frameDropsHandler: FrameDropsHandler) {
+        this.frameDropsHandler = frameDropsHandler;
+        void frameDropsHandler.start().catch((err) => {
+            console.warn("Telemetry frameDropsHandler start failed:", err);
+        });
+    }
+
+    public trackNetworkRequests(networkHandler: NetworkHandler) {
+        this.networkHandler = networkHandler;
+        void networkHandler.start().catch((err) => {
+            console.warn("Telemetry networkHandler start failed:", err);
+        });
+    }
+
+    public trackMemoryUsage(memoryHandler: MemoryHandler) {
+        this.memoryHandler = memoryHandler;
+        void memoryHandler.recordMemoryUsage().catch((err) => {
+            console.warn("Telemetry memoryHandler recordMemoryUsage failed:", err);
+        });
+    }
+
+    public autoTrackNavigation(navigationHandler?: NavigationHandler) {
+        this.navigationHandler = navigationHandler;
+        void navigationHandler?.start().catch((err) => {
+            console.warn("Telemetry navigationHandler start failed:", err);
+        });
     }
 
 
@@ -454,13 +395,13 @@ export class Telemetry {
         let networkInfo: Record<string, any> = {};
 
         try {
-            deviceInfo = (this.getDeviceInfo ? await this.getDeviceInfo(this.deviceInfoHandler) : {}) || {};
+            deviceInfo = (await this.deviceInfoHandler?.collect()) || {};
         } catch (err) {
             console.warn("Telemetry: failed to fetch device info", err);
         }
 
         try {
-            networkInfo = (this.getNetworkInfo ? await this.getNetworkInfo(this.networkInfoHandler) : {}) || {};
+            networkInfo = (await this.networkInfoHandler?.collect()) || {};
         } catch (err) {
             console.warn("Telemetry: failed to fetch network info", err);
         }
