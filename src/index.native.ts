@@ -16,7 +16,7 @@ export class TelemetryNative extends TelemetryBase {
             const { nativeSender } = await import("./adapters/nativeSender");
 
             const { replayFailedNative } = await import("./adapters/nativeSender");
-            const { generateId } = await import("./core/utils/uuid.native");
+            const { generateId } = await import("./core/utils/uuid");
             const { DeviceInfoTrackerNative } = await import("./adapters/native/deviceInfo.native");
             const { NetworkInfoTrackerNative } = await import("./adapters/native/networkInfo.native");
 
