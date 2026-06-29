@@ -1,6 +1,8 @@
 // src/index.web.ts
 import { TelemetryBase } from "./index.base";
 
+export { createTelemetry, type TelemetryOpts } from "./createTelemetry.web";
+
 export class TelemetryWeb extends TelemetryBase {
     constructor(opts?: {
         sender?: any;

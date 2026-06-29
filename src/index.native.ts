@@ -1,6 +1,8 @@
 // React Native telemetry implementation
 import { TelemetryBase } from "./index.base";
 
+export { createTelemetry, type TelemetryOpts } from "./createTelemetry.native";
+
 export class TelemetryNative extends TelemetryBase {
     constructor(opts?: {
         sender?: any;
