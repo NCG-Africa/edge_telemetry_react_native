@@ -133,6 +133,21 @@ describe("screen tracking", () => {
   });
 });
 
+describe("recordMetric", () => {
+  it("still emits via log, with the dead metric counter/accessor removed", () => {
+    const t = new Telemetry({ flushIntervalMs: 0 });
+    const logSpy = vi.spyOn(t, "log").mockResolvedValue(undefined);
+
+    t.recordMetric("load_time", 123, { page: "home" });
+
+    expect(logSpy).toHaveBeenCalledWith(
+      "load_time",
+      expect.objectContaining({ value: 123, metric: true, page: "home" }),
+    );
+    expect((t as any).getMetricCount).toBeUndefined();
+  });
+});
+
 describe("navigation route changes", () => {
   it("emits exactly one event (navigation.route_change) per route change", () => {
     const t = new Telemetry({ flushIntervalMs: 0 });

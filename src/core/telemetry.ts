@@ -148,7 +148,6 @@ export class Telemetry {
     private sessionId: string;
     private sessionStart: number;
     private eventCount = 0;
-    private metricCount = 0;
 
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
@@ -469,10 +468,9 @@ export class Telemetry {
 
 
     /**
-     * Explicit metric helper (optional convenience) - increments metric counter.
+     * Explicit metric helper (optional convenience).
      */
     recordMetric(name: string, value: number, data?: Record<string, any>) {
-        this.metricCount++;
         this.log(name, { ...data, value, metric: true });
     }
 
@@ -521,10 +519,6 @@ export class Telemetry {
     // Expose some internal counters (optional)
     getEventCount() {
         return this.eventCount;
-    }
-
-    getMetricCount() {
-        return this.metricCount;
     }
 
     recordRouteChange(from: string, to: string) {
