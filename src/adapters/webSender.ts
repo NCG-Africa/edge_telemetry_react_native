@@ -54,13 +54,9 @@ async function sendWithRetry(endpoint: string, events: TelemetryEvent[], retryCo
 export function webSender(endpoint: string = DEFAULT_ENDPOINT, retryCount: number = 3): Sender {
     return {
         async send(events: TelemetryEvent[]) {
-            try {
-                await sendWithRetry(endpoint, events, retryCount);
-            } catch (err) {
-                // persist if still failing
-                persistFailed(events);
-                throw err;
-            }
+            // Retry + backoff here; persistence on final failure is the core flush()'s
+            // job via onFailure() — kept single, so a failed batch isn't persisted twice.
+            await sendWithRetry(endpoint, events, retryCount);
         },
         async onFailure(events: TelemetryEvent[]) {
             persistFailed(events);

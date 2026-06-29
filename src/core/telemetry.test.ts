@@ -93,3 +93,43 @@ describe("log()", () => {
     expect(network.start).not.toHaveBeenCalled();
   });
 });
+
+describe("flush() retry/persistence", () => {
+  it("calls the sender exactly once on success (no core-level retry layer)", async () => {
+    const sender = { send: vi.fn(async () => undefined), onFailure: vi.fn(async () => undefined) };
+    const t = new Telemetry({ sender, batchSize: 10, flushIntervalMs: 0 });
+
+    await t.log("e");
+    await t.flush();
+
+    expect(sender.send).toHaveBeenCalledTimes(1);
+    expect(sender.onFailure).not.toHaveBeenCalled();
+  });
+
+  it("on failure: sends once (core does not retry) and persists once via onFailure", async () => {
+    const sender = {
+      send: vi.fn(async () => { throw new Error("net"); }),
+      onFailure: vi.fn(async () => undefined),
+    };
+    const t = new Telemetry({ sender, batchSize: 10, flushIntervalMs: 0 });
+
+    await t.log("e");
+    await expect(t.flush()).rejects.toThrow("net");
+
+    expect(sender.send).toHaveBeenCalledTimes(1);     // retry lives in the sender, not here
+    expect(sender.onFailure).toHaveBeenCalledTimes(1); // persisted exactly once
+  });
+
+  it("requeues the batch if onFailure persistence also fails", async () => {
+    const sender = {
+      send: vi.fn(async () => { throw new Error("net"); }),
+      onFailure: vi.fn(async () => { throw new Error("persist"); }),
+    };
+    const t = new Telemetry({ sender, batchSize: 10, flushIntervalMs: 0 });
+
+    await t.log("e");
+    await expect(t.flush()).rejects.toThrow("net");
+
+    expect(t.getQueue()).toHaveLength(1); // not lost
+  });
+});
