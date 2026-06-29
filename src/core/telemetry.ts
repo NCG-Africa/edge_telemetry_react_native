@@ -1,4 +1,5 @@
 import { NavigationTracker } from "../adapters/navigationTracker";
+import { ScreenTimingTracker } from "../adapters/screenTiming";
 import { generateId } from "./utils/uuid";
 
 export type TelemetryEvent = {
@@ -129,6 +130,8 @@ export class Telemetry {
     private endpoint?: string;
     private crashHandler?: CrashHandler;
     private navigationTracker?: NavigationTracker;
+    // single screen-tracking API (timed); used by the native screenStart/screenEnd
+    public screens: ScreenTimingTracker;
 
     private networkInfoHandler: NetworkInfoHandler;
     private deviceInfoHandler: DeviceInfoHandler;
@@ -144,7 +147,6 @@ export class Telemetry {
     private userProfile?: UserProfile = undefined;
     private sessionId: string;
     private sessionStart: number;
-    private visitedScreens: Set<string> = new Set();
     private eventCount = 0;
     private metricCount = 0;
 
@@ -172,6 +174,7 @@ export class Telemetry {
         }
 
         this.navigationTracker = new NavigationTracker(this);
+        this.screens = new ScreenTimingTracker(this);
 
         this.deviceInfoHandler = opts?.deviceInfoHandler ?? {
             start: async () => Promise.resolve(),
@@ -255,7 +258,6 @@ export class Telemetry {
     public startNewSession() {
         this.sessionId = this.generateSessionId();
         this.sessionStart = Date.now();
-        this.visitedScreens.clear();
     }
 
     public setUserId(id: string) {
@@ -520,16 +522,7 @@ export class Telemetry {
         await this.flush();
     }
 
-    // ---------- Screen tracking helpers (simple) ----------
-    public startScreen(screenName: string) {
-        this.visitedScreens.add(screenName);
-        this.log("screen_view", { "screen.name": screenName });
-    }
-
-    public endScreen(screenName: string) {
-        // no timing stored here by default — external ScreenTimingTracker can call log with duration
-        this.log("screen_end", { "screen.name": screenName });
-    }
+    // Screen tracking lives in ScreenTimingTracker (this.screens), the single timed API.
 
     // Expose some internal counters (optional)
     getEventCount() {

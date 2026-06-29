@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { Telemetry, type TelemetryEvent } from "./telemetry";
+import { ScreenTimingTracker } from "../adapters/screenTiming";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -103,6 +104,32 @@ describe("id generation", () => {
 
     // distinct user ids across calls
     expect(t.generateUserId()).not.toBe(t.generateUserId());
+  });
+});
+
+describe("screen tracking", () => {
+  it("exposes a single timed ScreenTimingTracker as `screens`; core has no untimed methods", () => {
+    const t = new Telemetry({ flushIntervalMs: 0 });
+    expect(t.screens).toBeInstanceOf(ScreenTimingTracker);
+    expect((t as any).startScreen).toBeUndefined();
+    expect((t as any).endScreen).toBeUndefined();
+  });
+
+  it("emits one screen_view + one performance.screen_duration per screen, no screen_end", () => {
+    const t = new Telemetry({ flushIntervalMs: 0 });
+    const logSpy = vi.spyOn(t, "log").mockResolvedValue(undefined);
+
+    t.screens.startScreen("Home");
+    t.screens.endScreen("Home");
+
+    const calls = logSpy.mock.calls.map((c) => c[0]);
+    expect(calls).toEqual(["screen_view", "performance.screen_duration"]);
+    expect(calls).not.toContain("screen_end");
+
+    expect(logSpy).toHaveBeenCalledWith("screen_view", { "screen.name": "Home" });
+    const durationCall = logSpy.mock.calls.find((c) => c[0] === "performance.screen_duration")!;
+    expect(durationCall[1]).toMatchObject({ "screen.name": "Home" });
+    expect(typeof (durationCall[1] as any)["duration_ms"]).toBe("number");
   });
 });
 
