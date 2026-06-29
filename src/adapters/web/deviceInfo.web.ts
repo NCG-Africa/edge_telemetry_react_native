@@ -42,8 +42,8 @@ export class DeviceInfoTrackerWeb {
     }
 
     async start(telemetry: Telemetry): Promise<void> {
+        // context-only adapter — collect() feeds the Context block on every event;
+        // no standalone device_info event (ADR-0002)
         this.telemetry = telemetry;
-        const info = await this.collect();
-        this.telemetry.log("device_info", info);
     }
 }

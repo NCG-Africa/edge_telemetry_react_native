@@ -5,6 +5,7 @@ export { createTelemetry, type TelemetryOpts } from "./createTelemetry.web";
 
 export class TelemetryWeb extends TelemetryBase {
     constructor(opts?: {
+        apiKey?: string;
         sender?: any;
         batchSize?: number;
         flushIntervalMs?: number;
@@ -23,13 +24,15 @@ export class TelemetryWeb extends TelemetryBase {
             const deviceInfoTrackerWeb = new DeviceInfoTrackerWeb();
             const networkInfoTrackerWeb = new NetworkInfoTrackerWeb();
 
-            const sender = webSender(opts?.endpoint);
+            const sender = opts?.sender ?? webSender(opts?.endpoint, opts?.apiKey);
 
             const telemetry = new Telemetry({
                 sender,
                 batchSize: opts?.batchSize,
                 flushIntervalMs: opts?.flushIntervalMs,
                 endpoint: opts?.endpoint,
+                // no id suffix on web: the contract suffix is ios|android only.
+                // device.platform="web" still rides as an attribute from the adapter.
                 deviceInfoHandler: deviceInfoTrackerWeb,
                 networkInfoHandler: networkInfoTrackerWeb,
             });
