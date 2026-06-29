@@ -1,15 +1,14 @@
 // React Native telemetry implementation
+import { TelemetryBase } from "./index.base";
 
-
-export class TelemetryNative {
-    private instancePromise: Promise<any>;
-
+export class TelemetryNative extends TelemetryBase {
     constructor(opts?: {
         sender?: any;
         batchSize?: number;
         flushIntervalMs?: number;
         endpoint?: string;
     }) {
+        super();
 
         console.log("🌍 Running Native Telemetry");
         this.instancePromise = (async () => {
@@ -26,7 +25,6 @@ export class TelemetryNative {
 
             const sender = opts?.sender ?? nativeSender(opts?.endpoint);
 
-
             const telemetry = new Telemetry({
                 sender,
                 batchSize: opts?.batchSize,
@@ -42,23 +40,22 @@ export class TelemetryNative {
                 console.warn("Native replay failed:", err);
             });
 
-            // … attach interceptors, trackers, crash handlers, etc.
             return telemetry;
         })();
 
         this.trackErrors().catch(err => {
-            console.warn("Native TelemetryNative trackErrors failed:", err);
+            console.warn("Native trackErrors failed:", err);
         });
 
         this.trackFrameDrops().catch(err => {
-            console.log("Native trackFrameDrops(frameDropsHandler: FrameDropsHandler) errors", err);
-        })
+            console.log("Native trackFrameDrops errors", err);
+        });
         this.trackNetworkRequests().catch(err => {
-            console.log("Native trackNetworkRequests(networkHandler: NetworkHandler) errors", err);
-        })
+            console.log("Native trackNetworkRequests errors", err);
+        });
         this.trackMemoryUsage().catch(err => {
-            console.log("Native rackMemoryUsage(memoryHandler: MemoryHandler) errors", err);
-        })
+            console.log("Native trackMemoryUsage errors", err);
+        });
     }
 
     async getDeviceInfo() {
@@ -75,114 +72,25 @@ export class TelemetryNative {
         return inst.getNetworkInfo(networkInfoTrackerNative);
     }
 
-    async trackErrors() {
-        const { CrashHandlerNative } = await import("./adapters/native/crashHandlerNative.native");
-        const inst = await this.instancePromise;
-        const crashHandler = new CrashHandlerNative(inst);
-        return inst.trackErrors(crashHandler);
-    }
     async trackFrameDrops() {
         const { FrameDropTrackerNative } = await import("./adapters/native/frameDropsNative.native");
         const inst = await this.instancePromise;
         const frameDropTracker = new FrameDropTrackerNative(inst);
         return inst.trackFrameDrops(frameDropTracker);
     }
+
     async trackNetworkRequests() {
         const { NetworkTrackerNative } = await import("./adapters/native/interceptFetchNative.native");
         const inst = await this.instancePromise;
         const networkTracker = new NetworkTrackerNative(inst);
         return inst.trackNetworkRequests(networkTracker);
     }
+
     async trackMemoryUsage() {
         const { TelemetryMemoryUsageNative } = await import("./adapters/native/memoryNative.native");
         const inst = await this.instancePromise;
         const memoryTracker = new TelemetryMemoryUsageNative(inst);
         return inst.trackMemoryUsage(memoryTracker);
-    }
-
-    async log(event: string, data?: Record<string, any>) {
-        const inst = await this.instancePromise;
-        return inst.log(event, data);
-    }
-
-    async flush() {
-        const inst = await this.instancePromise;
-        return inst.flush();
-    }
-
-
-    async setUserId(id: string) {
-        const inst = await this.instancePromise;
-        inst.setUserId(id);
-    }
-
-    async generateUserId() {
-        const inst = await this.instancePromise;
-
-        return inst.generateUserId();
-    }
-
-    // ---------- User Profile Management ----------
-
-    async setUserProfile(profile: {
-        userId?: string;
-        fullName?: string;
-        firstName?: string;
-        lastName?: string;
-        email?: string;
-        phone?: string;
-        avatar?: string;
-        customAttributes?: Record<string, any>;
-    }) {
-        const inst = await this.instancePromise;
-        inst.setUserProfile(profile);
-    }
-
-    async setUserDetails(details: {
-        fullName?: string;
-        firstName?: string;
-        lastName?: string;
-        email?: string;
-        phone?: string;
-        avatar?: string;
-        customAttributes?: Record<string, any>;
-    }) {
-        const inst = await this.instancePromise;
-        inst.setUserDetails(details);
-    }
-
-    async updateUserProfile(updates: {
-        userId?: string;
-        fullName?: string;
-        firstName?: string;
-        lastName?: string;
-        email?: string;
-        phone?: string;
-        avatar?: string;
-        customAttributes?: Record<string, any>;
-    }) {
-        const inst = await this.instancePromise;
-        inst.updateUserProfile(updates);
-    }
-
-    async getUserProfile() {
-        const inst = await this.instancePromise;
-        return inst.getUserProfile();
-    }
-
-    async clearUserProfile() {
-        const inst = await this.instancePromise;
-        inst.clearUserProfile();
-    }
-
-    async setUserName(fullName: string, firstName?: string, lastName?: string) {
-        const inst = await this.instancePromise;
-        inst.setUserName(fullName, firstName, lastName);
-    }
-
-    async setUserContact(email?: string, phone?: string) {
-        const inst = await this.instancePromise;
-        inst.setUserContact(email, phone);
     }
 
     // ---------- Screen Management ----------
@@ -202,13 +110,6 @@ export class TelemetryNative {
         inst.recordRouteChange(from, to);
     }
 
-
-    async shutdown() {
-        const inst = await this.instancePromise;
-        return inst.shutdown();
-    }
-
-    // index.native.ts
     async attachNavigation(navigationRef: any) {
         console.log("Attaching navigation tracker");
         if (!navigationRef) {
@@ -220,9 +121,4 @@ export class TelemetryNative {
         const tracker = new NavigationTrackerNative(inst);
         tracker.attach(navigationRef);
     }
-
-
 }
-
-
-
