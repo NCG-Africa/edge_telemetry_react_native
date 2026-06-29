@@ -36,19 +36,15 @@ export class TelemetryMemoryUsage {
         const { usedMb, pressureLevel } = getMemoryUsage();
         const timestamp = new Date().toISOString();
 
-        // Record memory event
-        this.telemetry.log("memory_pressure", {
+        // One event per sample: pressure + usage merged (both previously carried the same usedMb).
+        this.telemetry.log("memory_usage", {
+            "value": usedMb,
+            "metric.unit": "MB",
             "memory.usage_mb": usedMb,
             "memory.pressure_level": pressureLevel,
-            "memory.timestamp": timestamp,
-        });
-
-        // Record memory metric
-        this.telemetry.log("memory_usage", {
-            "metric.unit": "MB",
             "memory.type": "heap",
             "memory.source": "runtime",
-            "value": usedMb,
+            "memory.timestamp": timestamp,
         });
     }
 }

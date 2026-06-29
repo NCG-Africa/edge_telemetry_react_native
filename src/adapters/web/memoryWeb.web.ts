@@ -64,8 +64,8 @@ export class TelemetryMemoryUsageWeb {
             "memory.source": "performance.memory",
         };
 
-        this.telemetry.log("memory_pressure", event);
-        this.telemetry.log("memory_usage", metric);
+        // One event per sample: pressure + usage merged (both previously carried the same usedMb).
+        this.telemetry.log("memory_usage", { ...event, ...metric });
     }
 
     /**
