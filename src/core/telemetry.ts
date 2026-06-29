@@ -113,7 +113,6 @@ type Opts = {
     batchSize?: number;
     flushIntervalMs?: number;
     endpoint?: string;
-    retryCount?: number;
     sessionId?: string;
     userId?: string | null;
     RandomnStringGenerator?: RandomStringGenerator;
@@ -131,7 +130,6 @@ export class Telemetry {
     private batchSize: number;
     private flushIntervalMs: number;
     private intervalId: any = null;
-    private retryCount: number;
     private endpoint?: string;
     private generateRandomString?: RandomStringGenerator;
     private crashHandler?: CrashHandler;
@@ -159,7 +157,6 @@ export class Telemetry {
         this.sender = opts?.sender;
         this.batchSize = opts?.batchSize ?? 2;
         this.flushIntervalMs = opts?.flushIntervalMs ?? 10000;
-        this.retryCount = opts?.retryCount ?? 3;
         this.endpoint = opts?.endpoint;
         this.generateRandomString = opts?.RandomnStringGenerator ?? {
             generate: () => Math.random().toString(36).substring(2, 15) + Math.random().toString(36).substring(2, 15)
@@ -493,59 +490,34 @@ export class Telemetry {
         }
         this.log("navigation", { from, to });
     }
-    // ---------- Flush / Retry / Persistence ----------
+    // ---------- Flush / Persistence ----------
 
-    private exponentialBackoffDelay(attempts: number) {
-        // base=500ms, exponential, plus jitter up to 200ms
-        return 500 * 2 ** attempts + Math.floor(Math.random() * 200);
-    }
-
+    // Retry + backoff live in the Sender (see sendWithRetry in web/native senders),
+    // which is also used by the standalone replay paths. flush() does a single send
+    // and, on failure, hands the batch to the sender to persist (or requeues it).
     async flush() {
         if (!this.sender || this.queue.length === 0) return;
 
         // build a batch of up to batchSize
         const toSend = this.queue.splice(0, this.batchSize);
 
-        let attempts = 0;
-        let lastError: any = null;
-
-        while (attempts < this.retryCount) {
-            try {
-                console.log("Telemetry flush attempt", attempts + 1, "for batch size:", toSend.length);
-                await this.sender.send(toSend);
-                console.log("Telemetry sent batch of events, size:", toSend.length);
-                return;
-            } catch (err) {
-                lastError = err;
-                attempts++;
-
-                if (attempts >= this.retryCount) {
-                    // final failure: let sender persist if available, otherwise requeue at the front
-                    if (this.sender.onFailure) {
-                        try {
-                            console.warn("Telemetry send failed after retries, invoking sender.onFailure:", lastError);
-                            await this.sender.onFailure(toSend);
-                            console.log("Sender.onFailure completed");
-                        } catch (persistErr) {
-                            // If persistence fails, requeue to avoid data loss
-                            this.queue.unshift(...toSend);
-                            console.warn("Sender.onFailure failed, requeued events:", persistErr);
-                        }
-                    } else {
-
-                        console.warn("Telemetry send failed after retries, requeuing events .sender.onFailure:", lastError);
-                        this.queue.unshift(...toSend);
-                    }
-
-                    console.error("Telemetry flush failed after retries:", lastError);
-                    throw lastError;
+        try {
+            await this.sender.send(toSend);
+        } catch (lastError) {
+            if (this.sender.onFailure) {
+                try {
+                    await this.sender.onFailure(toSend);
+                } catch (persistErr) {
+                    // If persistence fails, requeue to avoid data loss
+                    this.queue.unshift(...toSend);
+                    console.warn("Sender.onFailure failed, requeued events:", persistErr);
                 }
-
-                // wait with exponential backoff + jitter
-                console.warn("Telemetry send attempt failed, will retry Catch Block:", lastError);
-                const waitMs = this.exponentialBackoffDelay(attempts);
-                await new Promise((res) => setTimeout(res, waitMs));
+            } else {
+                this.queue.unshift(...toSend);
             }
+
+            console.error("Telemetry flush failed:", lastError);
+            throw lastError;
         }
     }
 

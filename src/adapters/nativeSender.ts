@@ -50,16 +50,9 @@ async function sendWithRetry(endpoint: string, events: TelemetryEvent[], retryCo
 export function nativeSender(endpoint: string = DEFAULT_ENDPOINT): Sender {
     return {
         async send(events) {
-            try {
-
-                console.log("Native sender sending events:", events.length ?? 0);
-                await sendWithRetry(endpoint, events);
-            } catch (err) {
-                // Persist if final attempt fails
-                console.warn("Native sender send failed after retries, persisting events:", err);
-                await persistFailed(events);
-                throw err;
-            }
+            // Retry + backoff here; persistence on final failure is the core flush()'s
+            // job via onFailure() — kept single, so a failed batch isn't persisted twice.
+            await sendWithRetry(endpoint, events);
         },
         async onFailure(events) {
             await persistFailed(events);
