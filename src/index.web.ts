@@ -1,17 +1,14 @@
 // src/index.web.ts
-// import { TelemetryMemoryUsageWeb } from "./adapters/web/memoryWeb.web";
+import { TelemetryBase } from "./index.base";
 
-export class TelemetryWeb {
-    private instancePromise: Promise<any>;
-
-    // private memoryTracker?: TelemetryMemoryUsageWeb;
-
+export class TelemetryWeb extends TelemetryBase {
     constructor(opts?: {
         sender?: any;
         batchSize?: number;
         flushIntervalMs?: number;
         endpoint?: string;
     }) {
+        super();
 
         console.log("🌍 Running Web Telemetry");
 
@@ -25,7 +22,6 @@ export class TelemetryWeb {
             const deviceInfoTrackerWeb = new DeviceInfoTrackerWeb();
             const networkInfoTrackerWeb = new NetworkInfoTrackerWeb();
 
-            ;
             const sender = webSender(opts?.endpoint);
 
             const telemetry = new Telemetry({
@@ -38,47 +34,26 @@ export class TelemetryWeb {
                 networkInfoHandler: networkInfoTrackerWeb,
             });
 
-            // // auto init memory tracker
-            // this.memoryTracker = new TelemetryMemoryUsageWeb(telemetry);
-            // this.memoryTracker.start(); // runs every 30s by default
-
-
             return telemetry;
         })();
 
         this.trackErrors().catch(err => {
-            console.warn("Web TelemetryNative trackErrors failed:", err);
+            console.warn("Web trackErrors failed:", err);
         });
 
-
-
         this.trackFrameDrops().catch(err => {
-            console.log("Web trackFrameDrops(frameDropsHandler: FrameDropsHandler) errors", err);
-        })
+            console.log("Web trackFrameDrops errors", err);
+        });
         this.trackNetworkRequests().catch(err => {
-            console.log("Web trackNetworkRequests(networkHandler: NetworkHandler) errors", err);
-        })
+            console.log("Web trackNetworkRequests errors", err);
+        });
         this.trackMemoryUsage().catch(err => {
-            console.log("Web trackMemoryUsage(memoryHandler: MemoryHandler) errors", err);
-        })
-
+            console.log("Web trackMemoryUsage errors", err);
+        });
         this.autoTrackNavigation().catch(err => {
             console.log("Web autoTrackNavigation errors", err);
-        })
-
+        });
     }
-
-    async trackErrors() {
-        const { CrashHandlerNative } = await import("./adapters/native/crashHandlerNative.native");
-        const inst = await this.instancePromise;
-        const crashHandler = new CrashHandlerNative(inst);
-        return inst.trackErrors(crashHandler);
-    }
-
-    //       trackFrameDrops(frameDropsHandler: FrameDropsHandler): Promise<void> {
-    //    trackNetworkRequests(networkHandler: NetworkHandler): Promise<void> {
-    //   trackMemoryUsage(memoryHandler: MemoryHandler): Promise<void> {
-    //    autoTrackNavigation(navigationHandler?: NavigationHandler): Promise<void> {
 
     async trackFrameDrops() {
         const { FrameDropTrackerWeb } = await import("./adapters/web/frameDropsWeb.web");
@@ -86,12 +61,14 @@ export class TelemetryWeb {
         const frameDropTracker = new FrameDropTrackerWeb(inst);
         return inst.trackFrameDrops(frameDropTracker);
     }
+
     async trackNetworkRequests() {
         const { NetworkTrackerWeb } = await import("./adapters/web/interceptFetchWeb.web");
         const inst = await this.instancePromise;
         const networkTracker = new NetworkTrackerWeb(inst);
         return inst.trackNetworkRequests(networkTracker);
     }
+
     async trackMemoryUsage() {
         const { TelemetryMemoryUsageWeb } = await import("./adapters/web/memoryWeb.web");
         const inst = await this.instancePromise;
@@ -118,94 +95,5 @@ export class TelemetryWeb {
         const inst = await this.instancePromise;
         const networkInfoTrackerWeb = new NetworkInfoTrackerWeb();
         return inst.getNetworkInfo(networkInfoTrackerWeb);
-    }
-
-
-    async log(event: string, data?: Record<string, any>) {
-        const inst = await this.instancePromise;
-        return inst.log(event, data);
-    }
-
-    async flush() {
-        const inst = await this.instancePromise;
-        return inst.flush();
-    }
-
-    // ---------- User Profile Management ----------
-
-    async setUserProfile(profile: {
-        userId?: string;
-        fullName?: string;
-        firstName?: string;
-        lastName?: string;
-        email?: string;
-        phone?: string;
-        avatar?: string;
-        customAttributes?: Record<string, any>;
-    }) {
-        const inst = await this.instancePromise;
-        inst.setUserProfile(profile);
-    }
-
-    async setUserDetails(details: {
-        fullName?: string;
-        firstName?: string;
-        lastName?: string;
-        email?: string;
-        phone?: string;
-        avatar?: string;
-        customAttributes?: Record<string, any>;
-    }) {
-        const inst = await this.instancePromise;
-        inst.setUserDetails(details);
-    }
-
-    async updateUserProfile(updates: {
-        userId?: string;
-        fullName?: string;
-        firstName?: string;
-        lastName?: string;
-        email?: string;
-        phone?: string;
-        avatar?: string;
-        customAttributes?: Record<string, any>;
-    }) {
-        const inst = await this.instancePromise;
-        inst.updateUserProfile(updates);
-    }
-
-    async getUserProfile() {
-        const inst = await this.instancePromise;
-        return inst.getUserProfile();
-    }
-
-    async clearUserProfile() {
-        const inst = await this.instancePromise;
-        inst.clearUserProfile();
-    }
-
-    async setUserName(fullName: string, firstName?: string, lastName?: string) {
-        const inst = await this.instancePromise;
-        inst.setUserName(fullName, firstName, lastName);
-    }
-
-    async setUserContact(email?: string, phone?: string) {
-        const inst = await this.instancePromise;
-        inst.setUserContact(email, phone);
-    }
-
-    async setUserId(id: string) {
-        const inst = await this.instancePromise;
-        inst.setUserId(id);
-    }
-
-    async generateUserId() {
-        const inst = await this.instancePromise;
-        return inst.generateUserId();
-    }
-
-    async shutdown() {
-        const inst = await this.instancePromise;
-        return inst.shutdown();
     }
 }
