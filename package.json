@@ -45,7 +45,8 @@
     "dev": "vite",
     "clean": "rimraf dist",
     "prepare": "npm run build",
-    "test": "echo \"No tests yet\" && exit 0"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "keywords": [
     "react-native",
@@ -73,7 +74,8 @@
     "rimraf": "^6.0.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.5",
-    "vite-plugin-dts": "^4.5.4"
+    "vite-plugin-dts": "^4.5.4",
+    "vitest": "^4.1.9"
   },
   "dependencies": {
     "@react-native-async-storage/async-storage": ">=1.21.0",

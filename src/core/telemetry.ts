@@ -447,24 +447,6 @@ export class Telemetry {
      * Log a named event. Keeps existing signature compatibility.
      * Automatically attaches userId and sessionId to every queued event.
      */
-    // log(name: string, data?: Record<string, any>) {
-    //     this.eventCount++;
-    //     const e: TelemetryEvent = {
-    //         name,
-    //         data,
-    //         timestamp: Date.now(),
-    //         userId: this.userId ?? null,
-    //         sessionId: this.sessionId,
-    //     };
-    //     this.queue.push(e);
-    //     console.log("Telemetry queued event:", name, "Queue size:", this.queue.length);
-    //     console.log("Event data:", data);
-    //     console.log("Event userId:", e.userId, "sessionId:", e.sessionId, "timestamp:", e.timestamp, "batchSize:", this.batchSize);
-    //     if (this.queue.length >= this.batchSize) {
-    //         void this.flush();
-    //     }
-    // }
-
     async log(name: string, data?: Record<string, any>) {
         this.eventCount++;
 

@@ -1,2 +1,0 @@
-"use strict";Object.defineProperty(exports,Symbol.toStringTag,{value:"Module"});async function t(){return typeof navigator<"u"&&"connection"in navigator?{type:navigator.connection.type||"unknown",isConnected:navigator.onLine}:{type:"unknown",isConnected:typeof navigator<"u"?navigator.onLine:void 0}}class r{constructor(){}async collect(){return t()}async start(o){this.telemetry=o;const n=await this.collect();return this.telemetry.log("network_info",n),n}}exports.NetworkInfoTrackerWeb=r;exports.getNetworkInfo=t;
-//# sourceMappingURL=networkInfo.web-yyFpF8Wl.js.map
