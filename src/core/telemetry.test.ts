@@ -133,6 +133,26 @@ describe("screen tracking", () => {
   });
 });
 
+describe("navigation route changes", () => {
+  it("emits exactly one event (navigation.route_change) per route change", () => {
+    const t = new Telemetry({ flushIntervalMs: 0 });
+    const logSpy = vi.spyOn(t, "log").mockResolvedValue(undefined);
+
+    t.recordRouteChange("Home", "Profile");
+
+    expect(logSpy).toHaveBeenCalledTimes(1);
+    expect(logSpy).toHaveBeenCalledWith(
+      "navigation.route_change",
+      expect.objectContaining({ "navigation.from": "Home", "navigation.to": "Profile" }),
+    );
+  });
+
+  it("no longer exposes the double-emitting recordNavigation", () => {
+    const t = new Telemetry({ flushIntervalMs: 0 });
+    expect((t as any).recordNavigation).toBeUndefined();
+  });
+});
+
 describe("flush() retry/persistence", () => {
   it("calls the sender exactly once on success (no core-level retry layer)", async () => {
     const sender = { send: vi.fn(async () => undefined), onFailure: vi.fn(async () => undefined) };

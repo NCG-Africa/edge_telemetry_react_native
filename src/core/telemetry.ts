@@ -476,12 +476,6 @@ export class Telemetry {
         this.log(name, { ...data, value, metric: true });
     }
 
-    recordNavigation(from: string, to: string) {
-        if (this.navigationTracker) {
-            this.navigationTracker.recordRouteChange(from, to);
-        }
-        this.log("navigation", { from, to });
-    }
     // ---------- Flush / Persistence ----------
 
     // Retry + backoff live in the Sender (see sendWithRetry in web/native senders),
