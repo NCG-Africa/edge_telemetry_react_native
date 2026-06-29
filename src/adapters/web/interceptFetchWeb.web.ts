@@ -1,5 +1,6 @@
 // interceptHttp.web.ts
 import { Telemetry } from "../../core/telemetry";
+import { buildHttpAttributes } from "../httpAttributes";
 
 /**
  * NetworkTrackerWeb intercepts all HTTP requests made through
@@ -56,30 +57,28 @@ export class NetworkTrackerWeb {
                     const end = Date.now();
                     const url = typeof input === "string" ? input : input.toString();
 
-                    // Estimate request body size if it's a string (ignoring complex types like FormData)
-                    let requestBodySize = 0;
-                    if (init?.body && typeof init.body === "string") {
-                        requestBodySize = init.body.length;
+                    // Never self-capture the SDK's own collector POST
+                    const endpoint = telemetry.getEndpoint?.();
+                    if (!(endpoint && url.startsWith(endpoint))) {
+                        const responseSize = response
+                            ? Number(response.headers.get("content-length") ?? 0)
+                            : 0;
+
+                        telemetry.log("http.request", buildHttpAttributes({
+                            url,
+                            method: init?.method ?? "GET",
+                            statusCode: response?.status ?? 0,
+                            durationMs: end - start,
+                            error,
+                            requestBody: init?.body,
+                            responseSize,
+                        }));
                     }
-
-                    // Attempt to get response size via Content-Length header
-                    const responseBodySize = response
-                        ? Number(response.headers.get("content-length") ?? 0)
-                        : 0;
-
-                    telemetry.log("network_request", {
-                        url,
-                        method: init?.method ?? "GET",
-                        statusCode: response?.status ?? 0,
-                        durationMs: end - start,
-                        requestBodySize,
-                        responseBodySize,
-                        error: error ? String(error) : null,
-                    });
                 }
             };
 
-            // --- Patch XMLHttpRequest methods ---
+            // --- Patch XMLHttpRequest methods (absent in some RN-Web runtimes) ---
+            if (typeof XMLHttpRequest === "undefined") { resolve(); return; }
             const origOpen = XMLHttpRequest.prototype.open;
             const origSend = XMLHttpRequest.prototype.send;
 
@@ -112,26 +111,23 @@ export class NetworkTrackerWeb {
                 t.start = Date.now();
 
                 this.addEventListener("loadend", () => {
-                    const end = Date.now();
-                    const durationMs = end - t.start;
+                    const durationMs = Date.now() - t.start;
 
-                    // Estimate request body size if it's a string
-                    let requestBodySize = 0;
-                    if (body && typeof body === "string") {
-                        requestBodySize = body.length;
-                    }
+                    // Never self-capture the SDK's own collector POST
+                    const endpoint = telemetry.getEndpoint?.();
+                    if (endpoint && String(t.url).startsWith(endpoint)) return;
 
-                    const responseBodySize = Number(this.getResponseHeader("content-length") ?? 0);
+                    const responseSize = Number(this.getResponseHeader("content-length") ?? 0);
 
-                    telemetry.log("network_request", {
+                    telemetry.log("http.request", buildHttpAttributes({
                         url: t.url,
                         method: t.method,
                         statusCode: this.status,
                         durationMs,
-                        requestBodySize,
-                        responseBodySize,
                         error: this.status === 0 ? "Network error" : null,
-                    });
+                        requestBody: body,
+                        responseSize,
+                    }));
                 });
 
                 return origSend.apply(this, arguments as any);
