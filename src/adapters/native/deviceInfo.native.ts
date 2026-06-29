@@ -80,10 +80,10 @@ export class DeviceInfoTrackerNative {
     }
 
     /**
-     * Collects and logs the device/app metadata.
+     * Context-only adapter. collect() feeds the Context block on every event;
+     * start() emits no standalone device_info event (ADR-0002).
      */
-    async start(telemetry: Telemetry): Promise<void> {
-        const info = await this.collect();
-        telemetry.log("device_info", info);
+    async start(_telemetry: Telemetry): Promise<void> {
+        // no-op: device metadata rides as attributes on every event
     }
 }

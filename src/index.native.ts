@@ -5,6 +5,7 @@ export { createTelemetry, type TelemetryOpts } from "./createTelemetry.native";
 
 export class TelemetryNative extends TelemetryBase {
     constructor(opts?: {
+        apiKey?: string;
         sender?: any;
         batchSize?: number;
         flushIntervalMs?: number;
@@ -21,22 +22,29 @@ export class TelemetryNative extends TelemetryBase {
             const { DeviceInfoTrackerNative } = await import("./adapters/native/deviceInfo.native");
             const { NetworkInfoTrackerNative } = await import("./adapters/native/networkInfo.native");
 
+            // device OS forms the device/session id suffix (ios|android)
+            let platform: string | undefined;
+            try {
+                ({ Platform: { OS: platform } } = await import("react-native") as any);
+            } catch { /* non-RN context (e.g. tests) — omit the suffix */ }
+
             const networkInfoTrackerNative = new NetworkInfoTrackerNative();
             const deviceInfoTrackerNative = new DeviceInfoTrackerNative();
 
-            const sender = opts?.sender ?? nativeSender(opts?.endpoint);
+            const sender = opts?.sender ?? nativeSender(opts?.endpoint, opts?.apiKey);
 
             const telemetry = new Telemetry({
                 sender,
                 batchSize: opts?.batchSize,
                 flushIntervalMs: opts?.flushIntervalMs,
                 endpoint: opts?.endpoint,
+                platform,
                 deviceInfoHandler: deviceInfoTrackerNative,
                 networkInfoHandler: networkInfoTrackerNative,
             });
 
             // 🔄 recover failed events right after init
-            replayFailedNative(opts?.endpoint).catch(err => {
+            replayFailedNative(opts?.endpoint, opts?.apiKey).catch(err => {
                 console.warn("Native replay failed:", err);
             });
 

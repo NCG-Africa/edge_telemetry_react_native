@@ -28,13 +28,12 @@ export class NetworkInfoTrackerNative {
     }
 
     /**
-     * Collects and logs the current network state once.
+     * Context-only — collect() feeds the Context block on every event;
+     * no standalone network_info event (ADR-0002).
      */
     async start(telemetry: Telemetry): Promise<NetworkInfo> {
         this.telemetry = telemetry;
-        const info = await this.collect();
-        this.telemetry.log("network_info", info);
-        return info;
+        return this.collect();
     }
 
     /**

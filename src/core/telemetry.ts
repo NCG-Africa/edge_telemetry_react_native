@@ -1,15 +1,27 @@
 import { NavigationTracker } from "../adapters/navigationTracker";
 import { ScreenTimingTracker } from "../adapters/screenTiming";
-import { generateId } from "./utils/uuid";
+import { randomHex } from "./utils/uuid";
+import { version as PKG_VERSION } from "../../package.json";
+
+// v3 wire contract constants
+const SDK_PLATFORM = "react-native";   // framework identity; device OS lives in device.platform
+const SDK_VERSION = PKG_VERSION;       // sdk.version follows the published package version
+
+// Names the backend routes. Anything else is remapped to `custom_event` with the
+// original name carried as `event.name`. Includes metric names so the metric path
+// (slice: native metrics) isn't remapped.
+const ALLOWED_NAMES = new Set<string>([
+    "session.started", "session.finalized", "app_lifecycle", "page_load", "navigation",
+    "screen.duration", "http.request", "user.interaction", "network_change",
+    "user.profile.update", "custom_event", "app.crash",
+    "resource_timing", "frame_render_time", "memory_usage", "long_task",
+    "LCP", "FCP", "CLS", "INP", "TTFB",
+]);
 
 export type TelemetryEvent = {
-    eventName: string;
-    // data?: Record<string, any>;
-    timestamp: number;
-    // injected metadata
-    userId?: string | null;
-    sessionId?: string;
     type: 'event' | 'metric';
+    eventName: string;
+    timestamp: string;          // ISO 8601 (v3 wire contract) — never ms epoch
     attributes?: Record<string, any>;
 };
 
@@ -113,6 +125,8 @@ type Opts = {
     endpoint?: string;
     sessionId?: string;
     userId?: string | null;
+    sdkVersion?: string;
+    platform?: string;          // device OS (ios|android|web); forms the device/session id suffix
     deviceInfoHandler?: DeviceInfoHandler;
     networkInfoHandler?: NetworkInfoHandler;
 };
@@ -147,6 +161,8 @@ export class Telemetry {
     private userProfile?: UserProfile = undefined;
     private sessionId: string;
     private sessionStart: number;
+    private sdkVersion: string;
+    private platform?: string;
     private eventCount = 0;
 
     constructor(opts?: Opts) {
@@ -154,11 +170,13 @@ export class Telemetry {
         this.batchSize = opts?.batchSize ?? 2;
         this.flushIntervalMs = opts?.flushIntervalMs ?? 10000;
         this.endpoint = opts?.endpoint;
+        this.platform = opts?.platform;   // set before id generation (suffix source)
 
         // start a session
         this.sessionId = opts?.sessionId ?? this.generateSessionId();
         this.userId = opts?.userId ?? this.generateUserId();
         this.sessionStart = Date.now();
+        this.sdkVersion = opts?.sdkVersion ?? SDK_VERSION;
 
         // auto replay if supported
         if (this.sender?.replayFailed) {
@@ -242,7 +260,8 @@ export class Telemetry {
 
 
     private generateSessionId(): string {
-        return `session_${Date.now()}_${generateId().slice(0, 8)}`;
+        const base = `session_${Date.now()}_${randomHex(16)}`;
+        return this.platform ? `${base}_${this.platform}` : base;
     }
 
     public setSessionId(id: string) {
@@ -268,7 +287,7 @@ export class Telemetry {
     }
 
     public generateUserId(): string {
-        return `user_${Date.now()}_${generateId().slice(0, 8)}`;
+        return `user_${Date.now()}_${randomHex(16)}`;
     }
 
     // ---------- User Profile Management ----------
@@ -379,6 +398,10 @@ export class Telemetry {
     async log(name: string, data?: Record<string, any>) {
         this.eventCount++;
 
+        // v3 allowlist: unknown names ship as custom_event, original kept as event.name
+        const isAllowed = ALLOWED_NAMES.has(name);
+        const eventName = isAllowed ? name : 'custom_event';
+
         let deviceInfo: Record<string, any> = {};
         let networkInfo: Record<string, any> = {};
 
@@ -396,13 +419,16 @@ export class Telemetry {
 
         // 🔄 Flatten all properties into a single `attributes` object
         const attributes: Record<string, any> = {
-            ...this.flattenWithPrefix('device', deviceInfo),
+            // deviceInfo already namespaces its own keys (app.*, device.*) — flatten flat
+            ...this.flattenWithPrefix('', deviceInfo),
             ...this.flattenWithPrefix('network', networkInfo),
             ...this.flattenWithPrefix('', data || {}),
             'user.id': this.userId ?? null,
             'session.id': this.sessionId,
-            'session.event_count': this.eventCount,
-            'timestamp': new Date().toISOString(),
+            'session.start_time': new Date(this.sessionStart).toISOString(),
+            'sdk.platform': SDK_PLATFORM,
+            'sdk.version': this.sdkVersion,
+            ...(isAllowed ? {} : { 'event.name': name }),
         };
 
         // Add user profile data if available
@@ -428,9 +454,9 @@ export class Telemetry {
         }
 
         const e: TelemetryEvent = {
-            eventName: name,
             type: 'event',
-            timestamp: Date.now(),
+            eventName,
+            timestamp: new Date().toISOString(),
             attributes,
         };
 

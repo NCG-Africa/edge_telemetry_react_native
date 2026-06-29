@@ -56,12 +56,12 @@ describe("log()", () => {
       networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("checkout_started", { cart_value: 42 });
+    await t.log("navigation", { "navigation.to_screen": "Home" });
     await t.flush();
 
     expect(sender.send).toHaveBeenCalledTimes(1);
     expect(sent).toHaveLength(1);
-    expect(sent[0].eventName).toBe("checkout_started");
+    expect(sent[0].eventName).toBe("navigation");
   });
 
   it("embeds device/network info via collect() (not the registration method) — no recursion", async () => {
@@ -82,8 +82,11 @@ describe("log()", () => {
     await t.flush();
 
     const attrs = sent[0].attributes!;
-    expect(attrs["device.device.platform"]).toBe("web");
-    expect(attrs["device.app.name"]).toBe("app");
+    // Context block uses flat contract keys, not the v2 double-nested device.device.*
+    expect(attrs["device.platform"]).toBe("web");
+    expect(attrs["app.name"]).toBe("app");
+    expect(attrs["device.device.platform"]).toBeUndefined();
+    expect(attrs["device.app.name"]).toBeUndefined();
     expect(attrs["network.type"]).toBe("wifi");
     expect(attrs["foo"]).toBe("bar");
 
@@ -95,15 +98,170 @@ describe("log()", () => {
   });
 });
 
-describe("id generation", () => {
-  it("produces well-formed session/user ids without the injectable abstraction", () => {
-    const t = new Telemetry({ flushIntervalMs: 0 });
+describe("v3 wire contract — event shape", () => {
+  it("emits {type:'event', eventName, ISO-string timestamp} with no top-level userId/sessionId", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
 
-    expect(t.getSessionId()).toMatch(/^session_\d+_[a-z0-9]{1,8}$/);
-    expect(t.generateUserId()).toMatch(/^user_\d+_[a-z0-9]{1,8}$/);
+    const t = new Telemetry({
+      sender,
+      batchSize: 10,
+      flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any,
+      networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("custom_event", { a: 1 });
+    await t.flush();
+
+    const e = sent[0];
+    expect(e.type).toBe("event");
+    expect(e.eventName).toBe("custom_event");
+    // ISO 8601 string, not a ms-epoch number
+    expect(typeof e.timestamp).toBe("string");
+    expect(new Date(e.timestamp as unknown as string).toISOString()).toBe(e.timestamp);
+    // identity lives in attributes, never on the event object
+    expect("userId" in e).toBe(false);
+    expect("sessionId" in e).toBe(false);
+  });
+});
+
+describe("v3 wire contract — Context block identity", () => {
+  it("attaches sdk.platform, sdk.version, session.id, session.start_time (ISO) and user.id to every event", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+
+    const t = new Telemetry({
+      sender,
+      batchSize: 10,
+      flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any,
+      networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("custom_event");
+    await t.flush();
+
+    const a = sent[0].attributes!;
+    expect(a["sdk.platform"]).toBe("react-native");
+    expect(typeof a["sdk.version"]).toBe("string");
+    expect(a["sdk.version"]!.length).toBeGreaterThan(0);
+    expect(typeof a["session.id"]).toBe("string");
+    expect(typeof a["user.id"]).toBe("string");
+    // session.start_time is an ISO string, not a ms number
+    expect(a["session.start_time"]).toBe(new Date(a["session.start_time"]).toISOString());
+  });
+
+  it("does not emit the dropped Angular-only fields", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+    const t = new Telemetry({
+      sender, batchSize: 10, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any,
+      networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("custom_event");
+    await t.flush();
+
+    const a = sent[0].attributes!;
+    for (const dropped of [
+      "sdk.contract_version",
+      "session.is_first_session",
+      "session.total_sessions",
+      "network.connected",
+      "network.downlinkMbps",
+    ]) {
+      expect(a[dropped]).toBeUndefined();
+    }
+  });
+
+  it("does not emit non-contract extras (session.event_count, attributes-level timestamp)", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+    const t = new Telemetry({
+      sender, batchSize: 10, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any,
+      networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("custom_event");
+    await t.flush();
+
+    const a = sent[0].attributes!;
+    expect(a["session.event_count"]).toBeUndefined();
+    expect(a["timestamp"]).toBeUndefined();   // event timestamp lives at the top level, not in attributes
+  });
+});
+
+describe("v3 wire contract — sdk.version", () => {
+  it("reports the package version, not a hardcoded string", async () => {
+    const pkg = (await import("../../package.json")).default as { version: string };
+    const sent: TelemetryEvent[] = [];
+    const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+    const t = new Telemetry({
+      sender, batchSize: 10, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any,
+      networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("custom_event");
+    await t.flush();
+
+    expect(sent[0].attributes!["sdk.version"]).toBe(pkg.version);
+  });
+});
+
+describe("v3 wire contract — event-name allowlist", () => {
+  function captureSender(sent: TelemetryEvent[]) {
+    return { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+  }
+
+  it("passes an allowlisted name through unchanged", async () => {
+    const sent: TelemetryEvent[] = [];
+    const t = new Telemetry({
+      sender: captureSender(sent), batchSize: 10, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.flush();
+
+    expect(sent[0].eventName).toBe("navigation");
+    expect(sent[0].attributes!["event.name"]).toBeUndefined();
+  });
+
+  it("remaps a non-allowlisted name to custom_event and preserves it as event.name", async () => {
+    const sent: TelemetryEvent[] = [];
+    const t = new Telemetry({
+      sender: captureSender(sent), batchSize: 10, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("checkout_started", { cart_value: 42 });
+    await t.flush();
+
+    expect(sent[0].eventName).toBe("custom_event");
+    expect(sent[0].attributes!["event.name"]).toBe("checkout_started");
+    // original payload still rides along
+    expect(sent[0].attributes!["cart_value"]).toBe(42);
+  });
+});
+
+describe("v3 wire contract — id formats", () => {
+  it("session.id is session_{ms}_{16hex}_{os}; user.id is user_{ms}_{16hex} with no suffix", () => {
+    const t = new Telemetry({ flushIntervalMs: 0, platform: "ios" } as any);
+
+    expect(t.getSessionId()).toMatch(/^session_\d+_[0-9a-f]{16}_ios$/);
+    expect(t.generateUserId()).toMatch(/^user_\d+_[0-9a-f]{16}$/);
 
     // distinct user ids across calls
     expect(t.generateUserId()).not.toBe(t.generateUserId());
+  });
+
+  it("omits the OS suffix when the device platform is unknown (still contract-valid)", () => {
+    const t = new Telemetry({ flushIntervalMs: 0 });
+    expect(t.getSessionId()).toMatch(/^session_\d+_[0-9a-f]{16}$/);
   });
 });
 

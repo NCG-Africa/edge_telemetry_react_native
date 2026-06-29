@@ -33,9 +33,8 @@ export class NetworkInfoTrackerWeb {
     private telemetry!: Telemetry;
 
     async start(telemetry: Telemetry): Promise<NetworkInfo> {
+        // context-only — collect() feeds the Context block; no standalone network_info event (ADR-0002)
         this.telemetry = telemetry;
-        const info = await this.collect();
-        this.telemetry.log("network_info", info);
-        return info;
+        return this.collect();
     }
 }
