@@ -15,7 +15,7 @@ export class TelemetryWeb extends TelemetryBase {
         this.instancePromise = (async () => {
             const { Telemetry } = await import("./core/telemetry");
             const { webSender } = await import("./adapters/webSender");
-            const { generateId } = await import("./core/utils/uuid.web");
+            const { generateId } = await import("./core/utils/uuid");
 
             const { DeviceInfoTrackerWeb } = await import("./adapters/web/deviceInfo.web");
             const { NetworkInfoTrackerWeb } = await import("./adapters/web/networkInfo.web");

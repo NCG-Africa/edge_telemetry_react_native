@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { generateId } from "./uuid.web";
+import { generateId } from "./uuid";
 
 // Smoke test: proves the Vitest harness compiles + runs TS from src/.
 // Deeper telemetry behavior tests land per-issue (see plan).
