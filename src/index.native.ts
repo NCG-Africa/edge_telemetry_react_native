@@ -56,6 +56,11 @@ export class TelemetryNative extends TelemetryBase {
         this.startSessionOnInit().catch(err => console.warn("Native startSession failed:", err));
         this.attachAppState().catch(err => console.warn("Native AppState attach failed:", err));
 
+        // app_lifecycle on foreground/background (#30)
+        this.attachAppLifecycle().catch(err => {
+            console.log("Native attachAppLifecycle errors", err);
+        });
+
         this.trackErrors({ captureConsole: opts?.captureConsole }).catch(err => {
             console.warn("Native trackErrors failed:", err);
         });
@@ -89,6 +94,16 @@ export class TelemetryNative extends TelemetryBase {
             }
             prev = next;
         });
+    }
+
+    // app_lifecycle on foreground/background via RN AppState (#30)
+    async attachAppLifecycle() {
+        const { AppState } = await import("react-native") as any;
+        const inst = await this.instancePromise;
+        const { AppLifecycleEmitter } = await import("./adapters/appLifecycle");
+        const emitter = new AppLifecycleEmitter(inst);
+        emitter.onState(AppState.currentState === "active");   // seed current state
+        AppState.addEventListener("change", (next: string) => emitter.onState(next === "active"));
     }
 
     async getDeviceInfo() {

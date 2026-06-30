@@ -60,6 +60,20 @@ export class TelemetryWeb extends TelemetryBase {
         this.autoTrackNavigation().catch(err => {
             console.log("Web autoTrackNavigation errors", err);
         });
+        this.attachAppLifecycle().catch(err => {
+            console.log("Web attachAppLifecycle errors", err);
+        });
+    }
+
+    // app_lifecycle on tab visibility change — web equivalent of native AppState (#30)
+    async attachAppLifecycle() {
+        if (typeof document === "undefined") return;
+        const inst = await this.instancePromise;
+        const { AppLifecycleEmitter } = await import("./adapters/appLifecycle");
+        const emitter = new AppLifecycleEmitter(inst);
+        emitter.onState(document.visibilityState === "visible");   // seed current state
+        document.addEventListener("visibilitychange", () =>
+            emitter.onState(document.visibilityState === "visible"));
     }
 
     // Web uses the web crash handler (window.onerror/onunhandledrejection), not the native one.
