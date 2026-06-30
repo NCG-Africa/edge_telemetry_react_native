@@ -32,7 +32,7 @@ Status legend: `proposed` (RN will emit, backend not yet handling) · `confirmed
 
 | Event | Option A (Angular/reference) | Option B (iOS) | Decision |
 |---|---|---|---|
-| `navigation` | `navigation.from_screen/to_screen/method/route_type/has_arguments` | `navigation.screen/previous_screen/type/kind` | _pending backend_ |
+| `navigation` | `navigation.from_screen/to_screen/method/route_type/has_arguments` | `navigation.screen/previous_screen/type/kind` | RN emits Option A baseline (#26); _pending backend_ |
 | `resource_timing` | `metric.unit/resource_name/resource_type/transfer_size` | `resource.url/host/dns_ms/connect_ms/tls_ms/ttfb_ms/download_ms` | _pending backend_ |
 
 ## Notes

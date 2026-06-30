@@ -7,12 +7,14 @@ export class NavigationTracker {
         this.telemetry = telemetry;
     }
 
+    // Route change → v3 `navigation`. Baseline keys follow the reference/Angular shape;
+    // iOS (screen/previous_screen/type/kind) reconciliation is OPEN (see additions ledger).
     recordRouteChange(from: string, to: string) {
-        console.log(`Navigation from ${from} to ${to}`);
-        this.telemetry.log("navigation.route_change", {
-            "navigation.from": from,
-            "navigation.to": to,
-            "navigation.timestamp": Date.now(),
+        this.telemetry.log("navigation", {
+            "navigation.from_screen": from,
+            "navigation.to_screen": to,
+            "navigation.method": "push",
+            "navigation.route_type": "screen",
         });
     }
 }

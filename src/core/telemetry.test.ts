@@ -273,7 +273,7 @@ describe("screen tracking", () => {
     expect((t as any).endScreen).toBeUndefined();
   });
 
-  it("emits one screen_view + one performance.screen_duration per screen, no screen_end", () => {
+  it("emits navigation on entry and screen.duration on exit — no v2 screen_view/screen_end/performance.screen_duration", () => {
     const t = new Telemetry({ flushIntervalMs: 0 });
     const logSpy = vi.spyOn(t, "log").mockResolvedValue(undefined);
 
@@ -281,13 +281,18 @@ describe("screen tracking", () => {
     t.screens.endScreen("Home");
 
     const calls = logSpy.mock.calls.map((c) => c[0]);
-    expect(calls).toEqual(["screen_view", "performance.screen_duration"]);
-    expect(calls).not.toContain("screen_end");
+    expect(calls).toEqual(["navigation", "screen.duration"]);
+    for (const dead of ["screen_view", "screen_end", "performance.screen_duration"]) {
+      expect(calls).not.toContain(dead);
+    }
 
-    expect(logSpy).toHaveBeenCalledWith("screen_view", { "screen.name": "Home" });
-    const durationCall = logSpy.mock.calls.find((c) => c[0] === "performance.screen_duration")!;
+    const navCall = logSpy.mock.calls.find((c) => c[0] === "navigation")!;
+    expect(navCall[1]).toMatchObject({ "navigation.to_screen": "Home" });
+
+    const durationCall = logSpy.mock.calls.find((c) => c[0] === "screen.duration")!;
     expect(durationCall[1]).toMatchObject({ "screen.name": "Home" });
-    expect(typeof (durationCall[1] as any)["duration_ms"]).toBe("number");
+    expect(typeof (durationCall[1] as any)["screen.duration_ms"]).toBe("number");
+    expect(typeof (durationCall[1] as any)["screen.exit_method"]).toBe("string");
   });
 });
 
@@ -307,7 +312,7 @@ describe("recordMetric", () => {
 });
 
 describe("navigation route changes", () => {
-  it("emits exactly one event (navigation.route_change) per route change", () => {
+  it("emits exactly one v3 `navigation` event per route change with from/to_screen shape", () => {
     const t = new Telemetry({ flushIntervalMs: 0 });
     const logSpy = vi.spyOn(t, "log").mockResolvedValue(undefined);
 
@@ -315,9 +320,16 @@ describe("navigation route changes", () => {
 
     expect(logSpy).toHaveBeenCalledTimes(1);
     expect(logSpy).toHaveBeenCalledWith(
-      "navigation.route_change",
-      expect.objectContaining({ "navigation.from": "Home", "navigation.to": "Profile" }),
+      "navigation",
+      expect.objectContaining({
+        "navigation.from_screen": "Home",
+        "navigation.to_screen": "Profile",
+        "navigation.method": expect.any(String),
+        "navigation.route_type": expect.any(String),
+      }),
     );
+    // legacy v2 name gone
+    expect(logSpy.mock.calls.map((c) => c[0])).not.toContain("navigation.route_change");
   });
 
   it("no longer exposes the double-emitting recordNavigation", () => {
