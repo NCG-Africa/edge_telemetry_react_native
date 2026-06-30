@@ -273,6 +273,11 @@ export class Telemetry {
         return this.sessionId;
     }
 
+    /** Collector endpoint, so fetch/XHR adapters can skip self-capturing the SDK's own POST. */
+    public getEndpoint(): string | undefined {
+        return this.endpoint;
+    }
+
     public startNewSession() {
         this.sessionId = this.generateSessionId();
         this.sessionStart = Date.now();

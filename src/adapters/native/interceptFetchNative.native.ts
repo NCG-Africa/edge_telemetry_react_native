@@ -1,4 +1,5 @@
 import { Telemetry } from "../../core/telemetry";
+import { buildHttpAttributes } from "../httpAttributes";
 
 /**
  * Intercepts global `fetch` calls in React Native to log detailed telemetry data
@@ -41,26 +42,23 @@ export class NetworkTrackerNative {
 
                     const url = typeof input === "string" ? input : input.toString();
 
-                    // Estimate request body size (handles string bodies)
-                    let requestBodySize = 0;
-                    if (init?.body && typeof init.body === "string") {
-                        requestBodySize = init.body.length;
+                    // Never self-capture the SDK's own collector POST
+                    const endpoint = this.telemetry.getEndpoint?.();
+                    if (!(endpoint && url.startsWith(endpoint))) {
+                        const responseSize = response
+                            ? Number(response.headers.get("content-length") ?? 0)
+                            : 0;
+
+                        this.telemetry.log("http.request", buildHttpAttributes({
+                            url,
+                            method: init?.method ?? "GET",
+                            statusCode: response?.status ?? 0,
+                            durationMs,
+                            error,
+                            requestBody: init?.body,
+                            responseSize,
+                        }));
                     }
-
-                    // Estimate response body size from Content-Length header if available
-                    const responseBodySize = response
-                        ? Number(response.headers.get("content-length") ?? 0)
-                        : 0;
-
-                    this.telemetry.log("network_request", {
-                        url,
-                        method: init?.method ?? "GET",
-                        statusCode: response?.status ?? 0,
-                        durationMs,
-                        requestBodySize,
-                        responseBodySize,
-                        error: error ? String(error) : null,
-                    });
                 }
             };
 
