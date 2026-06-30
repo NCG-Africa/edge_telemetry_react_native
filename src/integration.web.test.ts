@@ -29,10 +29,11 @@ describe("createTelemetry (web) — public API → wire", () => {
     await t.log("navigation", { "navigation.to_screen": "Home" });
     await t.flush();
 
-    expect(sent).toHaveLength(1);
-    const e = sent[0];
+    // session.started rides on init (#29); assert the navigation event is contract-valid
+    expect(sent.some((e) => e.eventName === "session.started")).toBe(true);
+    const e = sent.find((ev) => ev.eventName === "navigation")!;
+    expect(e).toBeDefined();
     expect(e.type).toBe("event");
-    expect(e.eventName).toBe("navigation");
     expect(typeof e.timestamp).toBe("string");
 
     const a = e.attributes!;

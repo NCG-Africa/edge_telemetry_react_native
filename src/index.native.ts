@@ -52,6 +52,10 @@ export class TelemetryNative extends TelemetryBase {
             return telemetry;
         })();
 
+        // session.started on init; AppState drives background→finalize, foreground→new session (#29)
+        this.startSessionOnInit().catch(err => console.warn("Native startSession failed:", err));
+        this.attachAppState().catch(err => console.warn("Native AppState attach failed:", err));
+
         this.trackErrors({ captureConsole: opts?.captureConsole }).catch(err => {
             console.warn("Native trackErrors failed:", err);
         });
@@ -64,6 +68,26 @@ export class TelemetryNative extends TelemetryBase {
         });
         this.trackMemoryUsage().catch(err => {
             console.log("Native trackMemoryUsage errors", err);
+        });
+    }
+
+    private async startSessionOnInit() {
+        const inst = await this.instancePromise;
+        await inst.startSession();
+    }
+
+    // Background → finalize (immediate flush). Foreground after background → fresh session. (#29)
+    private async attachAppState() {
+        const { AppState } = await import("react-native") as any;
+        const inst = await this.instancePromise;
+        let prev: string = AppState.currentState;
+        AppState.addEventListener("change", (next: string) => {
+            if (next === "background") {
+                inst.finalizeSession().catch((e: any) => console.warn("finalizeSession failed:", e));
+            } else if (next === "active" && prev === "background") {
+                inst.newSession().catch((e: any) => console.warn("newSession failed:", e));
+            }
+            prev = next;
         });
     }
 

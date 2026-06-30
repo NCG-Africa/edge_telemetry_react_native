@@ -7,6 +7,7 @@ import { version as PKG_VERSION } from "../../package.json";
 // v3 wire contract constants
 const SDK_PLATFORM = "react-native";   // framework identity; device OS lives in device.platform
 const SDK_VERSION = PKG_VERSION;       // sdk.version follows the published package version
+const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min of inactivity (iOS ADR-004)
 
 // Names the backend routes. Anything else is remapped to `custom_event` with the
 // original name carried as `event.name`. Includes metric names so the metric path
@@ -165,6 +166,11 @@ export class Telemetry {
     private eventCount = 0;
     // last-20 action trail, attached to app.crash as crash.breadcrumbs (#28)
     private breadcrumbs = new BreadcrumbBuffer(20);
+    // session lifecycle (#29)
+    private lastActivity?: number;       // last non-session event time; drives 30-min idle rotation
+    private sessionSequence = 0;         // increments per acknowledged (2xx) batch
+    private sessionEventCount = 0;       // events this session (journey summary)
+    private errorCount = 0;              // app.crash count this session (sdk.error_count)
 
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
@@ -282,6 +288,40 @@ export class Telemetry {
     public startNewSession() {
         this.sessionId = this.generateSessionId();
         this.sessionStart = Date.now();
+    }
+
+    // ---------- Session lifecycle (#29) ----------
+
+    /** Emit session.started for the current session (init / resume). */
+    public async startSession() {
+        this.lastActivity = Date.now();
+        await this.log("session.started", {});
+    }
+
+    /** Finalize the current session: journey summary + sdk.error_count, then an immediate flush. */
+    public async finalizeSession() {
+        await this.log("session.finalized", {
+            "session.duration_ms": Date.now() - this.sessionStart,
+            "session.event_count": this.sessionEventCount,
+            "sdk.error_count": this.errorCount,
+        });
+        await this.flush();
+    }
+
+    /** Begin a fresh session: new id/start, reset per-session counters, emit session.started. */
+    public async newSession() {
+        this.sessionId = this.generateSessionId();
+        this.sessionStart = Date.now();
+        this.sessionSequence = 0;
+        this.sessionEventCount = 0;
+        this.errorCount = 0;
+        await this.startSession();
+    }
+
+    /** Idle/boundary rotation: finalize the old session then start a fresh one (the pair). */
+    public async rotateSession() {
+        await this.finalizeSession();
+        await this.newSession();
     }
 
     public setUserId(id: string) {
@@ -404,6 +444,18 @@ export class Telemetry {
     async log(name: string, data?: Record<string, any>) {
         this.eventCount++;
 
+        // Session activity & 30-min idle rotation. Session events don't count as activity
+        // (they're emitted *by* the lifecycle), so they never re-trigger rotation.
+        if (!name.startsWith('session.')) {
+            const now = Date.now();
+            if (this.lastActivity !== undefined && now - this.lastActivity > SESSION_IDLE_MS) {
+                await this.rotateSession();
+            }
+            this.lastActivity = now;
+            this.sessionEventCount++;
+            if (name === 'app.crash') this.errorCount++;
+        }
+
         // v3 allowlist: unknown names ship as custom_event, original kept as event.name
         const isAllowed = ALLOWED_NAMES.has(name);
         const eventName = isAllowed ? name : 'custom_event';
@@ -432,6 +484,7 @@ export class Telemetry {
             'user.id': this.userId ?? null,
             'session.id': this.sessionId,
             'session.start_time': new Date(this.sessionStart).toISOString(),
+            'session.sequence': this.sessionSequence,
             'sdk.platform': SDK_PLATFORM,
             'sdk.version': this.sdkVersion,
             ...(isAllowed ? {} : { 'event.name': name }),
@@ -526,6 +579,7 @@ export class Telemetry {
 
         try {
             await this.sender.send(toSend);
+            this.sessionSequence++;   // acknowledged (2xx) batch — order a session's batches (#29)
         } catch (lastError) {
             if (this.sender.onFailure) {
                 try {
