@@ -10,6 +10,7 @@ export class TelemetryWeb extends TelemetryBase {
         batchSize?: number;
         flushIntervalMs?: number;
         endpoint?: string;
+        captureConsole?: boolean;
     }) {
         super();
 
@@ -40,7 +41,7 @@ export class TelemetryWeb extends TelemetryBase {
             return telemetry;
         })();
 
-        this.trackErrors().catch(err => {
+        this.trackErrors({ captureConsole: opts?.captureConsole }).catch(err => {
             console.warn("Web trackErrors failed:", err);
         });
 
@@ -56,6 +57,14 @@ export class TelemetryWeb extends TelemetryBase {
         this.autoTrackNavigation().catch(err => {
             console.log("Web autoTrackNavigation errors", err);
         });
+    }
+
+    // Web uses the web crash handler (window.onerror/onunhandledrejection), not the native one.
+    async trackErrors(options?: { captureConsole?: boolean }) {
+        const { CrashHandler } = await import("./adapters/web/crashHandler.web");
+        const inst = await this.instancePromise;
+        const crashHandler = new CrashHandler(inst);
+        return inst.trackErrors(crashHandler, options);
     }
 
     async trackFrameDrops() {

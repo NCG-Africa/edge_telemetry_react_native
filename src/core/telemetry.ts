@@ -1,5 +1,6 @@
 import { NavigationTracker } from "../adapters/navigationTracker";
 import { ScreenTimingTracker } from "../adapters/screenTiming";
+import { BreadcrumbBuffer } from "./breadcrumbs";
 import { randomHex } from "./utils/uuid";
 import { version as PKG_VERSION } from "../../package.json";
 
@@ -33,9 +34,12 @@ export interface Sender {
 
 
 
-export interface CrashHandler {
-    attach(): Promise<void>;
+export interface CrashHandlerOptions {
+    captureConsole?: boolean;   // funnel console.error/warn into app.crash (default on, opt-out)
+}
 
+export interface CrashHandler {
+    attach(options?: CrashHandlerOptions): Promise<void>;
 }
 export interface NetworkInfo {
     type?: string;        // "wifi", "cellular", "ethernet", "unknown", etc.
@@ -159,6 +163,8 @@ export class Telemetry {
     private sdkVersion: string;
     private platform?: string;
     private eventCount = 0;
+    // last-20 action trail, attached to app.crash as crash.breadcrumbs (#28)
+    private breadcrumbs = new BreadcrumbBuffer(20);
 
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
@@ -204,9 +210,9 @@ export class Telemetry {
 
     // ---------- Session & User APIs ----------
 
-    public trackErrors(crashHandler: CrashHandler) {
+    public trackErrors(crashHandler: CrashHandler, options?: CrashHandlerOptions) {
         this.crashHandler = crashHandler;
-        void crashHandler.attach().catch((err) => {
+        void crashHandler.attach(options).catch((err) => {
             console.warn("Telemetry crashHandler attach failed:", err);
         });
     }
@@ -451,6 +457,13 @@ export class Telemetry {
                     attributes[key] = value;
                 }
             });
+        }
+
+        // app.crash carries the trail of prior actions; other events extend the trail.
+        if (eventName === 'app.crash') {
+            attributes['crash.breadcrumbs'] = this.breadcrumbs.toJSON();
+        } else {
+            this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
         }
 
         const e: TelemetryEvent = {
