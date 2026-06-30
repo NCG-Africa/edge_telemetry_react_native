@@ -1,5 +1,6 @@
 // adapters/web/networkInfoWeb.web.ts
 import { NetworkInfo, Telemetry } from "../../core/telemetry";
+import { NetworkChangeEmitter } from "../networkChange";
 
 
 
@@ -33,8 +34,21 @@ export class NetworkInfoTrackerWeb {
     private telemetry!: Telemetry;
 
     async start(telemetry: Telemetry): Promise<NetworkInfo> {
-        // context-only — collect() feeds the Context block; no standalone network_info event (ADR-0002)
+        // collect() feeds the steady-state Context block (no standalone network_info event,
+        // ADR-0002). A connectivity *transition* is its own v3 `network_change` event,
+        // emitted via the shared NetworkChangeEmitter (lockstep with native).
         this.telemetry = telemetry;
-        return this.collect();
+        const changes = new NetworkChangeEmitter(telemetry);
+        const info = await this.collect();
+        changes.onSample(info.type);   // seed baseline so the first real transition emits
+        const sample = async () => changes.onSample((await getNetworkInfo()).type);
+
+        const conn = typeof navigator !== "undefined" ? (navigator as any).connection : undefined;
+        conn?.addEventListener?.("change", sample);
+        if (typeof window !== "undefined") {
+            window.addEventListener("online", sample);
+            window.addEventListener("offline", sample);
+        }
+        return info;
     }
 }

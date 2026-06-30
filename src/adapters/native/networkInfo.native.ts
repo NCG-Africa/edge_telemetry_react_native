@@ -1,21 +1,17 @@
 // adapters/native/networkInfoNative.native.ts
 import NetInfo from "@react-native-community/netinfo";
-import { NetworkInfo, NetworkInfoChanges, Telemetry } from "../../core/telemetry";
+import { NetworkInfo, Telemetry } from "../../core/telemetry";
+import { NetworkChangeEmitter } from "../networkChange";
 
 
 export class NetworkInfoTrackerNative {
     private telemetry?: Telemetry;
-
-    // constructor(telemetry: Telemetry) {
-    //     this.telemetry = telemetry;
-    // }
 
     constructor() {
 
     }
 
     async collect(): Promise<NetworkInfo> {
-        console.log("network_info collecting");
         try {
             const netState = await NetInfo.fetch();
             return {
@@ -28,28 +24,16 @@ export class NetworkInfoTrackerNative {
     }
 
     /**
-     * Context-only — collect() feeds the Context block on every event;
-     * no standalone network_info event (ADR-0002).
+     * collect() feeds the steady-state Context block on every event (no standalone
+     * network_info event, ADR-0002). A connectivity *transition* is still its own
+     * v3 `network_change` event, emitted via the shared NetworkChangeEmitter.
      */
     async start(telemetry: Telemetry): Promise<NetworkInfo> {
         this.telemetry = telemetry;
-        return this.collect();
-    }
-
-    /**
-     * Subscribe to changes and log them continuously.
-     */
-    subscribe(telemetry: Telemetry): void {
-        this.telemetry = telemetry;
-        NetInfo.addEventListener(state => {
-            const event: NetworkInfoChanges = {
-                type: state.type,
-                isConnected: state.isConnected ?? undefined,
-                isInternetReachable: state.isInternetReachable ?? undefined,
-            };
-            if (this.telemetry) {
-                this.telemetry.log("network_info_change", event);
-            }
-        });
+        const changes = new NetworkChangeEmitter(telemetry);
+        const info = await this.collect();
+        changes.onSample(info.type);   // seed baseline so the first real transition emits
+        NetInfo.addEventListener(state => changes.onSample(state.type));
+        return info;
     }
 }

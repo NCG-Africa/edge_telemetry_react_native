@@ -42,11 +42,6 @@ export interface NetworkInfo {
     isConnected?: boolean;
 }
 
-export interface NetworkInfoChanges {
-    type?: string;        // "wifi", "cellular", "ethernet", "unknown", etc.
-    isConnected?: boolean;
-    isInternetReachable?: boolean;
-}
 export interface WebExtraNetworkInfo {
     type?: string;
     isConnected?: boolean;
