@@ -518,6 +518,34 @@ describe("v3 session lifecycle — session.sequence", () => {
   });
 });
 
+describe("v3 identify() — user.profile.update", () => {
+  it("emits one user.profile.update and attaches identity to later events without changing user.id", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+    const t = new Telemetry({
+      sender, batchSize: 50, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("custom_event");
+    await t.identify({ name: "Ada", email: "ada@x.io", phone: "123" });
+    await t.log("custom_event");
+    await t.flush();
+
+    // exactly one profile-update event
+    expect(sent.filter((e) => e.eventName === "user.profile.update")).toHaveLength(1);
+
+    const customs = sent.filter((e) => e.eventName === "custom_event");
+    const anonId = customs[0].attributes!["user.id"];
+    const after = customs[customs.length - 1].attributes!;
+    expect(after["user.name"]).toBe("Ada");
+    expect(after["user.email"]).toBe("ada@x.io");
+    expect(after["user.phone"]).toBe("123");
+    // the SDK-owned anonymous id is preserved across identify()
+    expect(after["user.id"]).toBe(anonId);
+  });
+});
+
 describe("flush() retry/persistence", () => {
   it("calls the sender exactly once on success (no core-level retry layer)", async () => {
     const sender = { send: vi.fn(async () => undefined), onFailure: vi.fn(async () => undefined) };

@@ -366,6 +366,28 @@ export class Telemetry {
     }
 
     /**
+     * EdgeRum-style identify(): attach host-app identity (name/email/phone) to subsequent
+     * events and emit one `user.profile.update`. The SDK-owned anonymous `user.id` is
+     * preserved — identify never changes it. (#31)
+     */
+    public async identify(profile: {
+        name?: string;
+        email?: string;
+        phone?: string;
+        avatar?: string;
+        customAttributes?: Record<string, any>;
+    }) {
+        this.setUserProfile({
+            fullName: profile.name,
+            email: profile.email,
+            phone: profile.phone,
+            avatar: profile.avatar,
+            customAttributes: profile.customAttributes,
+        });
+        await this.log("user.profile.update", {});
+    }
+
+    /**
      * Set user details with individual parameters
      */
     public setUserDetails(details: {
@@ -493,6 +515,7 @@ export class Telemetry {
         // Add user profile data if available
         if (this.userProfile) {
             const userProfileData = {
+                'user.name': this.userProfile.fullName,   // v3 contract key for host identity
                 'user.fullName': this.userProfile.fullName,
                 'user.firstName': this.userProfile.firstName,
                 'user.lastName': this.userProfile.lastName,

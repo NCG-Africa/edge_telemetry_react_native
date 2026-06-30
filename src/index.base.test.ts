@@ -19,6 +19,7 @@ function fakeCore() {
     clearUserProfile: vi.fn(),
     setUserName: vi.fn(),
     setUserContact: vi.fn(),
+    identify: vi.fn(),
   };
 }
 
@@ -64,6 +65,9 @@ describe("TelemetryBase delegation", () => {
 
     await t.setUserContact("a@x.io", "123");
     expect(core.setUserContact).toHaveBeenCalledWith("a@x.io", "123");
+
+    await t.identify({ name: "Ada", email: "a@x.io" });
+    expect(core.identify).toHaveBeenCalledWith({ name: "Ada", email: "a@x.io" });
   });
 
   it("returns values produced by the core", async () => {
@@ -80,7 +84,7 @@ describe("public API parity", () => {
     "log", "flush", "shutdown", "trackErrors",
     "setUserId", "generateUserId", "setUserProfile", "setUserDetails",
     "updateUserProfile", "getUserProfile", "clearUserProfile",
-    "setUserName", "setUserContact",
+    "setUserName", "setUserContact", "identify",
   ];
 
   it("both platform classes inherit the shared delegation from TelemetryBase", () => {
