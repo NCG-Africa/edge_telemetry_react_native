@@ -86,4 +86,10 @@ export abstract class TelemetryBase {
         const inst = await this.instancePromise;
         inst.setUserContact(email, phone);
     }
+
+    // EdgeRum-style identify(): emits user.profile.update, preserves the anonymous user.id (#31)
+    async identify(profile: { name?: string; email?: string; phone?: string; avatar?: string; customAttributes?: Record<string, any> }) {
+        const inst = await this.instancePromise;
+        return inst.identify(profile);
+    }
 }
