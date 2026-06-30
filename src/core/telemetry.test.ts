@@ -381,6 +381,143 @@ describe("v3 wire contract — crash.breadcrumbs", () => {
   });
 });
 
+describe("v3 session lifecycle — started / finalized", () => {
+  function captureSender(sent: TelemetryEvent[]) {
+    return { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+  }
+
+  it("startSession() emits a session.started event", async () => {
+    const sent: TelemetryEvent[] = [];
+    const t = new Telemetry({
+      sender: captureSender(sent), batchSize: 50, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.startSession();
+    await t.flush();
+
+    expect(sent.map((e) => e.eventName)).toContain("session.started");
+  });
+
+  it("finalizeSession() emits session.finalized with journey summary + sdk.error_count, and flushes immediately", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = captureSender(sent);
+    const t = new Telemetry({
+      sender, batchSize: 50, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("custom_event");
+    await t.log("app.crash", { "crash.cause": "Error" });
+    await t.finalizeSession();   // no explicit flush() — finalize flushes immediately
+
+    const fin = sent.find((e) => e.eventName === "session.finalized")!;
+    expect(fin).toBeDefined();
+    expect(fin.attributes!["sdk.error_count"]).toBe(1);            // one app.crash this session
+    expect(typeof fin.attributes!["session.duration_ms"]).toBe("number");
+    expect(fin.attributes!["session.event_count"]).toBeGreaterThanOrEqual(2);
+  });
+});
+
+describe("v3 session lifecycle — 30-min idle rotation", () => {
+  function captureSender(sent: TelemetryEvent[]) {
+    return { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+  }
+
+  it("rotates after 30 min idle: emits finalized+started and a new session.id on the next event", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(0));
+      const sent: TelemetryEvent[] = [];
+      const t = new Telemetry({
+        sender: captureSender(sent), batchSize: 50, flushIntervalMs: 0,
+        deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+      });
+
+      await t.startSession();
+      await t.log("custom_event");
+
+      vi.setSystemTime(new Date(31 * 60 * 1000));   // 31 minutes of inactivity
+      await t.log("navigation", { "navigation.to_screen": "Home" });
+      await t.flush();   // drain everything still queued
+
+      const firstId = sent.find((e) => e.eventName === "custom_event")!.attributes!["session.id"];
+      const names = sent.map((e) => e.eventName);
+      expect(names).toContain("session.finalized");
+      // session.started appears for both the initial session and the rotation
+      expect(names.filter((n) => n === "session.started").length).toBeGreaterThanOrEqual(2);
+
+      const nav = [...sent].reverse().find((e) => e.eventName === "navigation")!;
+      expect(nav.attributes!["session.id"]).not.toBe(firstId);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not rotate within the idle window", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date(0));
+      const sent: TelemetryEvent[] = [];
+      const t = new Telemetry({
+        sender: captureSender(sent), batchSize: 50, flushIntervalMs: 0,
+        deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+      });
+
+      await t.startSession();
+      await t.log("custom_event");
+      vi.setSystemTime(new Date(10 * 60 * 1000));   // only 10 minutes
+      await t.log("custom_event");
+
+      expect(sent.some((e) => e.eventName === "session.finalized")).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("v3 session lifecycle — session.sequence", () => {
+  it("increments once per acknowledged (2xx) batch and rides every event", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+    const t = new Telemetry({
+      sender, batchSize: 50, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("custom_event"); await t.flush();   // ack #1
+    await t.log("custom_event"); await t.flush();   // ack #2
+    await t.log("custom_event"); await t.flush();
+
+    const seqs = sent
+      .filter((e) => e.eventName === "custom_event")
+      .map((e) => e.attributes!["session.sequence"]);
+    expect(seqs).toEqual([0, 1, 2]);
+  });
+
+  it("does not increment session.sequence when a batch send fails", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = {
+      send: vi.fn(async (_e: TelemetryEvent[]) => { throw new Error("net"); }),
+      onFailure: vi.fn(async () => undefined),
+    };
+    const t = new Telemetry({
+      sender, batchSize: 50, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("custom_event");
+    await expect(t.flush()).rejects.toThrow("net");
+
+    sender.send.mockImplementation((async (e: TelemetryEvent[]) => { sent.push(...e); }) as any);
+    await t.log("custom_event");
+    await t.flush();
+
+    // the failed batch never bumped the sequence; the ret/ next event is still seq 0-era
+    expect(sent.find((e) => e.eventName === "custom_event")!.attributes!["session.sequence"]).toBe(0);
+  });
+});
+
 describe("flush() retry/persistence", () => {
   it("calls the sender exactly once on success (no core-level retry layer)", async () => {
     const sender = { send: vi.fn(async () => undefined), onFailure: vi.fn(async () => undefined) };
