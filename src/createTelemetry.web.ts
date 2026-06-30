@@ -6,6 +6,7 @@ export type TelemetryOpts = {
     batchSize?: number;
     flushIntervalMs?: number;
     endpoint?: string;
+    captureConsole?: boolean;   // funnel console.error/warn into app.crash (default on, opt-out)
 };
 
 export function assertApiKey(apiKey?: string) {

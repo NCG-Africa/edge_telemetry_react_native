@@ -326,6 +326,49 @@ describe("navigation route changes", () => {
   });
 });
 
+describe("v3 wire contract — crash.breadcrumbs", () => {
+  function captureSender(sent: TelemetryEvent[]) {
+    return { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+  }
+
+  it("attaches crash.breadcrumbs (JSON of prior actions) to an app.crash event", async () => {
+    const sent: TelemetryEvent[] = [];
+    const t = new Telemetry({
+      sender: captureSender(sent), batchSize: 50, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("http.request", { "http.url": "/x" });
+    await t.log("app.crash", { "crash.cause": "Error" });
+    await t.flush();
+
+    const crash = sent.find((e) => e.eventName === "app.crash")!;
+    const raw = crash.attributes!["crash.breadcrumbs"];
+    expect(typeof raw).toBe("string");
+    const trail = JSON.parse(raw);
+    expect(trail.map((b: any) => b.name)).toEqual(["navigation", "http.request"]);
+    // the crash does not include itself in its own breadcrumb trail
+    expect(trail.map((b: any) => b.name)).not.toContain("app.crash");
+  });
+
+  it("caps crash.breadcrumbs at the last 20 actions", async () => {
+    const sent: TelemetryEvent[] = [];
+    const t = new Telemetry({
+      sender: captureSender(sent), batchSize: 50, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+
+    for (let i = 0; i < 25; i++) await t.log("custom_event", { i });
+    await t.log("app.crash", { "crash.cause": "Error" });
+    await t.flush();
+
+    const crash = sent.find((e) => e.eventName === "app.crash")!;
+    const trail = JSON.parse(crash.attributes!["crash.breadcrumbs"]);
+    expect(trail).toHaveLength(20);
+  });
+});
+
 describe("flush() retry/persistence", () => {
   it("calls the sender exactly once on success (no core-level retry layer)", async () => {
     const sender = { send: vi.fn(async () => undefined), onFailure: vi.fn(async () => undefined) };

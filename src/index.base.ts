@@ -33,11 +33,11 @@ export abstract class TelemetryBase {
         return inst.shutdown();
     }
 
-    async trackErrors() {
+    async trackErrors(options?: { captureConsole?: boolean }) {
         const { CrashHandlerNative } = await import("./adapters/native/crashHandlerNative.native");
         const inst = await this.instancePromise;
         const crashHandler = new CrashHandlerNative(inst);
-        return inst.trackErrors(crashHandler);
+        return inst.trackErrors(crashHandler, options);
     }
 
     // ---------- User Profile Management ----------

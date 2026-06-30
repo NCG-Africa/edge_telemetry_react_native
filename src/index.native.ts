@@ -10,6 +10,7 @@ export class TelemetryNative extends TelemetryBase {
         batchSize?: number;
         flushIntervalMs?: number;
         endpoint?: string;
+        captureConsole?: boolean;
     }) {
         super();
 
@@ -51,7 +52,7 @@ export class TelemetryNative extends TelemetryBase {
             return telemetry;
         })();
 
-        this.trackErrors().catch(err => {
+        this.trackErrors({ captureConsole: opts?.captureConsole }).catch(err => {
             console.warn("Native trackErrors failed:", err);
         });
 
