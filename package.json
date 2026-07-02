@@ -1,12 +1,13 @@
 {
   "name": "@nathanclaire/edge-telemetry-sdk",
   "version": "3.0.0",
+  "type": "module",
   "publishConfig": {
     "access": "public"
   },
   "description": "A lightweight React Native SDK for collecting mobile app telemetry and exporting it to custom backends in JSON format. Built for flexible and developer-friendly observability.",
   "private": false,
-  "main": "dist/index.web.js",
+  "main": "dist/index.web.cjs",
   "module": "dist/index.web.js",
   "types": "dist/index.web.d.ts",
   "react-native": "dist/index.native.js",

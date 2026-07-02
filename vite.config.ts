@@ -6,6 +6,7 @@ export default defineConfig(({ mode }) => ({
     plugins: [
         dts({
             insertTypesEntry: true,
+            exclude: ["**/*.test.ts", "**/*.test.tsx"],
         }),
     ],
     resolve: {
@@ -39,7 +40,9 @@ export default defineConfig(({ mode }) => ({
                 "react-native"
             ],
             output: {
-                entryFileNames: "[name].js",
+                // Let Vite pick per-format extensions (es → .js, cjs → .cjs under
+                // "type":"module") so both entry builds are emitted instead of clobbering
+                // each other on a shared [name].js. Matches the package.json exports map.
                 manualChunks: undefined,
                 assetFileNames: "assets/[name]-[hash][extname]",
             },
