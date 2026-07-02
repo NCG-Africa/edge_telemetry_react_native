@@ -29,6 +29,7 @@ Status legend: `proposed` (RN will emit, backend not yet handling) · `confirmed
 | `frame_render_time` | `frame.max_ms`, `frame.p95_ms`, `frame.dropped_count`, `frame.target_hz`, `frame.source` | Aggregated frame window (iOS shape); metric `value` = `frame.p95_ms`. | proposed |
 | `memory_usage` | `memory.usage_mb`, `memory.pressure_level`, `memory.unit`, `memory.type`, `memory.source` | Heap snapshot per sample; metric `value` = used MB. | proposed |
 | `app_lifecycle` | `app_lifecycle.state` (`foreground`/`background`) | Transition direction on the lifecycle event (#30). | proposed |
+| `user.interaction` | `interaction.type` (`tap`), `interaction.screen` (when known) | Best-effort native taps; no DOM `target_tag`/`target_class` — those are web-only (#33). | proposed |
 
 ## Open reconciliations (pick the backend-keyed shape before RN pins it)
 

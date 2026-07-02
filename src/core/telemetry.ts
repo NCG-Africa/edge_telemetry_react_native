@@ -151,6 +151,8 @@ export class Telemetry {
     private navigationTracker?: NavigationTracker;
     // single screen-tracking API (timed); used by the native screenStart/screenEnd
     public screens: ScreenTimingTracker;
+    // last-known screen; best-effort context for user.interaction taps (#33)
+    public currentScreen?: string;
 
     private networkInfoHandler: NetworkInfoHandler;
     private deviceInfoHandler: DeviceInfoHandler;
@@ -672,6 +674,7 @@ export class Telemetry {
     }
 
     recordRouteChange(from: string, to: string) {
+        this.currentScreen = to;   // best-effort screen for subsequent taps (#33)
         return this.navigationTracker?.recordRouteChange(from, to);
     }
 
