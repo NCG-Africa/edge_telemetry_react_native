@@ -1,79 +1,41 @@
 import { Telemetry } from "../../core/telemetry";
-
-interface FrameDropEvent {
-    "frame.delta_ms": number;
-    "frame.target_fps": number;
-    "frame.severity": "low" | "medium" | "high";
-}
+import { aggregateFrames } from "../frameAggregate";
 
 /**
- * Tracks frame drops in a React Native environment using requestAnimationFrame.
- * Assumes a target FPS (defaults to 60), and logs frames that exceed the expected budget.
+ * Samples frame deltas via requestAnimationFrame and emits an aggregated
+ * `frame_render_time` metric (max/p95/dropped_count) once per window — instead of one event
+ * per dropped frame. The metric shape matches the iOS contract (docs/edgerum-contract.md).
  */
 export class FrameDropTrackerNative {
     private lastFrameTime = performance.now();
-    private readonly targetFPS: number;
-    private readonly frameBudget: number;
+    private windowStart = performance.now();
+    private deltas: number[] = [];
 
-    constructor(private telemetry: Telemetry, targetFPS = 60) {
-        this.targetFPS = targetFPS;
+    constructor(
+        private telemetry: Telemetry,
+        private targetFPS = 60,
+        private windowMs = 10000,
+    ) { }
 
-        /**
-         * Each frame should ideally complete in ~16.67ms (1000ms / 60fps).
-         * This is known as the frame budget.
-         * If delta exceeds 2x this budget, we consider it a frame drop.
-         */
-        this.frameBudget = 1000 / this.targetFPS;
-    }
-
-    /**
-     * Starts tracking frame drops.
-     * Returns a resolved Promise for compatibility with async startup flows.
-     */
     start(): Promise<void> {
         return new Promise((resolve) => {
             const loop = () => {
                 const now = performance.now();
-                const delta = now - this.lastFrameTime;
+                this.deltas.push(now - this.lastFrameTime);
                 this.lastFrameTime = now;
 
-                /**
-                 * Detecting frame drops:
-                 * If the time between frames (delta) is more than 2x the frame budget,
-                 * we log it as a performance issue.
-                 * 
-                 * For 60fps:
-                 * - Budget = ~16.67ms
-                 * - Medium drop = >33ms
-                 * - High drop = >50ms
-                 */
-                if (delta > this.frameBudget * 2) {
-                    let severity: FrameDropEvent["frame.severity"];
-
-                    if (delta > this.frameBudget * 3) {
-                        severity = "high";
-                    } else if (delta > this.frameBudget * 2) {
-                        severity = "medium";
-                    } else {
-                        severity = "low";
-                    }
-
-                    const event: FrameDropEvent = {
-                        "frame.delta_ms": delta,
-                        "frame.target_fps": this.targetFPS,
-                        "frame.severity": severity,
-                    };
-
-                    this.telemetry.log("frame_drop", event);
+                if (now - this.windowStart >= this.windowMs && this.deltas.length > 0) {
+                    // ponytail: first window includes the startup delta; acceptable noise, not worth gating.
+                    const { value, attributes } = aggregateFrames(this.deltas, this.targetFPS, "requestAnimationFrame");
+                    this.telemetry.logMetric("frame_render_time", value, attributes);
+                    this.deltas = [];
+                    this.windowStart = now;
                 }
 
                 requestAnimationFrame(loop);
             };
 
-            // Start the loop on the next animation frame
             requestAnimationFrame(loop);
-
-            // Resolve immediately — the tracker runs continuously in background
             resolve();
         });
     }
