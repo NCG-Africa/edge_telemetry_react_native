@@ -1,4 +1,4 @@
-# edge-telemetry-sdk (React Native)
+# @nathanclaire/edge-telemetry-sdk (React Native)
 
 RUM SDK for React Native apps. Captures performance, errors, network, device/navigation
 context and ships it to the shared EdgeTelemetryProcessor backend — the same backend the
