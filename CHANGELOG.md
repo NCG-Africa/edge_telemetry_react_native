@@ -15,8 +15,8 @@ once.
   start with `edge_`; init throws otherwise. Sent as the `X-API-Key` header. `tenant_id` is
   never sent (the backend resolves the tenant from the key).
 - **Batch envelope.** The POST body is now
-  `{ type: "telemetry_batch", timestamp, location?, batch_size, events }` sent to
-  `/collector/telemetry` — no longer a bare `{ events }` array.
+  `{ type: "telemetry_batch", timestamp, batch_size, events }` POSTed to the `endpoint` you
+  configure — no longer a bare `{ events }` array.
 - **ISO-8601 timestamps.** Event and batch `timestamp` are ISO-8601 strings (was ms epoch).
 - **ID formats.** `device_{ms}_{16hex}_{os}`, `session_{ms}_{16hex}_{os}` (suffix = device
   OS), `user_{ms}_{16hex}` (no suffix). 16 hex chars of entropy (was 8, no suffix).
@@ -50,7 +50,8 @@ once.
 ### Migration
 
 1. Add `apiKey` (starting with `edge_`) to `createTelemetry`.
-2. Point `endpoint` at the collector host — the SDK appends `/collector/telemetry`.
+2. Set `endpoint` to the **full** collector URL, e.g.
+   `https://collector.example.com/collector/telemetry` — it is used verbatim as the POST URL.
 3. Drop any consumer code that read the standalone `device_info`/`network_info` events; that
    data now rides on every event's `attributes`.
 4. If you called `log()` with custom names, they now arrive as `custom_event` with your name
