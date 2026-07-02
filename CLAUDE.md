@@ -1,4 +1,4 @@
-# CLAUDE.md — edge-telemetry-sdk (React Native) Development Guide
+# CLAUDE.md — @nathanclaire/edge-telemetry-sdk (React Native) Development Guide
 
 This file is the source of truth for AI-assisted development on this project.
 Read it completely before writing any code, generating files, or making suggestions.
@@ -12,12 +12,13 @@ Read it completely before writing any code, generating files, or making suggesti
 
 ## What this project is
 
-`edge-telemetry-sdk` is a lightweight Real User Monitoring SDK for **React Native** apps
+`@nathanclaire/edge-telemetry-sdk` is a lightweight Real User Monitoring SDK for **React Native** apps
 (and a web build via React Native Web). It captures performance data, errors, network
 requests, device/network context, and navigation, then ships them as JSON to a custom
 backend — the same EdgeTelemetryProcessor that ingests the Android and Ionic SDK data.
 
-- Package name: `edge-telemetry-sdk` (npm), currently `v2.1.0`.
+- Package name: `@nathanclaire/edge-telemetry-sdk` (npm), `v3.0.0`. Renamed from the unscoped
+  `edge-telemetry-sdk` (last published 2.1.0, now deprecated) to move under the org scope.
 - Bundler: **Vite** (`vite build` → `dist/`). Not `react-native-builder-bob`.
 - Dual entry: web (`dist/index.web.js`) and native (`dist/index.native.js`), selected via
   the `package.json` `exports` map and the `.web.ts` / `.native.ts` file-extension split.
@@ -59,7 +60,7 @@ other silently breaks that platform.
 ### How a consumer wires it up
 
 ```ts
-import { createTelemetry } from "edge-telemetry-sdk";
+import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk";
 
 const telemetry = createTelemetry({
   endpoint: "https://collector.example.com/collect",

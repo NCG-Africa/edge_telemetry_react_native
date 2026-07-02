@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to `edge-telemetry-sdk` are documented here.
+All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
 ## 3.0.0
 
@@ -11,6 +11,11 @@ once.
 
 ### Breaking
 
+- **Package renamed.** Published as **`@nathanclaire/edge-telemetry-sdk`** (scoped under the
+  org), replacing the unscoped `edge-telemetry-sdk` (last at 2.1.0, now deprecated). Update
+  your install and imports:
+  `npm install @nathanclaire/edge-telemetry-sdk` /
+  `import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk"`.
 - **`apiKey` is now required.** `createTelemetry({ apiKey, endpoint, ... })` — the key must
   start with `edge_`; init throws otherwise. Sent as the `X-API-Key` header. `tenant_id` is
   never sent (the backend resolves the tenant from the key).

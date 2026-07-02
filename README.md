@@ -1,6 +1,6 @@
-# edge-telemetry-sdk
+# @nathanclaire/edge-telemetry-sdk
 
-[![npm version](https://img.shields.io/npm/v/edge-telemetry-sdk.svg)](https://www.npmjs.com/package/edge-telemetry-sdk)
+[![npm version](https://img.shields.io/npm/v/@nathanclaire/edge-telemetry-sdk.svg)](https://www.npmjs.com/package/@nathanclaire/edge-telemetry-sdk)
 [![React Native](https://img.shields.io/badge/React%20Native-0.64%2B-61DAFB.svg?style=flat&logo=react)](https://reactnative.dev/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-Ready-3178C6.svg?style=flat&logo=typescript)](https://www.typescriptlang.org/)
 
@@ -10,7 +10,7 @@ navigation and user interactions, then ships them as JSON to the shared **EdgeTe
 backend — the same backend the web, Android (Ionic) and iOS SDKs feed.
 
 One SDK, two builds. The bundler picks `index.native.js` or `index.web.js` from the
-`package.json` `exports` map — you always import from `edge-telemetry-sdk`.
+`package.json` `exports` map — you always import from `@nathanclaire/edge-telemetry-sdk`.
 
 ---
 
@@ -51,7 +51,7 @@ Full breaking-change list and migration checklist: **[CHANGELOG.md](./CHANGELOG.
 ## Install
 
 ```bash
-npm install edge-telemetry-sdk
+npm install @nathanclaire/edge-telemetry-sdk
 ```
 
 ### React Native peer dependencies
@@ -81,7 +81,7 @@ The **web build** uses browser APIs (`navigator`, `localStorage`) and needs none
 ### React Native
 
 ```typescript
-import { createTelemetry } from "edge-telemetry-sdk";
+import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk";
 
 const telemetry = createTelemetry({
   apiKey: "edge_xxxxxxxx",                                  // required; must start with "edge_"
@@ -96,7 +96,7 @@ await telemetry.log("checkout_started", { cart_value: 42 });
 ### React Web
 
 ```typescript
-import { createTelemetry } from "edge-telemetry-sdk";
+import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk";
 
 const telemetry = createTelemetry({
   apiKey: "edge_xxxxxxxx",
