@@ -158,6 +158,16 @@ export class TelemetryNative extends TelemetryBase {
         inst.recordRouteChange(from, to);
     }
 
+    // Best-effort native taps → user.interaction (#33). Spread the returned props on your
+    // app root <View>; each tap emits user.interaction with the current screen when known.
+    //   const props = await telemetry.interactionProps();
+    //   <View {...props}>{app}</View>
+    async interactionProps() {
+        const inst = await this.instancePromise;
+        const { InteractionEmitter } = await import("./adapters/interaction");
+        return new InteractionEmitter(inst).responderProps();
+    }
+
     async attachNavigation(navigationRef: any) {
         console.log("Attaching navigation tracker");
         if (!navigationRef) {

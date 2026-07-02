@@ -13,6 +13,7 @@ export class ScreenTimingTracker {
     // reference/Angular keys; iOS reconciliation is OPEN (see additions ledger).
     startScreen(screen: string) {
         this.startTimes.set(screen, Date.now());
+        this.telemetry.currentScreen = screen;   // best-effort screen for user.interaction taps (#33)
         this.telemetry.log("navigation", {
             "navigation.from_screen": this.lastScreen ?? null,
             "navigation.to_screen": screen,

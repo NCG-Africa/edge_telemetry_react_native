@@ -28,6 +28,7 @@ Status legend: `proposed` (RN will emit, backend not yet handling) · `confirmed
 | `app.crash` | `crash.breadcrumbs` (last 20 actions, JSON string), `crash.report_*` | Crash context. Confirm size cap. | proposed |
 | `frame_render_time` | `frame.max_ms`, `frame.p95_ms`, `frame.dropped_count`, `frame.target_hz`, `frame.source` | Aggregated frame window (iOS shape). | proposed |
 | `app_lifecycle` | `app_lifecycle.state` (`foreground`/`background`) | Transition direction on the lifecycle event (#30). | proposed |
+| `user.interaction` | `interaction.type` (`tap`), `interaction.screen` (when known) | Best-effort native taps; no DOM `target_tag`/`target_class` — those are web-only (#33). | proposed |
 
 ## Open reconciliations (pick the backend-keyed shape before RN pins it)
 
