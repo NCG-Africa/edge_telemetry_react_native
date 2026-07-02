@@ -297,17 +297,43 @@ describe("screen tracking", () => {
 });
 
 describe("recordMetric", () => {
-  it("still emits via log, with the dead metric counter/accessor removed", () => {
+  it("routes through the v3 metric path (logMetric)", () => {
     const t = new Telemetry({ flushIntervalMs: 0 });
-    const logSpy = vi.spyOn(t, "log").mockResolvedValue(undefined);
+    const metricSpy = vi.spyOn(t, "logMetric").mockResolvedValue(undefined);
 
     t.recordMetric("load_time", 123, { page: "home" });
 
-    expect(logSpy).toHaveBeenCalledWith(
-      "load_time",
-      expect.objectContaining({ value: 123, metric: true, page: "home" }),
-    );
+    expect(metricSpy).toHaveBeenCalledWith("load_time", 123, { page: "home" });
     expect((t as any).getMetricCount).toBeUndefined();
+  });
+});
+
+describe("v3 wire contract — metric shape", () => {
+  it("emits {type:'metric', metricName, numeric value} carrying the Context block", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+
+    const t = new Telemetry({
+      sender,
+      batchSize: 10,
+      flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any,
+      networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.logMetric("memory_usage", 128, { "memory.unit": "MB" });
+    await t.flush();
+
+    const m = sent[0];
+    expect(m.type).toBe("metric");
+    expect(m.metricName).toBe("memory_usage");
+    expect(m.value).toBe(128);
+    expect("eventName" in m).toBe(false);
+    expect(typeof m.timestamp).toBe("string");
+    // Context block rides on the metric too
+    expect(m.attributes!["sdk.platform"]).toBe("react-native");
+    expect(m.attributes!["session.id"]).toBeDefined();
+    expect(m.attributes!["memory.unit"]).toBe("MB");
   });
 });
 

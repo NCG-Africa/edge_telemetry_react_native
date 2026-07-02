@@ -17,19 +17,6 @@ function getNativeMemoryUsage(): number | null {
 
 type MemoryPressureLevel = "low" | "moderate" | "high";
 
-interface MemoryPressureEvent {
-    "memory.usage_mb": number;
-    "memory.pressure_level": MemoryPressureLevel;
-    "memory.timestamp": string;
-}
-
-interface MemoryUsageMetric {
-    value: number;
-    "metric.unit": string;
-    "memory.type": string;
-    "memory.source": string;
-}
-
 /**
  * Logs JavaScript memory usage and pressure level at regular intervals
  * in a React Native environment.
@@ -40,9 +27,7 @@ export class TelemetryMemoryUsageNative {
     constructor(private telemetry: Telemetry) { }
 
     /**
-     * Records current memory usage and logs:
-     * - A memory pressure event
-     * - A memory usage metric
+     * Records a memory_usage metric (value = used heap MB) per sample, on the v3 metric path.
      */
     recordMemoryUsage(): void {
         const usedMb = getNativeMemoryUsage();
@@ -52,23 +37,13 @@ export class TelemetryMemoryUsageNative {
         const pressureLevel: MemoryPressureLevel =
             usedMb < 256 ? "low" : usedMb < 512 ? "moderate" : "high";
 
-        const timestamp = new Date().toISOString();
-
-        const event: MemoryPressureEvent = {
+        this.telemetry.logMetric("memory_usage", usedMb, {
             "memory.usage_mb": usedMb,
             "memory.pressure_level": pressureLevel,
-            "memory.timestamp": timestamp,
-        };
-
-        const metric: MemoryUsageMetric = {
-            value: usedMb,
-            "metric.unit": "MB",
+            "memory.unit": "MB",
             "memory.type": "heap",
             "memory.source": Platform.OS,
-        };
-
-        // One event per sample: pressure + usage merged (both previously carried the same usedMb).
-        this.telemetry.log("memory_usage", { ...event, ...metric });
+        });
     }
 
     /**

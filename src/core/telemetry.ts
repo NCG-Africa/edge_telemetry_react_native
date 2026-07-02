@@ -20,9 +20,14 @@ const ALLOWED_NAMES = new Set<string>([
     "LCP", "FCP", "CLS", "INP", "TTFB",
 ]);
 
+// Events carry `eventName`; metrics carry `metricName` + numeric `value` (v3 §"Event vs Metric").
+// Kept as one loose shape (not a strict union) so callers can read `.eventName` without narrowing;
+// the emit helpers (log / logMetric) set the right fields, and JSON.stringify drops the undefined ones.
 export type TelemetryEvent = {
     type: 'event' | 'metric';
-    eventName: string;
+    eventName?: string;
+    metricName?: string;
+    value?: number;
     timestamp: string;          // ISO 8601 (v3 wire contract) — never ms epoch
     attributes?: Record<string, any>;
 };
@@ -482,58 +487,8 @@ export class Telemetry {
         const isAllowed = ALLOWED_NAMES.has(name);
         const eventName = isAllowed ? name : 'custom_event';
 
-        let deviceInfo: Record<string, any> = {};
-        let networkInfo: Record<string, any> = {};
-
-        try {
-            deviceInfo = (await this.deviceInfoHandler?.collect()) || {};
-        } catch (err) {
-            console.warn("Telemetry: failed to fetch device info", err);
-        }
-
-        try {
-            networkInfo = (await this.networkInfoHandler?.collect()) || {};
-        } catch (err) {
-            console.warn("Telemetry: failed to fetch network info", err);
-        }
-
-        // 🔄 Flatten all properties into a single `attributes` object
-        const attributes: Record<string, any> = {
-            // deviceInfo already namespaces its own keys (app.*, device.*) — flatten flat
-            ...this.flattenWithPrefix('', deviceInfo),
-            ...this.flattenWithPrefix('network', networkInfo),
-            ...this.flattenWithPrefix('', data || {}),
-            'user.id': this.userId ?? null,
-            'session.id': this.sessionId,
-            'session.start_time': new Date(this.sessionStart).toISOString(),
-            'session.sequence': this.sessionSequence,
-            'sdk.platform': SDK_PLATFORM,
-            'sdk.version': this.sdkVersion,
-            ...(isAllowed ? {} : { 'event.name': name }),
-        };
-
-        // Add user profile data if available
-        if (this.userProfile) {
-            const userProfileData = {
-                'user.name': this.userProfile.fullName,   // v3 contract key for host identity
-                'user.fullName': this.userProfile.fullName,
-                'user.firstName': this.userProfile.firstName,
-                'user.lastName': this.userProfile.lastName,
-                'user.email': this.userProfile.email,
-                'user.phone': this.userProfile.phone,
-                'user.avatar': this.userProfile.avatar,
-                'user.createdAt': this.userProfile.createdAt,
-                'user.updatedAt': this.userProfile.updatedAt,
-                ...this.flattenWithPrefix('user.custom', this.userProfile.customAttributes || {})
-            };
-
-            // Only add non-undefined values
-            Object.entries(userProfileData).forEach(([key, value]) => {
-                if (value !== undefined) {
-                    attributes[key] = value;
-                }
-            });
-        }
+        const attributes = await this.collectContext(data);
+        if (!isAllowed) attributes['event.name'] = name;
 
         // app.crash carries the trail of prior actions; other events extend the trail.
         if (eventName === 'app.crash') {
@@ -561,6 +516,85 @@ export class Telemetry {
 
     }
 
+    /**
+     * Build the v3 Context block that rides on every event AND metric: the flattened
+     * device/network snapshot, the caller's data, identity + session + sdk fields, and the
+     * user profile. Shared by log() and logMetric() so both carry the identical iOS-clean set.
+     */
+    private async collectContext(data?: Record<string, any>): Promise<Record<string, any>> {
+        let deviceInfo: Record<string, any> = {};
+        let networkInfo: Record<string, any> = {};
+
+        try {
+            deviceInfo = (await this.deviceInfoHandler?.collect()) || {};
+        } catch (err) {
+            console.warn("Telemetry: failed to fetch device info", err);
+        }
+
+        try {
+            networkInfo = (await this.networkInfoHandler?.collect()) || {};
+        } catch (err) {
+            console.warn("Telemetry: failed to fetch network info", err);
+        }
+
+        const attributes: Record<string, any> = {
+            // deviceInfo already namespaces its own keys (app.*, device.*) — flatten flat
+            ...this.flattenWithPrefix('', deviceInfo),
+            ...this.flattenWithPrefix('network', networkInfo),
+            ...this.flattenWithPrefix('', data || {}),
+            'user.id': this.userId ?? null,
+            'session.id': this.sessionId,
+            'session.start_time': new Date(this.sessionStart).toISOString(),
+            'session.sequence': this.sessionSequence,
+            'sdk.platform': SDK_PLATFORM,
+            'sdk.version': this.sdkVersion,
+        };
+
+        if (this.userProfile) {
+            const userProfileData = {
+                'user.name': this.userProfile.fullName,   // v3 contract key for host identity
+                'user.fullName': this.userProfile.fullName,
+                'user.firstName': this.userProfile.firstName,
+                'user.lastName': this.userProfile.lastName,
+                'user.email': this.userProfile.email,
+                'user.phone': this.userProfile.phone,
+                'user.avatar': this.userProfile.avatar,
+                'user.createdAt': this.userProfile.createdAt,
+                'user.updatedAt': this.userProfile.updatedAt,
+                ...this.flattenWithPrefix('user.custom', this.userProfile.customAttributes || {})
+            };
+            Object.entries(userProfileData).forEach(([key, value]) => {
+                if (value !== undefined) attributes[key] = value;
+            });
+        }
+
+        return attributes;
+    }
+
+    /**
+     * Emit a metric on the v3 `type:"metric"` path: { type, metricName, value, timestamp, attributes }.
+     * Carries the same Context block as events. Metrics are samples, not user actions, so they
+     * don't extend the breadcrumb trail and don't count as session activity — a periodic sampler
+     * (memory/frames) must not keep a session alive and defeat the 30-min idle rotation.
+     */
+    async logMetric(metricName: string, value: number, data?: Record<string, any>) {
+        this.eventCount++;
+        const attributes = await this.collectContext(data);
+
+        const m: TelemetryEvent = {
+            type: 'metric',
+            metricName,
+            value,
+            timestamp: new Date().toISOString(),
+            attributes,
+        };
+
+        this.queue.push(m);
+        if (this.queue.length >= this.batchSize) {
+            void this.flush();
+        }
+    }
+
     private flattenWithPrefix(prefix: string, obj: Record<string, any>): Record<string, any> {
         const result: Record<string, any> = {};
 
@@ -583,10 +617,10 @@ export class Telemetry {
 
 
     /**
-     * Explicit metric helper (optional convenience).
+     * Explicit metric helper (optional convenience) — routes through the v3 metric path.
      */
     recordMetric(name: string, value: number, data?: Record<string, any>) {
-        this.log(name, { ...data, value, metric: true });
+        return this.logMetric(name, value, data);
     }
 
     // ---------- Flush / Persistence ----------

@@ -1,73 +1,40 @@
 import { Telemetry } from "../../core/telemetry";
-
-interface FrameDropEvent {
-    "frame.delta_ms": number;
-    "frame.target_fps": number;
-    "frame.severity": "low" | "medium" | "high";
-}
+import { aggregateFrames } from "../frameAggregate";
 
 /**
- * Tracks frame drops in web environments using requestAnimationFrame.
- * Assumes a default 60 FPS and logs if a frame is significantly delayed.
+ * Samples frame deltas via requestAnimationFrame and emits an aggregated
+ * `frame_render_time` metric (max/p95/dropped_count) once per window — instead of one event
+ * per dropped frame. The metric shape matches the iOS contract (docs/edgerum-contract.md).
  */
 export class FrameDropTrackerWeb {
     private lastFrameTime = performance.now();
-    private readonly targetFPS: number;
-    private readonly frameBudget: number;
+    private windowStart = performance.now();
+    private deltas: number[] = [];
 
-    constructor(private telemetry: Telemetry, targetFPS = 60) {
-        this.targetFPS = targetFPS;
+    constructor(
+        private telemetry: Telemetry,
+        private targetFPS = 60,
+        private windowMs = 10000,
+    ) { }
 
-        /**
-         * Frame budget is the ideal time per frame in ms.
-         * For 60 FPS: 1000ms / 60 = ~16.67ms per frame.
-         */
-        this.frameBudget = 1000 / this.targetFPS;
-    }
-
-    /**
-     * Starts monitoring frame timing and logs significant drops.
-     * Returns a Promise that resolves immediately for compatibility.
-     */
     start(): Promise<void> {
         return new Promise((resolve) => {
             const loop = (currentTime: number) => {
-                const delta = currentTime - this.lastFrameTime;
+                this.deltas.push(currentTime - this.lastFrameTime);
                 this.lastFrameTime = currentTime;
 
-                /**
-                 * Detecting jank:
-                 * - Low severity: just above 2x budget (~33ms)
-                 * - Medium: above 2x but below 3x
-                 * - High: >3x budget (~50ms+)
-                 */
-                if (delta > this.frameBudget * 2) {
-                    let severity: FrameDropEvent["frame.severity"];
-
-                    if (delta > this.frameBudget * 3) {
-                        severity = "high";
-                    } else if (delta > this.frameBudget * 2) {
-                        severity = "medium";
-                    } else {
-                        severity = "low";
-                    }
-
-                    const event: FrameDropEvent = {
-                        "frame.delta_ms": delta,
-                        "frame.target_fps": this.targetFPS,
-                        "frame.severity": severity,
-                    };
-
-                    this.telemetry.log("frame_drop", event);
+                if (currentTime - this.windowStart >= this.windowMs && this.deltas.length > 0) {
+                    // ponytail: first window includes the startup delta; acceptable noise, not worth gating.
+                    const { value, attributes } = aggregateFrames(this.deltas, this.targetFPS, "requestAnimationFrame");
+                    this.telemetry.logMetric("frame_render_time", value, attributes);
+                    this.deltas = [];
+                    this.windowStart = currentTime;
                 }
 
                 requestAnimationFrame(loop);
             };
 
-            // Kick off the monitoring loop
             requestAnimationFrame(loop);
-
-            // Resolve immediately since the tracker runs in the background
             resolve();
         });
     }

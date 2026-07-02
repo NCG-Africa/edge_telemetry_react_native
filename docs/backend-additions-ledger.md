@@ -26,7 +26,8 @@ Status legend: `proposed` (RN will emit, backend not yet handling) · `confirmed
 |---|---|---|---|
 | `http.request` | `http.host`, `http.path`, `http.request_size`, `http.response_size`, `http.from_cache` | Richer than reference-doc baseline; matches iOS. | proposed |
 | `app.crash` | `crash.breadcrumbs` (last 20 actions, JSON string), `crash.report_*` | Crash context. Confirm size cap. | proposed |
-| `frame_render_time` | `frame.max_ms`, `frame.p95_ms`, `frame.dropped_count`, `frame.target_hz`, `frame.source` | Aggregated frame window (iOS shape). | proposed |
+| `frame_render_time` | `frame.max_ms`, `frame.p95_ms`, `frame.dropped_count`, `frame.target_hz`, `frame.source` | Aggregated frame window (iOS shape); metric `value` = `frame.p95_ms`. | proposed |
+| `memory_usage` | `memory.usage_mb`, `memory.pressure_level`, `memory.unit`, `memory.type`, `memory.source` | Heap snapshot per sample; metric `value` = used MB. | proposed |
 | `app_lifecycle` | `app_lifecycle.state` (`foreground`/`background`) | Transition direction on the lifecycle event (#30). | proposed |
 
 ## Open reconciliations (pick the backend-keyed shape before RN pins it)
