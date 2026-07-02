@@ -1,5 +1,6 @@
 // src/index.web.ts
 import { TelemetryBase } from "./index.base";
+import { debug, setDebug } from "./core/debug";
 
 export { createTelemetry, type TelemetryOpts } from "./createTelemetry.web";
 
@@ -11,10 +12,12 @@ export class TelemetryWeb extends TelemetryBase {
         flushIntervalMs?: number;
         endpoint?: string;
         captureConsole?: boolean;
+        debug?: boolean;
     }) {
+        setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
 
-        console.log("🌍 Running Web Telemetry");
+        debug.log("🌍 Running Web Telemetry");
 
         this.instancePromise = (async () => {
             const { Telemetry } = await import("./core/telemetry");
@@ -42,26 +45,26 @@ export class TelemetryWeb extends TelemetryBase {
         })();
 
         // session.started on init (#29). Background/foreground via AppState is native-only.
-        this.startSessionOnInit().catch(err => console.warn("Web startSession failed:", err));
+        this.startSessionOnInit().catch(err => debug.warn("Web startSession failed:", err));
 
         this.trackErrors({ captureConsole: opts?.captureConsole }).catch(err => {
-            console.warn("Web trackErrors failed:", err);
+            debug.warn("Web trackErrors failed:", err);
         });
 
         this.trackFrameDrops().catch(err => {
-            console.log("Web trackFrameDrops errors", err);
+            debug.log("Web trackFrameDrops errors", err);
         });
         this.trackNetworkRequests().catch(err => {
-            console.log("Web trackNetworkRequests errors", err);
+            debug.log("Web trackNetworkRequests errors", err);
         });
         this.trackMemoryUsage().catch(err => {
-            console.log("Web trackMemoryUsage errors", err);
+            debug.log("Web trackMemoryUsage errors", err);
         });
         this.autoTrackNavigation().catch(err => {
-            console.log("Web autoTrackNavigation errors", err);
+            debug.log("Web autoTrackNavigation errors", err);
         });
         this.attachAppLifecycle().catch(err => {
-            console.log("Web attachAppLifecycle errors", err);
+            debug.log("Web attachAppLifecycle errors", err);
         });
     }
 

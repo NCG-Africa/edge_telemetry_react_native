@@ -1,3 +1,4 @@
+import { debug } from "../core/debug";
 import type { TelemetryEvent, Sender } from "../core/telemetry";
 import { buildBatch } from "./batch";
 
@@ -64,7 +65,7 @@ export function webSender(endpoint: string = DEFAULT_ENDPOINT, apiKey?: string, 
 
 // Replay failed events on startup
 export function replayFailedWeb(endpoint: string = DEFAULT_ENDPOINT, apiKey?: string, retryCount: number = 3) {
-    console.log("Telemetry replayFailedWeb launched");
+    debug.log("Telemetry replayFailedWeb launched");
     if (typeof localStorage === "undefined") return;
     const stored = JSON.parse(localStorage.getItem(STORAGE_KEY) || "[]") as TelemetryEvent[];
     if (stored.length > 0) {
@@ -72,7 +73,7 @@ export function replayFailedWeb(endpoint: string = DEFAULT_ENDPOINT, apiKey?: st
         return sendWithRetry(endpoint, apiKey, stored, retryCount).catch(err => {
             // If replay fails again, re-persist
             persistFailed(stored);
-            console.warn("Telemetry replay failed:", err);
+            debug.warn("Telemetry replay failed:", err);
         });
     }
 }

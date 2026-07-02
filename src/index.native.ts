@@ -1,5 +1,6 @@
 // React Native telemetry implementation
 import { TelemetryBase } from "./index.base";
+import { debug, setDebug } from "./core/debug";
 
 export { createTelemetry, type TelemetryOpts } from "./createTelemetry.native";
 
@@ -11,10 +12,12 @@ export class TelemetryNative extends TelemetryBase {
         flushIntervalMs?: number;
         endpoint?: string;
         captureConsole?: boolean;
+        debug?: boolean;
     }) {
+        setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
 
-        console.log("🌍 Running Native Telemetry");
+        debug.log("🌍 Running Native Telemetry");
         this.instancePromise = (async () => {
             const { Telemetry } = await import("./core/telemetry");
             const { nativeSender } = await import("./adapters/nativeSender");
@@ -46,33 +49,33 @@ export class TelemetryNative extends TelemetryBase {
 
             // 🔄 recover failed events right after init
             replayFailedNative(opts?.endpoint, opts?.apiKey).catch(err => {
-                console.warn("Native replay failed:", err);
+                debug.warn("Native replay failed:", err);
             });
 
             return telemetry;
         })();
 
         // session.started on init; AppState drives background→finalize, foreground→new session (#29)
-        this.startSessionOnInit().catch(err => console.warn("Native startSession failed:", err));
-        this.attachAppState().catch(err => console.warn("Native AppState attach failed:", err));
+        this.startSessionOnInit().catch(err => debug.warn("Native startSession failed:", err));
+        this.attachAppState().catch(err => debug.warn("Native AppState attach failed:", err));
 
         // app_lifecycle on foreground/background (#30)
         this.attachAppLifecycle().catch(err => {
-            console.log("Native attachAppLifecycle errors", err);
+            debug.log("Native attachAppLifecycle errors", err);
         });
 
         this.trackErrors({ captureConsole: opts?.captureConsole }).catch(err => {
-            console.warn("Native trackErrors failed:", err);
+            debug.warn("Native trackErrors failed:", err);
         });
 
         this.trackFrameDrops().catch(err => {
-            console.log("Native trackFrameDrops errors", err);
+            debug.log("Native trackFrameDrops errors", err);
         });
         this.trackNetworkRequests().catch(err => {
-            console.log("Native trackNetworkRequests errors", err);
+            debug.log("Native trackNetworkRequests errors", err);
         });
         this.trackMemoryUsage().catch(err => {
-            console.log("Native trackMemoryUsage errors", err);
+            debug.log("Native trackMemoryUsage errors", err);
         });
     }
 
@@ -88,9 +91,9 @@ export class TelemetryNative extends TelemetryBase {
         let prev: string = AppState.currentState;
         AppState.addEventListener("change", (next: string) => {
             if (next === "background") {
-                inst.finalizeSession().catch((e: any) => console.warn("finalizeSession failed:", e));
+                inst.finalizeSession().catch((e: any) => debug.warn("finalizeSession failed:", e));
             } else if (next === "active" && prev === "background") {
-                inst.newSession().catch((e: any) => console.warn("newSession failed:", e));
+                inst.newSession().catch((e: any) => debug.warn("newSession failed:", e));
             }
             prev = next;
         });
@@ -169,9 +172,9 @@ export class TelemetryNative extends TelemetryBase {
     }
 
     async attachNavigation(navigationRef: any) {
-        console.log("Attaching navigation tracker");
+        debug.log("Attaching navigation tracker");
         if (!navigationRef) {
-            console.warn("Navigation reference is undefined. Cannot attach navigation tracker.");
+            debug.warn("Navigation reference is undefined. Cannot attach navigation tracker.");
             return;
         }
         const inst = await this.instancePromise;
