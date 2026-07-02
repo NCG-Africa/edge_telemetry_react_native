@@ -1,3 +1,4 @@
+import { debug } from "../core/debug";
 import type { TelemetryEvent, Sender } from "../core/telemetry";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { buildBatch } from "./batch";
@@ -28,11 +29,11 @@ async function sendWithRetry(endpoint: string, apiKey: string | undefined, event
 
             if (!res.ok) {
 
-                console.warn("Telemetry send failed with status:", res.status);
+                debug.warn("Telemetry send failed with status:", res.status);
                 throw new Error(`Telemetry send failed: ${res.status}`);
             }
 
-            console.log("Telemetry send succeeded, events sent:", events.length ?? 0);
+            debug.log("Telemetry send succeeded, events sent:", events.length ?? 0);
 
             return; // ✅ success
         } catch (err) {
@@ -62,13 +63,13 @@ export function nativeSender(endpoint: string = DEFAULT_ENDPOINT, apiKey?: strin
             await persistFailed(events);
         },
         async replayFailed() {
-            console.log("Telemetry replayFailedNative launched");
-            console.log("AsyncStorage available methods:", Object.keys(AsyncStorage));
+            debug.log("Telemetry replayFailedNative launched");
+            debug.log("AsyncStorage available methods:", Object.keys(AsyncStorage));
             const stored = JSON.parse((await AsyncStorage.getItem(STORAGE_KEY)) || "[]");
             if (stored.length > 0) {
-                console.log("Replaying failed events, count:", stored.length);
+                debug.log("Replaying failed events, count:", stored.length);
                 await AsyncStorage.removeItem(STORAGE_KEY);
-                console.log("Failed events removed from storage, attempting to resend");
+                debug.log("Failed events removed from storage, attempting to resend");
                 try {
                     await sendWithRetry(endpoint, apiKey, stored);
                 } catch (err) {
@@ -83,18 +84,18 @@ export function nativeSender(endpoint: string = DEFAULT_ENDPOINT, apiKey?: strin
 
 // Recover failed events on app start
 export async function replayFailedNative(endpoint: string = DEFAULT_ENDPOINT, apiKey?: string) {
-    console.log("Telemetry replayFailedNative launched");
-    console.log("AsyncStorage available methods:", Object.keys(AsyncStorage));
+    debug.log("Telemetry replayFailedNative launched");
+    debug.log("AsyncStorage available methods:", Object.keys(AsyncStorage));
     const stored = JSON.parse((await AsyncStorage.getItem(STORAGE_KEY)) || "[]");
     if (stored.length > 0) {
         await AsyncStorage.removeItem(STORAGE_KEY);
         try {
-            console.log("Replaying failed events, count:", stored.length);
-            console.log("Failed events removed from storage, attempting to resend");
+            debug.log("Replaying failed events, count:", stored.length);
+            debug.log("Failed events removed from storage, attempting to resend");
             await sendWithRetry(endpoint, apiKey, stored);
         } catch (err) {
             // If replay fails again, re-store
-            console.warn("Telemetry replay failed Native Sender class:", err);
+            debug.warn("Telemetry replay failed Native Sender class:", err);
             await persistFailed(stored);
             throw err;
         }

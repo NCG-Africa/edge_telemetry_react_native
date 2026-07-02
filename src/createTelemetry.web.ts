@@ -7,6 +7,7 @@ export type TelemetryOpts = {
     flushIntervalMs?: number;
     endpoint?: string;
     captureConsole?: boolean;   // funnel console.error/warn into app.crash (default on, opt-out)
+    debug?: boolean;            // SDK-internal diagnostics; off by default (#23)
 };
 
 export function assertApiKey(apiKey?: string) {

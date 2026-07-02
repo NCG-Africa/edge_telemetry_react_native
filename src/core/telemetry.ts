@@ -1,3 +1,4 @@
+import { debug } from "./debug";
 import { NavigationTracker } from "../adapters/navigationTracker";
 import { ScreenTimingTracker } from "../adapters/screenTiming";
 import { BreadcrumbBuffer } from "./breadcrumbs";
@@ -196,7 +197,7 @@ export class Telemetry {
         if (this.sender?.replayFailed) {
             // don't block constructor; best-effort
             this.sender.replayFailed().catch((err: any) => {
-                console.warn("Telemetry replay failed Telemetry class:", err);
+                debug.warn("Telemetry replay failed Telemetry class:", err);
             });
         }
 
@@ -226,49 +227,49 @@ export class Telemetry {
     public trackErrors(crashHandler: CrashHandler, options?: CrashHandlerOptions) {
         this.crashHandler = crashHandler;
         void crashHandler.attach(options).catch((err) => {
-            console.warn("Telemetry crashHandler attach failed:", err);
+            debug.warn("Telemetry crashHandler attach failed:", err);
         });
     }
 
     getDeviceInfo(deviceInfoHandler: DeviceInfoHandler) {
         this.deviceInfoHandler = deviceInfoHandler;
         void deviceInfoHandler.start(this).catch((err) => {
-            console.warn("Telemetry deviceInfo tracking start failed:", err);
+            debug.warn("Telemetry deviceInfo tracking start failed:", err);
         });
     }
 
     getNetworkInfo(networkInfoHandler: NetworkInfoHandler) {
         this.networkInfoHandler = networkInfoHandler;
         void networkInfoHandler.start(this).catch((err) => {
-            console.warn("Telemetry networkInfoHandler start failed:", err);
+            debug.warn("Telemetry networkInfoHandler start failed:", err);
         });
     }
 
     public trackFrameDrops(frameDropsHandler: FrameDropsHandler) {
         this.frameDropsHandler = frameDropsHandler;
         void frameDropsHandler.start().catch((err) => {
-            console.warn("Telemetry frameDropsHandler start failed:", err);
+            debug.warn("Telemetry frameDropsHandler start failed:", err);
         });
     }
 
     public trackNetworkRequests(networkHandler: NetworkHandler) {
         this.networkHandler = networkHandler;
         void networkHandler.start().catch((err) => {
-            console.warn("Telemetry networkHandler start failed:", err);
+            debug.warn("Telemetry networkHandler start failed:", err);
         });
     }
 
     public trackMemoryUsage(memoryHandler: MemoryHandler) {
         this.memoryHandler = memoryHandler;
         void memoryHandler.recordMemoryUsage().catch((err) => {
-            console.warn("Telemetry memoryHandler recordMemoryUsage failed:", err);
+            debug.warn("Telemetry memoryHandler recordMemoryUsage failed:", err);
         });
     }
 
     public autoTrackNavigation(navigationHandler?: NavigationHandler) {
         this.navigationHandler = navigationHandler;
         void navigationHandler?.start().catch((err) => {
-            console.warn("Telemetry navigationHandler start failed:", err);
+            debug.warn("Telemetry navigationHandler start failed:", err);
         });
     }
 
@@ -369,7 +370,7 @@ export class Telemetry {
             this.userProfile.userId = this.userId || undefined;
         }
 
-        console.log("Telemetry: User profile updated", this.userProfile);
+        debug.log("Telemetry: User profile updated", this.userProfile);
     }
 
     /**
@@ -425,7 +426,7 @@ export class Telemetry {
             updatedAt: Date.now()
         };
 
-        console.log("Telemetry: User profile updated", this.userProfile);
+        debug.log("Telemetry: User profile updated", this.userProfile);
     }
 
     /**
@@ -440,7 +441,7 @@ export class Telemetry {
      */
     public clearUserProfile(): void {
         this.userProfile = undefined;
-        console.log("Telemetry: User profile cleared");
+        debug.log("Telemetry: User profile cleared");
     }
 
     /**
@@ -508,8 +509,8 @@ export class Telemetry {
 
         this.queue.push(e);
 
-        console.log("Telemetry queued event:", name, "Queue size:", this.queue.length);
-        console.log("Event attributes:", attributes);
+        debug.log("Telemetry queued event:", name, "Queue size:", this.queue.length);
+        debug.log("Event attributes:", attributes);
 
         if (this.queue.length >= this.batchSize) {
             void this.flush();
@@ -530,13 +531,13 @@ export class Telemetry {
         try {
             deviceInfo = (await this.deviceInfoHandler?.collect()) || {};
         } catch (err) {
-            console.warn("Telemetry: failed to fetch device info", err);
+            debug.warn("Telemetry: failed to fetch device info", err);
         }
 
         try {
             networkInfo = (await this.networkInfoHandler?.collect()) || {};
         } catch (err) {
-            console.warn("Telemetry: failed to fetch network info", err);
+            debug.warn("Telemetry: failed to fetch network info", err);
         }
 
         const attributes: Record<string, any> = {
@@ -646,13 +647,13 @@ export class Telemetry {
                 } catch (persistErr) {
                     // If persistence fails, requeue to avoid data loss
                     this.queue.unshift(...toSend);
-                    console.warn("Sender.onFailure failed, requeued events:", persistErr);
+                    debug.warn("Sender.onFailure failed, requeued events:", persistErr);
                 }
             } else {
                 this.queue.unshift(...toSend);
             }
 
-            console.error("Telemetry flush failed:", lastError);
+            debug.error("Telemetry flush failed:", lastError);
             throw lastError;
         }
     }
