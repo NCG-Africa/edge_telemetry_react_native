@@ -12,6 +12,22 @@
 
 A comprehensive, production-ready cross-platform telemetry library for React and React Native applications. Built with modern JavaScript/TypeScript practices and optimized for performance, reliability, and developer experience across web and mobile platforms.
 
+## ⚠️ Upgrading to v3.0.0 (breaking)
+
+v3 moves the SDK onto the shared EdgeRum wire contract — the same backend the web, Android
+and iOS SDKs feed. **This is a breaking wire change with no dual-emit.** The essentials:
+
+- `createTelemetry({ apiKey, endpoint, ... })` — **`apiKey` is now required** and must start
+  with `edge_` (sent as `X-API-Key`; init throws otherwise).
+- The POST body is the `telemetry_batch` envelope to `/collector/telemetry`; timestamps are
+  ISO-8601; device/network data rides as a Context block on every event (no standalone
+  `device_info`/`network_info` events).
+- Several event names changed (`network_request`→`http.request`, `screen_view`→`navigation`,
+  …) and only the 12-name allowlist ships; other `log()` names arrive as `custom_event`.
+- New `debug` option (default `false`) silences all SDK console output.
+
+See **[CHANGELOG.md](./CHANGELOG.md)** for the full breaking-change list and a migration checklist.
+
 ## 🚀 Features
 
 ### Core Telemetry
@@ -139,32 +155,35 @@ cd ios && pod install
 
 #### React Web
 ```typescript
-import { TelemetryWeb } from "edge-telemetry-sdk";
+import { createTelemetry } from "edge-telemetry-sdk";
 
 // Initialize in your main App component or index file
-const telemetry = new TelemetryWeb({
-  endpoint: "https://your-telemetry-endpoint.com/api/telemetry",
+const telemetry = createTelemetry({
+  apiKey: "edge_xxx",                       // required; must start with "edge_"
+  endpoint: "https://collector.example.com", // SDK appends /collector/telemetry
   batchSize: 10,
-  flushIntervalMs: 30000
+  flushIntervalMs: 30000,
+  // debug: true,                           // optional; off by default (no console noise)
 });
 
-// Start collecting data
-telemetry.log("app_started", { platform: "web" });
+// Start collecting data (log() is async)
+await telemetry.log("checkout_started", { cart_value: 42 });
 ```
 
 #### React Native
 ```typescript
-import { TelemetryNative } from "edge-telemetry-sdk";
+import { createTelemetry } from "edge-telemetry-sdk";
 
 // Initialize in your App.js or App.tsx
-const telemetry = new TelemetryNative({
-  endpoint: "https://your-telemetry-endpoint.com/api/telemetry",
+const telemetry = createTelemetry({
+  apiKey: "edge_xxx",                       // required; must start with "edge_"
+  endpoint: "https://collector.example.com", // SDK appends /collector/telemetry
   batchSize: 10,
-  flushIntervalMs: 30000
+  flushIntervalMs: 30000,
 });
 
-// Start collecting data
-telemetry.log("app_started", { platform: "native" });
+// Start collecting data (log() is async)
+await telemetry.log("checkout_started", { cart_value: 42 });
 ```
 
 ### 2. Automatic Data Collection
