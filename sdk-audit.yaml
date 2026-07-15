@@ -1,0 +1,299 @@
+repo: NCG-Africa/edge_telemetry_react_native
+component_type: sdk
+platform: react-native   # dual build: react-native + web (React Native Web), file-split at build time
+language: TypeScript
+current_version: 3.0.1    # package.json "version"
+build_variants: dual entry — web (dist/index.web.js|.cjs) + native (dist/index.native.js|.cjs), selected by package.json exports/react-native fields; bundler is Vite (package.json "build": "vite build")
+registry: npm            # @nathanclaire/edge-telemetry-sdk, publishConfig.access=public
+
+# ============================================================
+# 1. Events emitted
+# All events built in src/core/telemetry.ts. Every emitted name is checked against
+# ALLOWED_NAMES (telemetry.ts:16-22); unknown names are rewritten to eventName="custom_event"
+# with the original name carried in attributes["event.name"] (telemetry.ts:489-494).
+# Two wire shapes:
+#   event : { type:"event",  eventName,  timestamp, attributes }   (log(), telemetry.ts:503-508)
+#   metric: { type:"metric", metricName, value, timestamp, attributes } (logMetric(), telemetry.ts:587-593)
+# Every event/metric ALSO carries the full common_attributes block (section 2).
+# ============================================================
+events:
+  - name: session.started
+    trigger: SDK init (startSessionOnInit), new session after foreground-from-background, and idle rotation. evidence src/core/telemetry.ts:304-307 (startSession); index.native.ts:82-85, index.web.ts:90-93
+    payload_fields: []   # only the common_attributes block; no event-specific keys
+
+  - name: session.finalized
+    trigger: app backgrounded (native AppState) or 30-min idle rotation; also fired before newSession. evidence src/core/telemetry.ts:310-317; index.native.ts:88-100
+    payload_fields:
+      - {field: session.duration_ms, type: int, unit: ms, always_present: true}
+      - {field: session.event_count, type: int, unit: none, always_present: true}
+      - {field: sdk.error_count, type: int, unit: none, always_present: true}
+
+  - name: app_lifecycle
+    trigger: foreground/background transition — native RN AppState, web document visibilitychange. Only on a state CHANGE. evidence src/adapters/appLifecycle.ts:16-23
+    payload_fields:
+      - {field: app_lifecycle.state, type: string, unit: none, always_present: true}   # "foreground" | "background"
+
+  - name: navigation
+    trigger: route change (React Navigation state listener native / history+popstate web) AND screenStart(). evidence src/adapters/navigationTracker.ts:12-19; src/adapters/screenTiming.ts:14-24
+    payload_fields:
+      - {field: navigation.from_screen, type: string, unit: none, always_present: false}   # null on first screenStart
+      - {field: navigation.to_screen, type: string, unit: none, always_present: true}
+      - {field: navigation.method, type: string, unit: none, always_present: true}         # "push" (route change) | "screen_start" (screenStart)
+      - {field: navigation.route_type, type: string, unit: none, always_present: true}     # "screen"
+
+  - name: screen.duration
+    trigger: screenEnd(name) — dwell time since matching screenStart. evidence src/adapters/screenTiming.ts:27-39
+    payload_fields:
+      - {field: screen.name, type: string, unit: none, always_present: true}
+      - {field: screen.duration_ms, type: int, unit: ms, always_present: true}
+      - {field: screen.exit_method, type: string, unit: none, always_present: true}        # "navigation"
+
+  - name: http.request
+    trigger: intercepted fetch (web+native) and XMLHttpRequest (web). Skips the SDK's own collector POST. evidence src/adapters/httpAttributes.ts:5-36; native interceptFetchNative.native.ts:52-60; web interceptFetchWeb.web.ts:67-75,122-130
+    payload_fields:
+      - {field: http.url, type: string, unit: none, always_present: true}
+      - {field: http.method, type: string, unit: none, always_present: true}
+      - {field: http.status_code, type: int, unit: none, always_present: true}            # 0 on network error / no response
+      - {field: http.duration_ms, type: int, unit: ms, always_present: true}
+      - {field: http.success, type: bool, unit: none, always_present: true}               # !error && 200<=status<400
+      - {field: http.host, type: string, unit: none, always_present: false}               # only if URL parses
+      - {field: http.path, type: string, unit: none, always_present: false}               # only if URL parses; NOT query-stripped (see privacy)
+      - {field: http.request_size, type: int, unit: bytes, always_present: false}         # only when request body is a string (.length, NOT bytes)
+      - {field: http.response_size, type: int, unit: bytes, always_present: false}        # from content-length header, only if truthy
+
+  - name: app.crash
+    trigger: JS global error (ErrorUtils native / window.onerror web), unhandled promise rejection, and (opt-out, default ON) console.error/console.warn. evidence src/adapters/crashCapture.ts:6-49; native crashHandlerNative.native.ts:15-45; web crashHandler.web.ts:15-29
+    payload_fields:
+      - {field: crash.cause, type: string, unit: none, always_present: true}              # "Error"|"UnhandledRejection"|"ConsoleError"|"ConsoleWarn"
+      - {field: crash.message, type: string, unit: none, always_present: true}            # may be null
+      - {field: crash.stacktrace, type: string, unit: none, always_present: true}         # may be null; absent for console captures
+      - {field: crash.fatal, type: bool, unit: none, always_present: false}               # only for native ErrorUtils path (isFatal)
+      - {field: crash.breadcrumbs, type: string, unit: none, always_present: true}        # JSON-stringified array of last 20 {name,timestamp}; evidence telemetry.ts:497-498, breadcrumbs.ts
+
+  - name: user.interaction
+    trigger: native tap, best-effort — consumer must spread telemetry.interactionProps() onto app root <View>. NOT auto-wired; web has NO interaction capture. evidence src/adapters/interaction.ts:14-31; index.native.ts:168-172
+    payload_fields:
+      - {field: interaction.type, type: string, unit: none, always_present: true}         # "tap"
+      - {field: interaction.screen, type: string, unit: none, always_present: false}      # only when currentScreen known
+
+  - name: network_change
+    trigger: connectivity TYPE transition (NetInfo native / navigator.connection+online/offline web). Only on actual change. evidence src/adapters/networkChange.ts:16-25; native networkInfo.native.ts:31-38; web networkInfo.web.ts:36-53
+    payload_fields:
+      - {field: network.previous_type, type: string, unit: none, always_present: true}
+      - {field: network.type, type: string, unit: none, always_present: false}            # current type; may be undefined
+
+  - name: user.profile.update
+    trigger: identify() call. Emits once after merging host identity into profile; anonymous user.id preserved. evidence src/core/telemetry.ts:381-396
+    payload_fields: []   # profile fields ride via common_attributes (user.* keys)
+
+  - name: custom_event
+    trigger: any log(name, data) where name is NOT in ALLOWED_NAMES. evidence src/core/telemetry.ts:489-494
+    payload_fields:
+      - {field: event.name, type: string, unit: none, always_present: true}               # original caller-supplied name
+      # plus arbitrary caller data flattened dot-notation into attributes
+
+  - name: frame_render_time   # METRIC (type:"metric")
+    trigger: aggregated once per 10s window from requestAnimationFrame deltas (web+native). value = p95 frame time (ms). evidence src/adapters/frameAggregate.ts:17-34; native frameDropsNative.native.ts:20-41; web frameDropsWeb.web.ts:20-40
+    payload_fields:
+      - {field: value, type: float, unit: ms, always_present: true}                       # top-level metric value = p95
+      - {field: frame.max_ms, type: float, unit: ms, always_present: true}
+      - {field: frame.p95_ms, type: float, unit: ms, always_present: true}
+      - {field: frame.dropped_count, type: int, unit: none, always_present: true}         # frames slower than 2x budget
+      - {field: frame.target_hz, type: int, unit: none, always_present: true}             # 60
+      - {field: frame.source, type: string, unit: none, always_present: true}             # "requestAnimationFrame"
+
+  - name: memory_usage   # METRIC (type:"metric")
+    trigger: recordMemoryUsage(). NOTE: fires only ONCE at init in practice — periodic start() is never called (see inconsistencies). value = used JS heap MB. Skipped if perf.memory unavailable. evidence src/adapters/native/memoryNative.native.ts:32-47; web memoryWeb.web.ts:29-44
+    payload_fields:
+      - {field: value, type: float, unit: MB, always_present: true}                       # top-level metric value = used heap MB
+      - {field: memory.usage_mb, type: float, unit: MB, always_present: true}
+      - {field: memory.pressure_level, type: string, unit: none, always_present: true}    # "low"<256 | "moderate"<512 | "high"
+      - {field: memory.unit, type: string, unit: none, always_present: true}              # "MB"
+      - {field: memory.type, type: string, unit: none, always_present: true}              # "heap"
+      - {field: memory.source, type: string, unit: none, always_present: true}            # Platform.OS (native) | "performance.memory" (web)
+
+# Allowlisted but NEVER emitted (no producer found in src): page_load, resource_timing,
+# long_task, LCP, FCP, CLS, INP, TTFB. evidence telemetry.ts:19-21 (ALLOWED_NAMES only).
+
+# ============================================================
+# 2. Common attributes — attached to EVERY event and metric
+# Built in src/core/telemetry.ts collectContext() (lines 527-575). Device info flattened
+# with empty prefix (keys already app.*/device.*), network flattened with "network" prefix.
+# ============================================================
+common_attributes:
+  # --- identity / session / sdk (always present) ---
+  - {field: user.id, type: string, unit: none, always_present: true, evidence: telemetry.ts:548}     # may be null; auto-generated "user_{ms}_{16hex}"
+  - {field: session.id, type: string, unit: none, always_present: true, evidence: telemetry.ts:549}
+  - {field: session.start_time, type: string, unit: none, always_present: true, evidence: telemetry.ts:550}   # ISO 8601
+  - {field: session.sequence, type: int, unit: none, always_present: true, evidence: telemetry.ts:551}         # ++ per acknowledged batch
+  - {field: sdk.platform, type: string, unit: none, always_present: true, evidence: telemetry.ts:552}          # constant "react-native" (BOTH web & native)
+  - {field: sdk.version, type: string, unit: none, always_present: true, evidence: telemetry.ts:553}           # package.json version
+  # --- device block (from DeviceInfo handler; present when collect() succeeds) ---
+  - {field: app.name, type: string, unit: none, always_present: false, evidence: adapters/native/deviceInfo.native.ts:52 / web/deviceInfo.web.ts:16}
+  - {field: app.version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:53}
+  - {field: app.buildNumber, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:54}
+  - {field: app.packageName, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:55}   # web: window.location.hostname
+  - {field: device.id, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:59}         # native getUniqueId(); web "device_{ms}_{uuidv4}_web"
+  - {field: device.platform, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:60}   # "ios"|"android"|"web"
+  - {field: device.platformVersion, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:61}
+  - {field: device.model, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:62}      # web: userAgent
+  - {field: device.manufacturer, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:63}
+  - {field: device.brand, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:64}
+  - {field: device.androidSdk, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:67}       # android only
+  - {field: device.androidRelease, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:68}   # android only
+  - {field: device.fingerprint, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:44}      # android only
+  - {field: device.hardware, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:44}         # android only
+  - {field: device.product, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:45}          # android only
+  - {field: device.iosSystemName, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:48}    # ios only
+  - {field: device.iosDeviceName, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:49}    # ios only
+  # --- network block (from NetworkInfo handler) ---
+  - {field: network.type, type: string, unit: none, always_present: false, evidence: adapters/native/networkInfo.native.ts:19}    # "wifi"/"cellular"/"unknown"
+  - {field: network.isConnected, type: bool, unit: none, always_present: false, evidence: networkInfo.native.ts:20}
+  # --- user profile (only when a profile is set; undefined values dropped) ---
+  - {field: user.name, type: string, unit: none, always_present: false, evidence: telemetry.ts:558}      # = fullName (v3 contract key)
+  - {field: user.fullName, type: string, unit: none, always_present: false, evidence: telemetry.ts:559}
+  - {field: user.firstName, type: string, unit: none, always_present: false, evidence: telemetry.ts:560}
+  - {field: user.lastName, type: string, unit: none, always_present: false, evidence: telemetry.ts:561}
+  - {field: user.email, type: string, unit: none, always_present: false, evidence: telemetry.ts:562}
+  - {field: user.phone, type: string, unit: none, always_present: false, evidence: telemetry.ts:563}
+  - {field: user.avatar, type: string, unit: none, always_present: false, evidence: telemetry.ts:564}
+  - {field: user.createdAt, type: int, unit: ms, always_present: false, evidence: telemetry.ts:565}      # Date.now() ms epoch
+  - {field: user.updatedAt, type: int, unit: ms, always_present: false, evidence: telemetry.ts:566}
+  - {field: "user.custom.*", type: object, unit: none, always_present: false, evidence: telemetry.ts:567}   # flattened customAttributes
+
+# ============================================================
+# 3. Session logic — src/core/telemetry.ts
+# ============================================================
+session:
+  start_rule: session created in constructor (generateSessionId, telemetry.ts:191); session.started emitted on init via startSessionOnInit (index.native.ts:82, index.web.ts:90)
+  idle_timeout: 30 min. SESSION_IDLE_MS = 30*60*1000 (telemetry.ts:11); checked in log() — if now-lastActivity > 30min, rotateSession() (finalize old + start new). session.* events don't count as activity. evidence telemetry.ts:479-487
+  max_duration: none
+  background_behavior: NATIVE ONLY — AppState "background" => finalizeSession() (immediate flush); "active" after "background" => newSession(). Web has no equivalent (visibilitychange only drives app_lifecycle, not session rotation). evidence index.native.ts:88-100
+  id_format: "session_{Date.now()}_{16 hex}" + optional "_{platform}" suffix where platform=ios|android (native only; web has NO suffix). Random via Math.random (NOT crypto). evidence telemetry.ts:277-280, utils/uuid.ts:11-15, index.web.ts:38
+
+# ============================================================
+# 4. Transport
+# ============================================================
+transport:
+  endpoint_path: consumer-supplied full URL via endpoint opt. Default placeholder "https://your.telemetry.endpoint/collect" (webSender.ts:5, nativeSender.ts:6). No fixed path.
+  serialization: json. buildBatch() => JSON.stringify({type:"telemetry_batch", timestamp, batch_size, events}). evidence src/adapters/batch.ts:5-12
+  compression: none
+  batching:
+    flush_interval: 10000 ms default (flushIntervalMs; <=0 disables timer). evidence telemetry.ts:186,204-206
+    max_batch_size: 2 events default (batchSize). flush() splices UP TO batchSize per send; flush auto-triggered when queue length >= batchSize. evidence telemetry.ts:185,515-516,634-638
+    flush_on_background: true (native only) — finalizeSession() awaits flush() on AppState background. evidence telemetry.ts:316, index.native.ts:93
+  retry:
+    strategy: native = exponential backoff 500*2^attempts + Math.random()*200 jitter (nativeSender.ts:44-46); web = linear attempts*500 (webSender.ts:45). Retry lives in the sender's send().
+    max_attempts: 3 (retryCount default). evidence nativeSender.ts:15, webSender.ts:19
+    drop_policy: after 3 failed attempts, core flush() calls sender.onFailure() which persists the batch to storage for later replay. If persistence itself throws, batch is unshifted back onto the in-memory queue. evidence telemetry.ts:640-658
+  offline:
+    persistence: native = AsyncStorage key "telemetry_failed_events"; web = localStorage key "telemetry_failed_events". Replayed on next init (replayFailedNative / constructor replayFailed hook). evidence nativeSender.ts:7-12,55-83; webSender.ts:6-13,66-79
+    caps: NONE — persisted array grows unbounded (append-only [...existing, ...events]); no size/count cap, no eviction. evidence nativeSender.ts:10-11, webSender.ts:11-12
+  sampling_or_throttling: >
+    No event-level sampling, rate limiting, deduplication, or config flag found anywhere in
+    event creation (log/logMetric), queueing, or send paths. Checked telemetry.ts, both senders,
+    batch.ts, all adapters. The ONLY aggregation is frame_render_time: raw requestAnimationFrame
+    deltas are rolled up into one metric per 10s window (max/p95/dropped_count) rather than one
+    event per frame (frameAggregate.ts:17-34). network_change and app_lifecycle emit only on
+    transition (edge-triggered), not throttling. memory_usage is effectively single-shot (see
+    inconsistencies). Note: flush() only drains batchSize (2) events per call, so a burst can
+    lag behind, but events are queued not dropped.
+
+# ============================================================
+# 5. Privacy & data handling
+# ============================================================
+privacy:
+  ip_handling: no client-side IP collection or transmission found.
+  url_sanitization: NONE. http.url is the raw full URL including query string; http.path = URL.pathname (query kept on http.url, not stripped). Web navigation captures window.location.pathname+search (query string retained). evidence httpAttributes.ts:16-31, navigationWeb.web.ts:42
+  user_identifiers: >
+    Auto: user.id ("user_{ms}_{16hex}", auto-generated at init, telemetry.ts:192,343-345);
+    session.id; device.id (native persistent getUniqueId(); web ephemeral per-load uuid).
+    Opt-in host identity via setUserProfile/setUserDetails/identify: fullName, firstName,
+    lastName, email, phone, avatar, customAttributes — all shipped verbatim in attributes.
+  pii_risks: >
+    HIGH surface. (1) email/phone/fullName/avatar sent plaintext once profile set.
+    (2) http.url carries full URLs incl. query strings (tokens/PII in query params leak).
+    (3) crash.message / crash.stacktrace — arbitrary error text, incl. console.error/warn
+    args stringified (captureConsole default ON) — may contain user data.
+    (4) crash.breadcrumbs — JSON trail of last 20 event names+timestamps.
+    (5) http request/response bodies NOT sent, only sizes.
+
+# ============================================================
+# 6. Public API surface
+# ============================================================
+api:
+  init_config_options: [apiKey (required, must start with "edge_"), sender, batchSize, flushIntervalMs, endpoint, captureConsole, debug]   # evidence createTelemetry.web.ts:3-11 / .native.ts; assertApiKey validates edge_ prefix
+  custom_event_api: "log(event: string, data?: Record<string, any>): Promise<void>"   # index.base.ts:21-24
+  user_id_api: "setUserId(id): Promise<void>; generateUserId(): Promise<string>"      # index.base.ts:45-53
+  other_public_methods:
+    - "flush(): Promise<void>"
+    - "shutdown(): Promise<void>"                # clears flush timer + final flush
+    - "setUserProfile(profile) / setUserDetails(details) / updateUserProfile(updates) / getUserProfile() / clearUserProfile()"
+    - "setUserName(fullName, firstName?, lastName?) / setUserContact(email?, phone?)"
+    - "identify({name?, email?, phone?, avatar?, customAttributes?}) => emits user.profile.update"
+    - "trackErrors({captureConsole?})"
+    - "getDeviceInfo() / getNetworkInfo()"
+    - "TelemetryNative only: attachNavigation(ref), trackRoute(from,to), screenStart(name), screenEnd(name), interactionProps()"
+    - "trackFrameDrops/trackNetworkRequests/trackMemoryUsage/autoTrackNavigation — auto-started in constructor, not meant for direct call"
+
+# ============================================================
+# 7. Feature checklist
+# ============================================================
+features:
+  session-tracking: {status: done, evidence: telemetry.ts:301-333 + index.native.ts:88-100, notes: "start/finalize/rotate; 30-min idle; background rotation native-only"}
+  view-tracking: {status: done, evidence: screenTiming.ts + navigationTracker.ts, notes: "navigation (route + screenStart) and screen.duration events"}
+  error-capture: {status: done, evidence: crashCapture.ts + crashHandler.web.ts/crashHandlerNative.native.ts, notes: "JS errors, unhandled rejections, console.error/warn -> app.crash"}
+  crash-capture: {status: partial, evidence: crashHandlerNative.native.ts:15-25, notes: "JS-level only (ErrorUtils/window.onerror). No native iOS/Android signal/ANR crash capture. crash.fatal only on native ErrorUtils path"}
+  network-capture: {status: done, evidence: interceptFetchNative.native.ts + interceptFetchWeb.web.ts, notes: "fetch both platforms; XHR web only; bodies not sent, sizes only"}
+  custom-events: {status: done, evidence: telemetry.ts:474-520, notes: "log(); non-allowlisted names remapped to custom_event + event.name"}
+  web-vitals: {status: planned, evidence: telemetry.ts:19-21, notes: "LCP/FCP/CLS/INP/TTFB/page_load/resource_timing/long_task allowlisted but NO emitter exists"}
+  app-start: {status: na, evidence: none, notes: "no app-start/cold-start timing event found"}
+  anr-detection: {status: na, evidence: none, notes: "not implemented"}
+  hang-detection: {status: na, evidence: none, notes: "not implemented"}
+  frame-stats: {status: done, evidence: frameAggregate.ts + frameDrops*.ts, notes: "frame_render_time metric, p95/max/dropped per 10s window; rAF-based"}
+  batching: {status: done, evidence: telemetry.ts:634-638 + batch.ts, notes: "batchSize default 2, telemetry_batch envelope"}
+  offline-persistence: {status: partial, evidence: nativeSender.ts:9-12 + webSender.ts:9-13, notes: "AsyncStorage/localStorage replay, but UNBOUNDED — no cap or eviction"}
+  retry-backoff: {status: done, evidence: nativeSender.ts:15-53 + webSender.ts:19-51, notes: "native exponential+jitter, web linear; 3 attempts"}
+  no-sampling-guarantee: {status: done, evidence: "grep of full src — telemetry.ts, senders, adapters", notes: "no sampling/rate-limit/dedup; frame aggregation is the only rollup and it drops per-frame granularity by design"}
+
+# ============================================================
+# 9. All repos
+# ============================================================
+inconsistencies_and_surprises: >
+  1. memory_usage effectively single-shot: index.*.ts trackMemoryUsage() -> core
+     trackMemoryUsage() calls memoryHandler.recordMemoryUsage() ONCE (telemetry.ts:262-264);
+     the periodic start()/setInterval (memoryNative.native.ts:55, memoryWeb.web.ts:53) is never
+     invoked. So one memory sample per app launch, not every 30s as the code implies.
+  2. sdk.platform is the constant "react-native" on BOTH web and native (telemetry.ts:9,552) —
+     the web build reports sdk.platform="react-native" while device.platform="web". Divergent.
+  3. Web-vitals names (LCP/FCP/CLS/INP/TTFB/page_load/resource_timing/long_task) are in
+     ALLOWED_NAMES but have no producers — dead allowlist entries.
+  4. ID entropy uses Math.random() not crypto (utils/uuid.ts:11-15), acknowledged in a
+     ponytail: comment. session/user ids are 16 hex chars (64-bit).
+  5. session id gets an ios|android suffix on native but user id does NOT (telemetry.ts:277-280 vs
+     343-345); web omits the suffix on both.
+  6. http.request_size = string .length (chars), not byte length (httpAttributes.ts:32) — mislabeled unit for multibyte bodies.
+  7. Query strings are never stripped from http.url or web navigation paths — PII/token leak risk.
+  8. console.error/warn capture defaults ON (captureConsole=true) — turns every console.error into
+     an app.crash event; noisy apps will emit crash events for non-crashes.
+  9. wire envelope has no top-level location field though the type name (telemetry_batch) and
+     CLAUDE.md target contract mention an optional location (batch.ts:5-12 omits it).
+  10. TelemetryOpts.apiKey typed required in createTelemetry (assertApiKey throws on missing/bad
+      prefix), but TelemetryWeb/Native constructors still accept apiKey as optional — validation
+      only enforced through the factory, not the class.
+
+ci_cd:
+  what_exists: >
+    .github/workflows/ci.yml — single job on push/PR to master + merge_group: npm ci, npm run
+    typecheck (tsc --noEmit), npm test (vitest run), npm run build (vite). Actions pinned by SHA.
+    No lint step (repo has no lint script). Contradicts CLAUDE.md's stale note of a yarn/expo CI.
+  publishes_to: >
+    npm as @nathanclaire/edge-telemetry-sdk (publishConfig.access=public). No publish workflow in
+    CI — release/publish appears manual (npm publish); package.json "prepare": vite build builds on install.
+
+open_questions:
+  - Is memory_usage meant to sample periodically? If so trackMemoryUsage should call start(), not recordMemoryUsage() once.
+  - Should the web build report sdk.platform="web" instead of the hardcoded "react-native"?
+  - Are the web-vitals allowlist entries a planned workstream or leftover scaffolding?
+  - Backend contract: does the collector expect a top-level `location` in the telemetry_batch envelope? It is not sent.
+  - Offline store has no cap — intended, or a missing eviction policy for long-offline devices?
