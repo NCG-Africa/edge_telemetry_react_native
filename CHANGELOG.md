@@ -2,7 +2,11 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
-## 3.0.0
+## 3.0.1
+
+First published release of the scoped `@nathanclaire/edge-telemetry-sdk`. (3.0.0 was pulled
+from the registry before general availability; npm reserves that version number, so v3 ships
+as 3.0.1 — same contract, no functional difference.)
 
 **Breaking wire change.** v3 conforms to the shared EdgeRum / EdgeTelemetryProcessor
 contract — the same backend the web, Android (Ionic) and iOS SDKs feed. The v2 wire
