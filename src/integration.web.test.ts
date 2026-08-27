@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createTelemetry } from "./createTelemetry.web";
 import type { TelemetryEvent } from "./core/telemetry";
+import { version as PKG_VERSION } from "../package.json";
 
 // End-to-end through the public API: createTelemetry() → log() → fake Sender.
 // Background DOM adapters are fire-and-forget in the ctor and reject harmlessly under node.
@@ -38,7 +39,7 @@ describe("createTelemetry (web) — public API → wire", () => {
 
     const a = e.attributes!;
     expect(a["sdk.platform"]).toBe("react-native");
-    expect(a["sdk.version"]).toBe("3.0.0");
+    expect(a["sdk.version"]).toBe(PKG_VERSION);   // tracks package.json, not a pinned literal
     // web build omits the OS id suffix (contract suffix is ios|android only)
     expect(a["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}$/);
     expect(a["user.id"]).toMatch(/^user_\d+_[0-9a-f]{16}$/);
