@@ -3,6 +3,8 @@
 **Scope:** `@nathanclaire/edge-telemetry-sdk` **v3.0.1**, tree at `9b7bf83`.
 Resolves [#49](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/49) under
 map [#48](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/48).
+Amended under [#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51) to add
+§8.7 and its annotations in §4.4, §4.5 and §4.8; key counts are unaffected.
 
 Every key below is cited `file:line` against `src/`. Where the document and
 `sdk-audit.yaml` disagree, the divergence is called out explicitly in §8 — the audit lists
@@ -224,6 +226,10 @@ Producers: React Navigation listener (`navigationNative.native.ts:21-29`), the p
 `trackRoute` (`index.native.ts:159-162`) and `screenStart` (`index.native.ts:149-152`) — **all
 native-only**. Web's producer exists (`navigationWeb.web.ts`) but never starts — see §8.1.
 
+The three producers are **not** equivalent downstream. Only `screenStart` also arms
+`ScreenTimingTracker`, and only `trackRoute` also sets `currentScreen`; the React Navigation
+listener does neither, so it emits `navigation` and nothing else — see §8.7.
+
 ### 4.5 `screen.duration` — **native only**
 
 | Key | Type | Null? | Cardinality | Source |
@@ -235,6 +241,10 @@ native-only**. Web's producer exists (`navigationWeb.web.ts`) but never starts �
 Only reachable via `TelemetryNative.screenEnd()` (`index.native.ts:154-157`); `TelemetryWeb`
 exposes no `screenStart`/`screenEnd`. Silently no-ops if `screenStart` was never called for
 that name (`screenTiming.ts:29`).
+
+**`attachNavigation` never arms it**, so an app that navigates via React Navigation without
+also calling `screenStart` emits **zero** `screen.duration` events — see §8.7. "Native only" is
+therefore narrower than it reads: native *and* manually instrumented.
 
 ### 4.6 `http.request` — both builds
 
@@ -322,9 +332,12 @@ crash-rate metric the backend computes from `app.crash` is meaningless without f
 
 Requires the consumer to spread `interactionProps()` onto their root `<View>`
 (`index.native.ts:168-172`, `interaction.ts:24-31`). `interaction.screen` reads
-`telemetry.currentScreen`, set only by `screenStart` (`screenTiming.ts:16`) and
-`recordRouteChange` (`telemetry.ts:678`) — so it is **absent** for any app that navigates
-via React Navigation's listener without also calling `screenStart`.
+`telemetry.currentScreen`, written in exactly two places: `screenStart` (`screenTiming.ts:16`)
+and **`Telemetry.recordRouteChange`** (`telemetry.ts:678`). The identically-named
+`NavigationTracker.recordRouteChange` (`navigationTracker.ts:12`) — the one the React
+Navigation listener actually calls (`navigationNative.native.ts:26`) — does **not** write it.
+So the key is **absent** for any app that navigates via React Navigation's listener without
+also calling `screenStart` or `trackRoute`; see §8.7.
 
 **There is no interaction capture of any kind on web** — no click, no input, no target-element
 keys. `interaction.ts:5-6` states the DOM `target_tag`/`target_class` omission is intentional
@@ -450,8 +463,17 @@ and `memory_usage` among web's shipped events; none of the four are.
 
 ## 8. Findings the inventory forced out
 
-Six defects that change what the contract can promise. Each is reproducible from the
-citation; §8.1 and §8.6 were also confirmed by executing the code.
+Eight defects that change what the contract can promise. Each is reproducible from the
+citation; §8.1, §8.6, §8.7 and §8.8 were also confirmed by executing the code. Two were added
+after publication rather than during the original sweep: §8.7 surfaced while resolving
+[#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51), and §8.8 while
+resolving [#55](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/55).
+
+A ninth — native patches `fetch` only, so **axios traffic on RN native is invisible to both
+`http.request` and the trace** — surfaced under
+[#54](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/54) and lives as its own
+ticket, [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73), rather than
+a section here. Map #48 therefore counts nine defects where this section numbers eight.
 
 ### 8.1 Web navigation capture never starts — `index.web.ts:120`
 
@@ -537,7 +559,120 @@ expect(() => t.trackMemoryUsage({ recordMemoryUsage: () => { called++; } }))
 expect(called).toBe(1);                                         // the sample lands, then it throws
 ```
 
-### 8.7 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
+### 8.7 `attachNavigation` produces no `screen.duration`, and no screen on taps
+
+The two native screen paths are **disjoint**. `NavigationTrackerNative.attach` registers a
+React Navigation `"state"` listener that calls `this.tracker.recordRouteChange(...)`
+(`navigationNative.native.ts:21-29`) and **never touches `inst.screens`**.
+`ScreenTimingTracker`'s `startTimes` map and `lastScreen` (`screenTiming.ts:5-6`) are written
+only by the public `screenStart()` (`index.native.ts:149-152`), and `endScreen` returns
+silently when `startTimes` holds no entry for that name (`screenTiming.ts:29`).
+
+So a consumer who wires up `attachNavigation` — the zero-instrumentation path the SDK
+advertises — emits `navigation` on every route change and **never a single `screen.duration`**,
+no matter how long they stay on a screen.
+
+The same split costs them `interaction.screen`, via a subtler route: **there are two methods
+named `recordRouteChange`.**
+
+| | Sets `currentScreen`? | Reached by |
+|---|---|---|
+| `Telemetry.recordRouteChange` (`telemetry.ts:677-680`) | **yes**, `:678` | the public `trackRoute()` (`index.native.ts:159-162`) |
+| `NavigationTracker.recordRouteChange` (`navigationTracker.ts:12-19`) | **no** | the React Navigation listener (`navigationNative.native.ts:26`) |
+
+`NavigationTrackerNative` holds its own `NavigationTracker` (`navigationNative.native.ts:14`)
+and calls the adapter's method, which only logs. `Telemetry.recordRouteChange` delegates *to*
+that same adapter method after setting `currentScreen`, so the two differ by exactly that one
+assignment. The listener path therefore leaves `currentScreen` `undefined`, and every tap omits
+`interaction.screen` (§4.8).
+
+Net effect for an app using `attachNavigation` and nothing else:
+
+| | Emitted? |
+|---|---|
+| `navigation` | ✅ |
+| `screen.duration` | ❌ never |
+| `interaction.screen` on `user.interaction` | ❌ key omitted |
+
+Both halves were confirmed by execution against the real `Telemetry` and `NavigationTracker`:
+
+```ts
+const t: any = new Telemetry({ flushIntervalMs: 0, sender: { send: async () => {} } });
+
+// what the React Navigation listener calls (navigationNative.native.ts:26)
+await new NavigationTracker(t).recordRouteChange("init", "Home");
+expect(t.currentScreen).toBeUndefined();      // no screen on taps
+expect(t.screens.startTimes.size).toBe(0);    // ScreenTimingTracker never armed
+
+const before = t.getEventCount();
+await t.screens.endScreen("Home");
+expect(t.getEventCount()).toBe(before);       // screenEnd no-ops: zero screen.duration
+
+// what the public trackRoute() calls (index.native.ts:159-162)
+await t.recordRouteChange("Home", "Checkout");
+expect(t.currentScreen).toBe("Checkout");     // the one assignment that differs
+```
+
+Neither `sdk-audit.yaml` nor `CLAUDE.md` records this; both present `attachNavigation` and
+`screenStart` as peer entry points. §4.4 and §4.5 above are annotated accordingly.
+
+### 8.8 A fatal crash is never sent — `telemetry.ts:510-516`
+
+`log()` pushes onto an in-memory array and flushes **only** when the queue reaches
+`batchSize` (`telemetry.ts:510-516`); the default `batchSize` is `2` (`telemetry.ts:185`).
+Nothing about `app.crash` is special-cased.
+
+The offline store persists **only failed sends** — `onFailure` runs after a send has been
+attempted and rejected. An event that never reached a send is never persisted.
+
+So the native fatal path is:
+
+1. `ErrorUtils` global handler fires (`crashHandlerNative.native.ts:17-24`).
+2. `this.telemetry.log("app.crash", …)` — the event lands in `queue`.
+3. The handler calls the previous default handler (`:24`), which **tears the app down**.
+4. The process dies with the event still in memory. It is not sent, and not stored.
+
+Confirmed by execution against the real `Telemetry`:
+
+```ts
+const sent: any[] = [];
+const t: any = new Telemetry({
+  flushIntervalMs: 0,                                    // no timer
+  sender: { send: async (b: any) => { sent.push(b); } },
+});
+expect(t.batchSize).toBe(2);                             // the documented default
+
+await t.log("app.crash", { "crash.cause": "Error" });
+// the process would die here — ErrorUtils calls the default handler next
+
+t.queue.map((e: any) => e.eventName)   // → ["app.crash"]  — still in memory
+sent.length                            // → 0             — nothing left the SDK
+```
+
+Web has the same hole for a crash that closes the tab, by a different route: there is no
+`pagehide`/`visibilitychange` flush at all (#59 owns that).
+
+**Why this matters more than a single lost event.** The crash is lost precisely when the
+session is quiet — a busy session reaches `batchSize` on unrelated traffic and the crash rides
+along. So `app.crash` delivery is **biased toward the crashes that didn't matter**: soft errors
+in busy sessions arrive, fatal ones in quiet sessions vanish. A crash-free-session rate
+computed from this data does not merely undercount — it reads as *healthy*, which is worse than
+reporting nothing.
+
+`batchSize: 2` is the default, but consumers are told to raise it (`CLAUDE.md`: "2 is too low
+for prod"), and every increase widens the window.
+
+Neither `sdk-audit.yaml` nor `CLAUDE.md` records this. Android does not have it — a
+`FatalCrashStore` writes the crash to disk from the handler.
+
+#55 states the requirement (`app.crash` flushes immediately regardless of `batchSize`, and is
+persisted *before* the send is attempted); the mechanism belongs to #59, which owns the offline
+store and the `keepalive` ceiling. Note that no **fully** synchronous guarantee is available on
+RN: `AsyncStorage` is async and the default handler does not wait, so any fix narrows the
+window rather than closing it.
+
+
+### 8.9 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
 
 - Both credit web with `navigation` capture. It has never worked (§8.1).
 - Both describe `memory_usage` as "single-shot". It is single-shot *and* throws *and* is
@@ -548,6 +683,10 @@ expect(called).toBe(1);                                         // the sample la
   `index.base.ts:36-41` is unreachable from the web entry. It is dead code, not a live bug.
 - Neither records that `user.id` is per-launch (§8.2) or that web `device.id` is per-event
   (§8.3) — the two facts that most change how the backend should index this data.
+- Both present `attachNavigation` and `screenStart` as peer entry points. They are not:
+  `attachNavigation` alone yields no `screen.duration` and no `interaction.screen` (§8.7).
+- Neither records that a fatal crash is never sent (§8.8) — the defect that most undermines
+  any crash-rate metric computed from this data.
 
 ## Appendix A — the 73 keys
 
