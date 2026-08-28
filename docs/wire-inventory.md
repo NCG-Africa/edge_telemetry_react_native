@@ -463,11 +463,17 @@ and `memory_usage` among web's shipped events; none of the four are.
 
 ## 8. Findings the inventory forced out
 
-Seven defects that change what the contract can promise. Each is reproducible from the
-citation; §8.1, §8.6 and §8.7 were also confirmed by executing the code. §8.7 was added after
-publication — it surfaced while resolving
-[#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51), not during the
-original sweep.
+Eight defects that change what the contract can promise. Each is reproducible from the
+citation; §8.1, §8.6, §8.7 and §8.8 were also confirmed by executing the code. Two were added
+after publication rather than during the original sweep: §8.7 surfaced while resolving
+[#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51), and §8.8 while
+resolving [#55](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/55).
+
+A ninth — native patches `fetch` only, so **axios traffic on RN native is invisible to both
+`http.request` and the trace** — surfaced under
+[#54](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/54) and lives as its own
+ticket, [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73), rather than
+a section here. Map #48 therefore counts nine defects where this section numbers eight.
 
 ### 8.1 Web navigation capture never starts — `index.web.ts:120`
 
@@ -610,7 +616,63 @@ expect(t.currentScreen).toBe("Checkout");     // the one assignment that differs
 Neither `sdk-audit.yaml` nor `CLAUDE.md` records this; both present `attachNavigation` and
 `screenStart` as peer entry points. §4.4 and §4.5 above are annotated accordingly.
 
-### 8.8 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
+### 8.8 A fatal crash is never sent — `telemetry.ts:510-516`
+
+`log()` pushes onto an in-memory array and flushes **only** when the queue reaches
+`batchSize` (`telemetry.ts:510-516`); the default `batchSize` is `2` (`telemetry.ts:185`).
+Nothing about `app.crash` is special-cased.
+
+The offline store persists **only failed sends** — `onFailure` runs after a send has been
+attempted and rejected. An event that never reached a send is never persisted.
+
+So the native fatal path is:
+
+1. `ErrorUtils` global handler fires (`crashHandlerNative.native.ts:17-24`).
+2. `this.telemetry.log("app.crash", …)` — the event lands in `queue`.
+3. The handler calls the previous default handler (`:24`), which **tears the app down**.
+4. The process dies with the event still in memory. It is not sent, and not stored.
+
+Confirmed by execution against the real `Telemetry`:
+
+```ts
+const sent: any[] = [];
+const t: any = new Telemetry({
+  flushIntervalMs: 0,                                    // no timer
+  sender: { send: async (b: any) => { sent.push(b); } },
+});
+expect(t.batchSize).toBe(2);                             // the documented default
+
+await t.log("app.crash", { "crash.cause": "Error" });
+// the process would die here — ErrorUtils calls the default handler next
+
+t.queue.map((e: any) => e.eventName)   // → ["app.crash"]  — still in memory
+sent.length                            // → 0             — nothing left the SDK
+```
+
+Web has the same hole for a crash that closes the tab, by a different route: there is no
+`pagehide`/`visibilitychange` flush at all (#59 owns that).
+
+**Why this matters more than a single lost event.** The crash is lost precisely when the
+session is quiet — a busy session reaches `batchSize` on unrelated traffic and the crash rides
+along. So `app.crash` delivery is **biased toward the crashes that didn't matter**: soft errors
+in busy sessions arrive, fatal ones in quiet sessions vanish. A crash-free-session rate
+computed from this data does not merely undercount — it reads as *healthy*, which is worse than
+reporting nothing.
+
+`batchSize: 2` is the default, but consumers are told to raise it (`CLAUDE.md`: "2 is too low
+for prod"), and every increase widens the window.
+
+Neither `sdk-audit.yaml` nor `CLAUDE.md` records this. Android does not have it — a
+`FatalCrashStore` writes the crash to disk from the handler.
+
+#55 states the requirement (`app.crash` flushes immediately regardless of `batchSize`, and is
+persisted *before* the send is attempted); the mechanism belongs to #59, which owns the offline
+store and the `keepalive` ceiling. Note that no **fully** synchronous guarantee is available on
+RN: `AsyncStorage` is async and the default handler does not wait, so any fix narrows the
+window rather than closing it.
+
+
+### 8.9 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
 
 - Both credit web with `navigation` capture. It has never worked (§8.1).
 - Both describe `memory_usage` as "single-shot". It is single-shot *and* throws *and* is
@@ -623,6 +685,8 @@ Neither `sdk-audit.yaml` nor `CLAUDE.md` records this; both present `attachNavig
   (§8.3) — the two facts that most change how the backend should index this data.
 - Both present `attachNavigation` and `screenStart` as peer entry points. They are not:
   `attachNavigation` alone yields no `screen.duration` and no `interaction.screen` (§8.7).
+- Neither records that a fatal crash is never sent (§8.8) — the defect that most undermines
+  any crash-rate metric computed from this data.
 
 ## Appendix A — the 73 keys
 
