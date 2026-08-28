@@ -10,8 +10,9 @@ annotation in §4.6, and under
 [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73) to add §8.10 and §8.11
 and their annotations in §4.6, and under
 [#70](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/70) to correct the
-`device.fingerprint` cardinality in §3.2 and add §8.12 and §8.13; key counts are unaffected by
-any of them.
+`device.fingerprint` cardinality in §3.2 and add §8.12 and §8.13, and under
+[#57](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/57) to add §8.14 and
+§8.15 and the §4.2 annotation; key counts are unaffected by any of them.
 
 Every key below is cited `file:line` against `src/`. Where the document and
 `sdk-audit.yaml` disagree, the divergence is called out explicitly in §8 — the audit lists
@@ -211,6 +212,10 @@ additionally by `AppState → background` on native (`index.native.ts:93-95`). *
 unload or `visibilitychange` hook into `finalizeSession`** — a web session is only finalized
 by idle rotation, which itself only fires on the *next* `log()`. A web user who closes the tab
 never produces a `session.finalized`.
+
+Two defects live here: `session.duration_ms` includes the entire idle gap because the rotation
+check is lazy (§8.14), and the native background finalize does not rotate the id, so later
+events still carry the finalized session (§8.15).
 
 ### 4.3 `app_lifecycle` — both builds
 
@@ -479,15 +484,17 @@ and `memory_usage` among web's shipped events; none of the four are.
 
 ## 8. Findings the inventory forced out
 
-Thirteen defects that change what the contract can promise. Each is reproducible from the
-citation; §8.1, §8.6, §8.7, §8.8, §8.9 and §8.11 were also confirmed by executing the code. Seven
+Fifteen defects that change what the contract can promise. Each is reproducible from the
+citation; §8.1, §8.6, §8.7, §8.8, §8.9 and §8.11 were also confirmed by executing the code. Nine
 were added after publication rather than during the original sweep: §8.7 surfaced while resolving
 [#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51), §8.8 while resolving
 [#55](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/55), §8.9 while resolving
 [#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61), §8.10 and §8.11 while
 resolving [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73), and §8.12
 and §8.13 while resolving
-[#70](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/70).
+[#70](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/70), and §8.14 and §8.15
+together while resolving
+[#57](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/57).
 
 §8.9, §8.10 and §8.11 are neighbours and worth reading together: §8.9 loses the endpoint on a
 request the SDK *does* see, §8.10 loses the request entirely, and §8.11 sees the request but
@@ -882,7 +889,79 @@ and the `data` argument of `log()` are both flattened by this method (`telemetry
 
 Neither is theoretical: nothing validates what a consumer passes to `identify()`.
 
-### 8.14 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
+### 8.14 `session.duration_ms` counts the entire idle gap — `telemetry.ts:312`
+
+Rotation is checked **lazily**: only inside `log()`, and only for names not starting with
+`session.` (`telemetry.ts:479-486`). Nothing polls, and `logMetric` never touches
+`lastActivity`. So a session rotates on the *next event after* the gap, not at the moment the
+gap crosses 30 minutes.
+
+`finalizeSession()` then stamps the duration as `Date.now() - this.sessionStart`
+(`telemetry.ts:312`) — evaluated at rotation time, which is the moment of that late event. The
+whole idle gap is inside the number.
+
+The result is unbounded and unrelated to how long the user was present:
+
+```ts
+vi.setSystemTime(new Date(0));
+const t = new Telemetry({ sender, batchSize: 500, flushIntervalMs: 0, /* handlers */ });
+await t.startSession();
+
+vi.setSystemTime(new Date(2 * 60 * 1000));        // two minutes of real use
+await t.log("custom_event");
+
+vi.setSystemTime(new Date(6 * 60 * 60 * 1000));   // idle six hours, then one tap
+await t.log("custom_event");
+await t.flush();
+
+fin.attributes["session.duration_ms"]   // → 21600000  (6h) — for 2 minutes of activity
+```
+
+Confirmed by execution against the real `Telemetry` — the assertion
+`expect(ms).toBe(6 * 60 * 60 * 1000)` passes exactly.
+
+Two aggravations. Because metrics are not activity, a metric-only stream cannot even trigger
+the rotation that would end the session. And because the check needs a *later* event to run at
+all, a user who never returns produces **no** `session.finalized` on either build — web
+additionally has no unload hook (§4.2).
+
+[#57](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/57) closes it from both
+ends: the SDK stamps duration from `lastActivity` rather than `now`, and — authoritatively —
+the backend derives it as `MAX(timestamp) - start_time` over `rum_telemetry_events`, which is
+the only source that also covers the sessions that never finalize at all.
+
+### 8.15 A background finalize leaves the session id live — `index.native.ts:93-95`
+
+On native, `AppState → "background"` calls `finalizeSession()` and nothing else; `newSession()`
+is deferred to the next foreground (`index.native.ts:96`). `finalizeSession()`
+(`telemetry.ts:310-317`) emits `session.finalized` and flushes, but does **not** change
+`this.sessionId`.
+
+So from background until the next foreground, the SDK is live with a session id it has already
+declared finished. Any event completing in that window — an in-flight `http.request`, a queued
+`app.crash`, a `network_change` — carries it:
+
+```ts
+await t.startSession();
+await t.finalizeSession();                                  // what index.native.ts:94 does
+await t.log("http.request", { "http.url": "https://x" });   // request completes in background
+await t.flush();
+
+later.attributes["session.id"] === fin.attributes["session.id"]   // → true
+```
+
+Confirmed by execution against the real `Telemetry`.
+
+The backend consequence is silent rather than loud. Under `repository.go:94-99`'s no-op upsert
+these events attach to the existing `rum_sessions` row, so nothing errors — the row simply
+gains events dated past its own declared end. Any query treating `session.finalized` as a
+terminator undercounts them.
+
+[#57](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/57) removes the cause
+rather than patching it: under resume-within-window semantics there is no background finalize
+at all.
+
+### 8.16 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
 
 - Both credit web with `navigation` capture. It has never worked (§8.1).
 - Both describe `memory_usage` as "single-shot". It is single-shot *and* throws *and* is
@@ -897,6 +976,10 @@ Neither is theoretical: nothing validates what a consumer passes to `identify()`
   `attachNavigation` alone yields no `screen.duration` and no `interaction.screen` (§8.7).
 - Neither records that a fatal crash is never sent (§8.8) — the defect that most undermines
   any crash-rate metric computed from this data.
+- Both present the 30-minute rotation as if it bounded a session. It does not: the check is
+  lazy, so `session.duration_ms` is unbounded and includes the whole idle gap (§8.14).
+- Neither records that a native background finalize leaves `sessionId` unchanged, so events
+  keep arriving under an already-finalized session (§8.15).
 
 
 ## Appendix A — the 73 keys
