@@ -4,7 +4,9 @@
 Resolves [#49](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/49) under
 map [#48](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/48).
 Amended under [#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51) to add
-§8.7 and its annotations in §4.4, §4.5 and §4.8; key counts are unaffected.
+§8.7 and its annotations in §4.4, §4.5 and §4.8, and under
+[#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61) to add §8.9 and its
+annotation in §4.6; key counts are unaffected by either.
 
 Every key below is cited `file:line` against `src/`. Where the document and
 `sdk-audit.yaml` disagree, the divergence is called out explicitly in §8 — the audit lists
@@ -257,8 +259,8 @@ Built by the shared `buildHttpAttributes` (`httpAttributes.ts:5-35`).
 | `http.status_code` | int | never; **`0` on transport failure** | ~40 | `httpAttributes.ts:19` |
 | `http.duration_ms` | int | never | unbounded | `httpAttributes.ts:20` |
 | `http.success` | boolean | never | 2 | `httpAttributes.ts:21` |
-| `http.host` | string | **absent** on relative/invalid URL | dozens | `httpAttributes.ts:27` |
-| `http.path` | string | **absent** on relative/invalid URL | **high — path params not normalized** | `httpAttributes.ts:28` |
+| `http.host` | string | **absent** on relative/invalid URL — see §8.9 | dozens | `httpAttributes.ts:27` |
+| `http.path` | string | **absent** on relative/invalid URL — see §8.9 | **high — path params not normalized** | `httpAttributes.ts:28` |
 | `http.request_size` | int | **absent** unless the body is a `string` | unbounded | `httpAttributes.ts:32` |
 | `http.response_size` | int | **absent** when 0 or header missing | unbounded | `httpAttributes.ts:33` |
 
@@ -463,17 +465,20 @@ and `memory_usage` among web's shipped events; none of the four are.
 
 ## 8. Findings the inventory forced out
 
-Eight defects that change what the contract can promise. Each is reproducible from the
-citation; §8.1, §8.6, §8.7 and §8.8 were also confirmed by executing the code. Two were added
-after publication rather than during the original sweep: §8.7 surfaced while resolving
-[#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51), and §8.8 while
-resolving [#55](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/55).
+Nine defects that change what the contract can promise. Each is reproducible from the
+citation; §8.1, §8.6, §8.7, §8.8 and §8.9 were also confirmed by executing the code. Three were
+added after publication rather than during the original sweep: §8.7 surfaced while resolving
+[#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51), §8.8 while resolving
+[#55](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/55), and §8.9 while
+resolving [#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61).
 
-A ninth — native patches `fetch` only, so **axios traffic on RN native is invisible to both
+A tenth — native patches `fetch` only, so **axios traffic on RN native is invisible to both
 `http.request` and the trace** — surfaced under
 [#54](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/54) and lives as its own
 ticket, [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73), rather than
-a section here. Map #48 therefore counts nine defects where this section numbers eight.
+a section here. Map #48 therefore counts ten defects where this section numbers nine. The two
+are neighbours: §8.9 loses the endpoint on requests the SDK *does* see, #73 loses the request
+entirely.
 
 ### 8.1 Web navigation capture never starts — `index.web.ts:120`
 
@@ -672,7 +677,55 @@ RN: `AsyncStorage` is async and the default handler does not wait, so any fix na
 window rather than closing it.
 
 
-### 8.9 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
+### 8.9 First-party requests carry no `http.host` and no `http.path` — `httpAttributes.ts:26-31`
+
+```ts
+try {
+  const u = new URL(url);
+  attrs["http.host"] = u.host;
+  attrs["http.path"] = u.pathname;
+} catch {
+  // ponytail: relative/invalid URL → no host/path, baseline still ships
+}
+```
+
+`new URL()` throws on a relative URL, and both interceptors pass the caller's argument
+through untouched — `typeof input === "string" ? input : input.toString()`
+(`interceptFetchWeb.web.ts:58`, `interceptFetchNative.native.ts:43`). So
+`fetch('/api/accounts/123')` reaches the `catch` and ships neither key.
+
+§4.6 already records the absence per key. What it does not say is **which requests fall into
+it**: a relative URL is how a web app calls *its own backend*, so the requests that lose their
+host and path are the first-party ones — the only ones a customer's own dashboards are about.
+Third-party CDN and API calls, which are absolute by necessity, keep both keys. The failure is
+inverted relative to its usefulness.
+
+Confirmed by execution against the real builder:
+
+```ts
+const a = buildHttpAttributes({
+  url: "/api/accounts/123", method: "GET", statusCode: 200, durationMs: 5,
+});
+
+"http.host" in a     // → false
+"http.path" in a     // → false
+a["http.url"]        // → "/api/accounts/123"   — the raw string, and the only survivor
+```
+
+The consequence compounds with what `http.url` carries. Today the raw relative path is the
+sole record of the endpoint, so any endpoint-level grouping has to parse `http.url`
+client-side — and `http.url` is the key the map's privacy-strict decision targets, and the key
+[#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61) removes outright. If
+this defect were left standing, removing `http.url` would take first-party endpoint data with
+it entirely rather than merely normalizing it.
+
+#61 fixes it as part of its own change: resolve against `window.location.href` before parsing
+on web, so first-party calls yield a real host and a real `http.route`. Native has no base
+document — a relative URL there yields a normalized `http.route` and no `http.host`.
+
+Neither `sdk-audit.yaml` nor `CLAUDE.md` records this.
+
+### 8.10 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
 
 - Both credit web with `navigation` capture. It has never worked (§8.1).
 - Both describe `memory_usage` as "single-shot". It is single-shot *and* throws *and* is
