@@ -6,7 +6,9 @@ map [#48](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/48).
 Amended under [#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51) to add
 §8.7 and its annotations in §4.4, §4.5 and §4.8, and under
 [#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61) to add §8.9 and its
-annotation in §4.6; key counts are unaffected by either.
+annotation in §4.6, and under
+[#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73) to add §8.10 and §8.11
+and their annotations in §4.6; key counts are unaffected by any of them.
 
 Every key below is cited `file:line` against `src/`. Where the document and
 `sdk-audit.yaml` disagree, the divergence is called out explicitly in §8 — the audit lists
@@ -279,13 +281,16 @@ Interceptors, and the one real divergence:
 | | Native | Web |
 |---|---|---|
 | `fetch` | `interceptFetchNative.native.ts:25-63` | `interceptFetchWeb.web.ts:42-78` |
-| `XMLHttpRequest` | **not intercepted** | `interceptFetchWeb.web.ts:89-134` |
+| `XMLHttpRequest` | **not intercepted — see §8.10** | `interceptFetchWeb.web.ts:89-134` |
 | Self-POST suppression | `native.ts:46-47` | `web.ts:61-62` (fetch), `117-118` (XHR) |
 
 Web XHR sets `error: "Network error"` when `status === 0` (`web.ts:127`), native sets the
 caught exception (`native.ts:57`). Both only feed `http.success`; the error itself is never
 put on the wire. **A failed request is indistinguishable from a 0-status response** except
 via `http.success`.
+
+Both interceptors also mis-record the `Request`-object call form on every key in this table —
+see §8.11.
 
 ### 4.7 `app.crash` — both builds
 
@@ -465,20 +470,18 @@ and `memory_usage` among web's shipped events; none of the four are.
 
 ## 8. Findings the inventory forced out
 
-Nine defects that change what the contract can promise. Each is reproducible from the
-citation; §8.1, §8.6, §8.7, §8.8 and §8.9 were also confirmed by executing the code. Three were
-added after publication rather than during the original sweep: §8.7 surfaced while resolving
+Eleven defects that change what the contract can promise. Each is reproducible from the
+citation; §8.1, §8.6, §8.7, §8.8, §8.9 and §8.11 were also confirmed by executing the code. Five
+were added after publication rather than during the original sweep: §8.7 surfaced while resolving
 [#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51), §8.8 while resolving
-[#55](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/55), and §8.9 while
-resolving [#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61).
+[#55](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/55), §8.9 while resolving
+[#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61), and §8.10 and §8.11
+while resolving
+[#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73).
 
-A tenth — native patches `fetch` only, so **axios traffic on RN native is invisible to both
-`http.request` and the trace** — surfaced under
-[#54](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/54) and lives as its own
-ticket, [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73), rather than
-a section here. Map #48 therefore counts ten defects where this section numbers nine. The two
-are neighbours: §8.9 loses the endpoint on requests the SDK *does* see, #73 loses the request
-entirely.
+§8.9, §8.10 and §8.11 are neighbours and worth reading together: §8.9 loses the endpoint on a
+request the SDK *does* see, §8.10 loses the request entirely, and §8.11 sees the request but
+records the wrong URL, the wrong method and no endpoint at all.
 
 ### 8.1 Web navigation capture never starts — `index.web.ts:120`
 
@@ -725,7 +728,92 @@ document — a relative URL there yields a normalized `http.route` and no `http.
 
 Neither `sdk-audit.yaml` nor `CLAUDE.md` records this.
 
-### 8.10 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
+### 8.10 Native intercepts `fetch` only, so axios traffic is invisible — `interceptFetchNative.native.ts:14`
+
+```ts
+this.originalFetch = global.fetch.bind(global);   // :14 — the only thing native patches
+```
+
+Web patches both channels (`interceptFetchWeb.web.ts:41` for `fetch`, `:82` for
+`XMLHttpRequest`). Native patches one.
+
+**axios on React Native selects its `XMLHttpRequest` adapter** — the Node `http` adapter is
+never chosen in RN, because RN has no `http` module. So on native an axios call emits **no
+`http.request` event at all**, and once
+[#54](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/54)'s trace work lands it
+can carry **no `traceparent`**.
+
+The damage is worse than a missing row. An untraced axios call is not `injected_unattributed` —
+it is absent from `traceparent.outcome`'s **denominator entirely**. Android's
+`injected_unattributed` at least means *we saw the request*. Here the SDK reports healthy
+coverage over a population it never observed, which is #54's stated reason for dropping
+`injected_unwired`: a bucket that is structurally empty gets read as *fine* rather than
+*impossible*.
+
+Surfaced while resolving #54, which bounded the outcome enum against it.
+
+**Resolved by [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73), and
+not the way the ticket asked.** On React Native `global.fetch` **is** `XMLHttpRequest`:
+
+```
+setUpXHR.js:27         polyfillGlobal('fetch', () => require('../Network/fetch').fetch)
+Network/fetch.js       require('whatwg-fetch')          // side-effectful, nothing else
+fetch.umd.js:540       var xhr = new XMLHttpRequest()
+fetch.umd.js:591       xhr.open(request.method, fixUrl(request.url), true)
+```
+
+(RN **0.81.4**.) XHR is therefore not a *second* channel on native but the channel *underneath*
+the one already patched, and porting web's XHR patch alongside the existing `fetch` patch would
+emit **two `http.request` events for every `fetch()` call**. v4 instead **deletes the native
+`fetch` patch** and patches `XMLHttpRequest.prototype` alone — one chokepoint that catches both,
+with no de-dup logic to get wrong. The self-POST suppression at `native.ts:46-47` moves with it,
+or the SDK captures its own collector POST and amplifies without bound.
+
+### 8.11 `fetch(new Request(...))` records a fabricated row — `native.ts:43,54` · `web.ts:58,69`
+
+Both interceptors stringify the first argument and read the method off the second:
+
+```ts
+const url = typeof input === "string" ? input : input.toString();   // native.ts:43, web.ts:58
+method: init?.method ?? "GET",                                      // native.ts:54, web.ts:69
+```
+
+`fetch` accepts a `Request` object as its sole argument, and in that form there **is no
+`init`** — the method lives on the `Request`. RN's `Request` is whatwg-fetch's, which defines no
+`toString` and no `Symbol.toStringTag`, so it stringifies to the default. Confirmed by execution
+against the real class:
+
+```ts
+const R = require("whatwg-fetch").Request;              // the class RN polyfills as global.Request
+String(new R("https://api.example.com/v1/pay", { method: "post" }))
+// → "[object Object]"
+```
+
+So `fetch(new Request("https://api.example.com/v1/pay", { method: "post" }))` emits:
+
+| Key | Emitted | Actual |
+|---|---|---|
+| `http.url` | `"[object Object]"` | `https://api.example.com/v1/pay` |
+| `http.method` | `"GET"` | `POST` |
+| `http.host` | **absent** | `api.example.com` |
+| `http.path` | **absent** | `/v1/pay` |
+
+`http.host` and `http.path` drop out because `new URL("[object Object]")` throws into §8.9's
+`catch`. Every field in the row is wrong, and nothing about it is detectable downstream — it is
+a well-formed `http.request` describing a request that was never made.
+
+This is the call form used by any consumer that builds requests ahead of dispatch, and by
+middleware layers that wrap `fetch` — so it is concentrated in exactly the codebases most likely
+to have a request abstraction worth tracing.
+
+**Both builds are affected today.** #73's XHR-only decision fixes it on **native** for free,
+since `open()` receives the real normalized URL and verb from whatwg-fetch. **Web keeps the
+bug**, because web keeps its `fetch` patch — browser `fetch` is native and not XHR-backed — so
+web needs a separate one-line fix reading `input.url` and `input.method` off a `Request`.
+
+Neither `sdk-audit.yaml` nor `CLAUDE.md` records this.
+
+### 8.12 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
 
 - Both credit web with `navigation` capture. It has never worked (§8.1).
 - Both describe `memory_usage` as "single-shot". It is single-shot *and* throws *and* is
