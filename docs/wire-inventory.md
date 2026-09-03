@@ -8,7 +8,10 @@ Amended under [#51](https://github.com/NCG-Africa/edge_telemetry_react_native/is
 [#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61) to add §8.9 and its
 annotation in §4.6, and under
 [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73) to add §8.10 and §8.11
-and their annotations in §4.6; key counts are unaffected by any of them.
+and their annotations in §4.6, and under
+[#70](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/70) to correct the
+`device.fingerprint` cardinality in §3.2 and add §8.12 and §8.13; key counts are unaffected by
+any of them.
 
 Every key below is cited `file:line` against `src/`. Where the document and
 `sdk-audit.yaml` disagree, the divergence is called out explicitly in §8 — the audit lists
@@ -127,7 +130,7 @@ names**, not string literals, which is why Appendix B has to read the interface.
 | `device.brand` | string | `getBrand()` — `native.ts:34,64` | `navigator.vendor \|\| "unknown"` — `web.ts:28` | never | native: dozens · web: ~4 |
 | `device.androidSdk` | string | API level, Android only — `native.ts:42,67` | **always absent** — `web.ts:32` | absent off-Android | ~15 |
 | `device.androidRelease` | string | Android only — `native.ts:68` | absent — `web.ts:33` | absent off-Android | ~15 |
-| `device.fingerprint` | string | Android only — `native.ts:43,69` | absent — `web.ts:34` | absent off-Android | **low — one value per model+build**, see §8.11 |
+| `device.fingerprint` | string | Android only — `native.ts:43,69` | absent — `web.ts:34` | absent off-Android | **low — one value per model+build**, see §8.12 |
 | `device.hardware` | string | Android only — `native.ts:44,70` | absent — `web.ts:35` | absent off-Android | dozens |
 | `device.product` | string | Android only — `native.ts:45,71` | absent — `web.ts:36` | absent off-Android | hundreds |
 | `device.iosSystemName` | string | iOS only — `native.ts:48,74` | absent — `web.ts:38` | absent off-iOS | 1 |
@@ -145,7 +148,7 @@ document claimed. `Build.FINGERPRINT` is a *build* identifier —
 `google/raven/raven:14/UQ1A.240105.004/11206848:user/release-keys` — and every handset of the
 same model on the same build emits the **identical** string. Its cardinality is that of
 model×build, not of devices. The correction matters because the near-unique reading is what
-makes its use as a device-dedup fallback look defensible; it is not (§8.11).
+makes its use as a device-dedup fallback look defensible; it is not (§8.12).
 
 ### 3.3 `network.*` — from the `NetworkInfo` interface
 
@@ -476,14 +479,15 @@ and `memory_usage` among web's shipped events; none of the four are.
 
 ## 8. Findings the inventory forced out
 
-Eleven defects that change what the contract can promise. Each is reproducible from the
-citation; §8.1, §8.6, §8.7, §8.8, §8.9 and §8.11 were also confirmed by executing the code. Five
+Thirteen defects that change what the contract can promise. Each is reproducible from the
+citation; §8.1, §8.6, §8.7, §8.8, §8.9 and §8.11 were also confirmed by executing the code. Seven
 were added after publication rather than during the original sweep: §8.7 surfaced while resolving
 [#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51), §8.8 while resolving
 [#55](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/55), §8.9 while resolving
-[#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61), and §8.10 and §8.11
-while resolving
-[#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73).
+[#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61), §8.10 and §8.11 while
+resolving [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73), and §8.12
+and §8.13 while resolving
+[#70](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/70).
 
 §8.9, §8.10 and §8.11 are neighbours and worth reading together: §8.9 loses the endpoint on a
 request the SDK *does* see, §8.10 loses the request entirely, and §8.11 sees the request but
@@ -819,23 +823,7 @@ web needs a separate one-line fix reading `input.url` and `input.method` off a `
 
 Neither `sdk-audit.yaml` nor `CLAUDE.md` records this.
 
-### 8.12 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
-
-- Both credit web with `navigation` capture. It has never worked (§8.1).
-- Both describe `memory_usage` as "single-shot". It is single-shot *and* throws *and* is
-  Chromium-only (§8.6).
-- `CLAUDE.md` lists as a known gap that `index.base.ts:37` imports the **native** crash
-  handler in shared code and "the web build resolves it at runtime and rejects". It does not:
-  `TelemetryWeb.trackErrors` (`index.web.ts:83-88`) **overrides** the base method, so
-  `index.base.ts:36-41` is unreachable from the web entry. It is dead code, not a live bug.
-- Neither records that `user.id` is per-launch (§8.2) or that web `device.id` is per-event
-  (§8.3) — the two facts that most change how the backend should index this data.
-- Both present `attachNavigation` and `screenStart` as peer entry points. They are not:
-  `attachNavigation` alone yields no `screen.duration` and no `interaction.screen` (§8.7).
-- Neither records that a fatal crash is never sent (§8.8) — the defect that most undermines
-  any crash-rate metric computed from this data.
-
-### 8.11 `device.fingerprint` merges distinct handsets into one device row — `repository.go:59-81`
+### 8.12 `device.fingerprint` merges distinct handsets into one device row — `repository.go:59-81`
 
 A consequence of the cardinality correction in §3.2, and the reason it is worth making.
 
@@ -870,7 +858,7 @@ absent, `info.Fingerprint == ""` and the fallback branch is skipped entirely.
 The defect is **not RN-specific** — the Android SDK sends a fingerprint too and is exposed the
 same way. Recorded here as a finding, not a proposal.
 
-### 8.12 `flattenWithPrefix` crashes the host app on a cyclic value, and ships arrays raw — `telemetry.ts:601-618`
+### 8.13 `flattenWithPrefix` crashes the host app on a cyclic value, and ships arrays raw — `telemetry.ts:601-618`
 
 ```ts
 if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
@@ -893,6 +881,22 @@ and the `data` argument of `log()` are both flattened by this method (`telemetry
    JSON array.
 
 Neither is theoretical: nothing validates what a consumer passes to `identify()`.
+
+### 8.14 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
+
+- Both credit web with `navigation` capture. It has never worked (§8.1).
+- Both describe `memory_usage` as "single-shot". It is single-shot *and* throws *and* is
+  Chromium-only (§8.6).
+- `CLAUDE.md` lists as a known gap that `index.base.ts:37` imports the **native** crash
+  handler in shared code and "the web build resolves it at runtime and rejects". It does not:
+  `TelemetryWeb.trackErrors` (`index.web.ts:83-88`) **overrides** the base method, so
+  `index.base.ts:36-41` is unreachable from the web entry. It is dead code, not a live bug.
+- Neither records that `user.id` is per-launch (§8.2) or that web `device.id` is per-event
+  (§8.3) — the two facts that most change how the backend should index this data.
+- Both present `attachNavigation` and `screenStart` as peer entry points. They are not:
+  `attachNavigation` alone yields no `screen.duration` and no `interaction.screen` (§8.7).
+- Neither records that a fatal crash is never sent (§8.8) — the defect that most undermines
+  any crash-rate metric computed from this data.
 
 
 ## Appendix A — the 73 keys
