@@ -8,7 +8,10 @@ Amended under [#51](https://github.com/NCG-Africa/edge_telemetry_react_native/is
 [#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61) to add §8.9 and its
 annotation in §4.6, and under
 [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73) to add §8.10 and §8.11
-and their annotations in §4.6; key counts are unaffected by any of them.
+and their annotations in §4.6, and under
+[#70](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/70) to correct the
+`device.fingerprint` cardinality in §3.2 and add §8.12 and §8.13; key counts are unaffected by
+any of them.
 
 Every key below is cited `file:line` against `src/`. Where the document and
 `sdk-audit.yaml` disagree, the divergence is called out explicitly in §8 — the audit lists
@@ -127,7 +130,7 @@ names**, not string literals, which is why Appendix B has to read the interface.
 | `device.brand` | string | `getBrand()` — `native.ts:34,64` | `navigator.vendor \|\| "unknown"` — `web.ts:28` | never | native: dozens · web: ~4 |
 | `device.androidSdk` | string | API level, Android only — `native.ts:42,67` | **always absent** — `web.ts:32` | absent off-Android | ~15 |
 | `device.androidRelease` | string | Android only — `native.ts:68` | absent — `web.ts:33` | absent off-Android | ~15 |
-| `device.fingerprint` | string | Android only — `native.ts:43,69` | absent — `web.ts:34` | absent off-Android | **near-unique per device** |
+| `device.fingerprint` | string | Android only — `native.ts:43,69` | absent — `web.ts:34` | absent off-Android | **low — one value per model+build**, see §8.12 |
 | `device.hardware` | string | Android only — `native.ts:44,70` | absent — `web.ts:35` | absent off-Android | dozens |
 | `device.product` | string | Android only — `native.ts:45,71` | absent — `web.ts:36` | absent off-Android | hundreds |
 | `device.iosSystemName` | string | iOS only — `native.ts:48,74` | absent — `web.ts:38` | absent off-iOS | 1 |
@@ -137,9 +140,15 @@ names**, not string literals, which is why Appendix B has to read the interface.
 *absent*, never `null`, on the other OS and on web. **Web populates none of them** — the
 placeholders at `deviceInfo.web.ts:31-39` are explicit `undefined`.
 
-`device.iosDeviceName` carries the user's own name for their phone ("Ada's iPhone") and
-`device.fingerprint` is a near-unique Android build string. Both are PII-adjacent and both
-ship on every single event today.
+`device.iosDeviceName` carries the user's own name for their phone ("Ada's iPhone") — real
+PII, and it ships on every single event today.
+
+`device.fingerprint` is **not** PII and **not** near-unique, as an earlier revision of this
+document claimed. `Build.FINGERPRINT` is a *build* identifier —
+`google/raven/raven:14/UQ1A.240105.004/11206848:user/release-keys` — and every handset of the
+same model on the same build emits the **identical** string. Its cardinality is that of
+model×build, not of devices. The correction matters because the near-unique reading is what
+makes its use as a device-dedup fallback look defensible; it is not (§8.12).
 
 ### 3.3 `network.*` — from the `NetworkInfo` interface
 
@@ -470,14 +479,15 @@ and `memory_usage` among web's shipped events; none of the four are.
 
 ## 8. Findings the inventory forced out
 
-Eleven defects that change what the contract can promise. Each is reproducible from the
-citation; §8.1, §8.6, §8.7, §8.8, §8.9 and §8.11 were also confirmed by executing the code. Five
+Thirteen defects that change what the contract can promise. Each is reproducible from the
+citation; §8.1, §8.6, §8.7, §8.8, §8.9 and §8.11 were also confirmed by executing the code. Seven
 were added after publication rather than during the original sweep: §8.7 surfaced while resolving
 [#51](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/51), §8.8 while resolving
 [#55](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/55), §8.9 while resolving
-[#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61), and §8.10 and §8.11
-while resolving
-[#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73).
+[#61](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/61), §8.10 and §8.11 while
+resolving [#73](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/73), and §8.12
+and §8.13 while resolving
+[#70](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/70).
 
 §8.9, §8.10 and §8.11 are neighbours and worth reading together: §8.9 loses the endpoint on a
 request the SDK *does* see, §8.10 loses the request entirely, and §8.11 sees the request but
@@ -813,7 +823,66 @@ web needs a separate one-line fix reading `input.url` and `input.method` off a `
 
 Neither `sdk-audit.yaml` nor `CLAUDE.md` records this.
 
-### 8.12 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
+### 8.12 `device.fingerprint` merges distinct handsets into one device row — `repository.go:59-81`
+
+A consequence of the cardinality correction in §3.2, and the reason it is worth making.
+
+The processor resolves a device by `device_id` first and falls back to the fingerprint:
+
+```go
+// EDGETELEMETRYPROCESSORGO@516a02f internal/db/repository.go:59-81
+if info.DeviceID != "" {
+    SELECT id FROM rum_devices WHERE device_id = $1 LIMIT 1   // ErrNoRows on a NEW device
+}
+if info.Fingerprint != "" {
+    SELECT id FROM rum_devices WHERE fingerprint = $1 LIMIT 1 // HIT — a DIFFERENT handset
+}
+INSERT ...                                                    // never reached
+```
+
+The `device_id` lookup misses on exactly one class of event — the **first** one from a
+brand-new device — which is precisely the class that needs an INSERT. Control then reaches the
+fingerprint lookup, which matches the row of some *other* handset on the same model+build, and
+that row's id is returned. The new device is never inserted and its `device_id` is never
+recorded.
+
+So this is not an occasional collision: **every** new RN-Android handset collapses into the
+first one seen on its build. A persisted, unique `device.id` does not help, because the
+fallback runs only when `device_id` is unknown.
+
+`rum_devices.fingerprint` has **zero readers** in the analytics service (the eight `fingerprint`
+hits there are `_filter_fingerprint`, an unrelated geo cache-key helper), so the key funds
+nothing on the other side of the ledger. The RN-side fix is to stop sending it: with the key
+absent, `info.Fingerprint == ""` and the fallback branch is skipped entirely.
+
+The defect is **not RN-specific** — the Android SDK sends a fingerprint too and is exposed the
+same way. Recorded here as a finding, not a proposal.
+
+### 8.13 `flattenWithPrefix` crashes the host app on a cyclic value, and ships arrays raw — `telemetry.ts:601-618`
+
+```ts
+if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+    Object.assign(result, this.flattenWithPrefix(prefixedKey, value));   // no depth guard
+} else {
+    result[prefixedKey] = value;                                          // arrays land here
+}
+```
+
+Two defects on one branch, both reachable from public API — `identify().customAttributes`
+and the `data` argument of `log()` are both flattened by this method (`telemetry.ts:547`).
+
+1. **No depth guard and no cycle detection.** A `customAttributes` value containing a
+   reference cycle recurses until the stack is exhausted, raising a `RangeError` **inside
+   `collect()`** — on the host app's call stack, not in a caught SDK path. A consumer passing
+   a Redux store slice, a DOM node or any object with a parent back-pointer crashes the app.
+2. **Arrays bypass flattening entirely.** The `!Array.isArray(value)` guard sends them to the
+   `else`, so an array is assigned as an attribute value verbatim. That violates `CLAUDE.md`'s
+   "keep attribute values primitive", and the processor's `stringAttr` has no handling for a
+   JSON array.
+
+Neither is theoretical: nothing validates what a consumer passes to `identify()`.
+
+### 8.14 Corrections to `sdk-audit.yaml` and `CLAUDE.md`
 
 - Both credit web with `navigation` capture. It has never worked (§8.1).
 - Both describe `memory_usage` as "single-shot". It is single-shot *and* throws *and* is
@@ -828,6 +897,7 @@ Neither `sdk-audit.yaml` nor `CLAUDE.md` records this.
   `attachNavigation` alone yields no `screen.duration` and no `interaction.screen` (§8.7).
 - Neither records that a fatal crash is never sent (§8.8) — the defect that most undermines
   any crash-rate metric computed from this data.
+
 
 ## Appendix A — the 73 keys
 
