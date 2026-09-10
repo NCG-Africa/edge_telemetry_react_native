@@ -197,7 +197,8 @@ type Opts = {
  */
 function normalizeSampleRate(rate: number | undefined): number {
     if (rate === undefined) return 1;
-    if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0 || rate > 1) {
+    // Number.isFinite is false for a non-number too, so this covers a JS caller's "0.5".
+    if (!Number.isFinite(rate) || rate < 0 || rate > 1) {
         debug.warn(`Telemetry: sessionSampleRate must be a number in [0,1] — got ${rate}; using 1`);
         return 1;
     }
@@ -408,11 +409,6 @@ export class Telemetry {
         return this.endpoint;
     }
 
-    public startNewSession() {
-        this.sessionId = this.generateSessionId();
-        this.sessionStart = Date.now();
-    }
-
     // ---------- Session lifecycle (#29) ----------
 
     /**
@@ -473,9 +469,14 @@ export class Telemetry {
         // A resume is not a rotation: the decision and the rate it was rolled at are
         // adopted as-is, so a relaunch can't half-sample a session. A record written
         // before this field existed reads as `undefined` and keeps the fresh roll.
-        if (typeof saved.sampled === "boolean") {
+        // The rate is stamped on every row of the resumed session, and on web the record is
+        // browser-wide localStorage — so an out-of-range value would ship as a divisor and
+        // silently mis-scale every count taken off it. A record we can't trust here loses
+        // its decision too, and the fresh constructor roll stands.
+        if (typeof saved.sampled === "boolean"
+            && Number.isFinite(saved.sampleRate) && saved.sampleRate! >= 0 && saved.sampleRate! <= 1) {
             this.sampled = saved.sampled;
-            this.sampleRate = typeof saved.sampleRate === "number" ? saved.sampleRate : this.sampleRate;
+            this.sampleRate = saved.sampleRate!;
         }
 
         const reason = this.expiryReason(Date.now());
@@ -896,15 +897,20 @@ export class Telemetry {
     }
 
     /**
-     * The single enqueue point, so `beforeSend` cannot be bypassed by a future emit path,
-     * and so the hook runs *before* the queue — which is what keeps scrubbed fields off
-     * disk when a send fails and the batch is persisted (§3.6).
+     * The single enqueue point: neither the sample decision nor `beforeSend` can be
+     * bypassed by a future emit path, and the hook runs *before* the queue — which is
+     * what keeps scrubbed fields off disk when a send fails and the batch is persisted.
+     *
+     * The sample check is repeated by log()/logMetric() ahead of `collectContext()`, so
+     * a sampled-out session does no work per event; this one is the backstop that makes
+     * the guarantee structural rather than a convention two call sites happen to follow.
      *
      * The two counters are separate on purpose: "my volume is down 40%" has to
      * distinguish *my rule is too broad* from *my rule is crashing*, and one merged
      * counter answers neither.
      */
     private enqueue(e: TelemetryEvent) {
+        if (!this.sampled) return;
         if (!this.beforeSend) { this.queue.push(e); return; }
 
         const outcome = applyBeforeSend(e, this.beforeSend);

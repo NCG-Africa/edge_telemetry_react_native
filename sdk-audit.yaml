@@ -207,7 +207,9 @@ session:
     no skeleton record, and crashes are NOT exempt (a crash-only exemption makes the unfiltered
     crash-free query read 1/rate too high). Boundary checks still run while sampled out, so the
     rotation that re-rolls happens on schedule. An out-of-range or non-finite rate warns and falls
-    back to 1: Math.random() < NaN is always false and would silently mute a deployment.
+    back to 1: Math.random() < NaN is always false and would silently mute a deployment. The same
+    range check is applied to a RESUMED record — an untrusted rate loses its stuck decision too,
+    and the fresh constructor roll stands, rather than shipping a bad divisor.
     session.sample_rate ships on every row so extrapolation is arithmetic (contract 3.6).
     evidence telemetry.ts:198-205, 384-386, 471-480, 556-560, 760, 839, 882
   id_format: "session_{Date.now()}_{16 hex}" + optional "_{platform}" suffix where platform=ios|android (native only; web has NO suffix). Random via crypto.getRandomValues (#91). evidence telemetry.ts:301-304, utils/uuid.ts:12-18, index.web.ts:38
@@ -272,14 +274,19 @@ privacy:
     persists an already-scrubbed batch instead of writing PII to localStorage/AsyncStorage; sync
     because app.crash flushes during teardown. Three tiers, enforced by RE-STAMPING after the hook
     returns and never by throwing — Tier A immutable (type, eventName/metricName, timestamp,
-    session.id, session.start_time, event.sequence, all sdk.*, all app.*, device.platform, trace.id,
+    session.id, session.start_time, session.sequence, event.sequence, all sdk.*, all app.*,
+    device.platform, trace.id,
     span.id, parent.span.id, rum.action.id, view.id), Tier B rewritable-not-deletable (device.id —
     deleting it 400s the batch at the collector), Tier C free (user.*, http.*, error.*, vital.target,
     caller data). The hook receives a COPY, so an in-place `delete attrs[k]` cannot defeat the
     re-stamp. A throwing hook FAILS CLOSED (event dropped, sdk.hook_failed++) rather than shipping
     the field it existed to remove; returning null (or nothing) drops it as sdk.hook_dropped++.
     Does NOT cover the collector-added geo block, which is attached after the request leaves the
-    device (contract 2.2).
+    device (contract 2.2). KNOWN LAG: both counters are stamped by collectContext() BEFORE the
+    hook runs on that row, so a drop first surfaces on the NEXT row and a session's final dropped
+    row never reports its own drop — the same "lossy about their own loss" shape contract 3.7
+    describes for sdk.events_dropped. Alerting on the number under-reports exactly when the hook
+    is worst.
     evidence core/beforeSend.ts, core/beforeSend.test.ts, telemetry.ts:905-916
   pii_risks: >
     HIGH surface. (1) email/phone/fullName/avatar sent plaintext once profile set.

@@ -26,7 +26,11 @@ export type HookOutcome =
  * allowlist removes on purpose.
  */
 const TIER_A_KEYS = new Set([
-    "session.id", "session.start_time", "event.sequence",
+    // `session.sequence` is not in the contract's §3.6 list because that list was written
+    // against v4's `event.sequence`, which this SDK does not emit yet. Both are transmission
+    // ordinals with no scrubbing use case, and (session.id, session.sequence) is what orders
+    // a session's batches (#92) — a hook that could delete it would order nothing.
+    "session.id", "session.start_time", "session.sequence", "event.sequence",
     "device.platform", "trace.id", "span.id", "parent.span.id",
     "rum.action.id", "view.id",
 ]);
@@ -54,8 +58,15 @@ export function applyBeforeSend(original: TelemetryEvent, hook: BeforeSend): Hoo
         debug.warn("Telemetry: beforeSend threw — event dropped", err);
         return { kind: "failed" };
     }
-    // `undefined` (a hook that forgot to return) reads as a drop, not as consent to send.
-    if (!returned || typeof returned !== "object") return { kind: "dropped" };
+    // Only an explicit `null` is the documented "drop this row". Anything else the hook
+    // hands back that isn't an event — `undefined` from a forgotten `return`, a string,
+    // a number — is a *bug*, and counting it as dropped would inflate the "my rule is
+    // working" counter with the exact case §3.6 says the two counters exist to separate.
+    if (returned === null) return { kind: "dropped" };
+    if (typeof returned !== "object") {
+        debug.warn("Telemetry: beforeSend returned a non-event — event dropped", returned);
+        return { kind: "failed" };
+    }
     return { kind: "kept", event: restamp(original, returned) };
 }
 
@@ -68,8 +79,13 @@ function restamp(original: TelemetryEvent, returned: TelemetryEvent): TelemetryE
     for (const [k, v] of Object.entries(original.attributes ?? {})) {
         if (isTierA(k)) attributes[k] = v;
     }
-    if (attributes[TIER_B_KEY] === undefined && original.attributes?.[TIER_B_KEY] !== undefined) {
-        attributes[TIER_B_KEY] = original.attributes[TIER_B_KEY];
+    // Not just `undefined`: a hook writing `null` or `""` here 400s the batch exactly the
+    // same way `delete` does, so anything that isn't a usable id is treated as a deletion.
+    const rewritten = attributes[TIER_B_KEY];
+    if (typeof rewritten !== "string" || rewritten === "") {
+        const originalId = original.attributes?.[TIER_B_KEY];
+        if (originalId === undefined) delete attributes[TIER_B_KEY];
+        else attributes[TIER_B_KEY] = originalId;
     }
 
     // Built key by key rather than spread: a hook that bolts `metricName` onto an event

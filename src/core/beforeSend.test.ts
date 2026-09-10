@@ -16,6 +16,7 @@ const event = (): TelemetryEvent => ({
     attributes: {
         "session.id": "session_1_abc",
         "session.start_time": "2026-06-14T10:00:00.000Z",
+        "session.sequence": 3,
         "sdk.version": "3.1.0",
         "app.version": "1.2.3",
         "device.platform": "ios",
@@ -38,6 +39,8 @@ describe("applyBeforeSend — Tier A is immutable", () => {
         expect(a["sdk.version"]).toBe("3.1.0");
         expect(a["app.version"]).toBe("1.2.3");
         expect(a["device.platform"]).toBe("ios");
+        // (session.id, session.sequence) is what orders a session's batches (#92)
+        expect(a["session.sequence"]).toBe(3);
         // Tier C really was deleted — the hook is not being ignored, only bounded.
         expect(a["http.url"]).toBeUndefined();
         expect(a["user.email"]).toBeUndefined();
@@ -71,12 +74,16 @@ describe("applyBeforeSend — Tier B and C", () => {
         });
         expect((hashed as any).event.attributes["device.id"]).toBe("sha256:deadbeef");
 
-        const deleted = applyBeforeSend(event(), (e) => {
-            delete e.attributes!["device.id"];
-            return e;
-        });
-        // Deleting it 400s the whole batch at the collector, so it comes back.
-        expect((deleted as any).event.attributes["device.id"]).toBe("device_1_abc_ios");
+        // Deleting it 400s the whole batch at the collector, so it comes back — and so do
+        // the two writes that 400 it just as surely as `delete` does.
+        for (const wipe of [
+            (e: any) => { delete e.attributes["device.id"]; return e; },
+            (e: any) => { e.attributes["device.id"] = null; return e; },
+            (e: any) => { e.attributes["device.id"] = ""; return e; },
+        ]) {
+            expect((applyBeforeSend(event(), wipe) as any).event.attributes["device.id"])
+                .toBe("device_1_abc_ios");
+        }
     });
 
     it("leaves Tier C alone, including keys the hook added", () => {
@@ -111,8 +118,14 @@ describe("applyBeforeSend — drop vs fail", () => {
         expect(applyBeforeSend(event(), () => { throw new Error("boom"); })).toEqual({ kind: "failed" });
     });
 
-    it("drops on null, and on a hook that forgot to return", () => {
+    it("drops only on an explicit null", () => {
         expect(applyBeforeSend(event(), () => null)).toEqual({ kind: "dropped" });
-        expect(applyBeforeSend(event(), (() => undefined) as any)).toEqual({ kind: "dropped" });
+    });
+
+    it("counts a hook that returned no event as broken, not as over-broad", () => {
+        // A forgotten `return` is a bug, and booking it as `dropped` would inflate the
+        // counter that is supposed to mean "my scrubbing rule is too wide".
+        expect(applyBeforeSend(event(), (() => undefined) as any)).toEqual({ kind: "failed" });
+        expect(applyBeforeSend(event(), (() => "nope") as any)).toEqual({ kind: "failed" });
     });
 });

@@ -274,7 +274,7 @@ discarded behind a 2xx:
 
 | Tier | Keys | Rule |
 |---|---|---|
-| **A — immutable** | `type`, `eventName`/`metricName`, `timestamp`, `session.id`, `session.start_time`, `event.sequence`, all `sdk.*`, all `app.*`, `device.platform`, `trace.id`, `span.id`, `parent.span.id`, `rum.action.id`, `view.id` | replaced wholesale from the original — covers deletion *and* forgery |
+| **A — immutable** | `type`, `eventName`/`metricName`, `timestamp`, `session.id`, `session.start_time`, `session.sequence`, `event.sequence`, all `sdk.*`, all `app.*`, `device.platform`, `trace.id`, `span.id`, `parent.span.id`, `rum.action.id`, `view.id` | replaced wholesale from the original — covers deletion *and* forgery |
 | **B — rewritable, not deletable** | `device.id` | a hashed id is legitimate; a missing one 400s the whole batch at the collector |
 | **C — free** | everything else — `user.*`, `http.*`, `error.*`, `ui.target`, `vital.target`, `user.custom.*`, caller `data` | untouched; this is where the PII lives |
 
@@ -283,8 +283,9 @@ already mutated in place would restore nothing and make the tier table decorativ
 
 A hook that **throws fails closed** — the event is dropped, never sent in its original form,
 because a bug in a scrubber must not ship the exact field the scrubber existed to remove.
-Returning `null` (or nothing) drops it too. The two outcomes are counted **separately** on the
-Context block — `sdk.hook_failed` (broken) and `sdk.hook_dropped` (working) — because "my volume
+Only an explicit `null` counts as a deliberate drop; a hook that hands back anything else that
+isn't an event (a forgotten `return`, a string) is a bug and books as *failed*. The two outcomes
+are counted **separately** on the Context block — `sdk.hook_failed` (broken) and `sdk.hook_dropped` (working) — because "my volume
 is down 40%" has to distinguish them and one merged counter answers neither.
 
 **`sessionSampleRate` is sticky per session**: rolled once, re-rolled at each rotation, and
@@ -298,6 +299,8 @@ too high with no `WHERE` available to repair it. The boundary checks still run w
 out, so the rotation that re-rolls the decision happens on schedule. `session.sample_rate` ships
 on every row instead, so extrapolation is arithmetic. An out-of-range or non-finite rate warns
 and falls back to 1: `Math.random() < NaN` is always false and would silently mute a deployment.
+The same range check runs on a **resumed** record — a rate we can't trust loses its stuck
+decision too, and the fresh roll stands, rather than shipping a bad divisor on every row.
 
 ### Session lifecycle
 

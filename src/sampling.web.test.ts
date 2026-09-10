@@ -215,6 +215,25 @@ describe("#93 sessionSampleRate — sticky, and silent when it says no", () => {
     expect(attrsOf(sent, "custom_event")[0]["session.sample_rate"]).toBe(1);
   });
 
+  it("ignores a persisted rate it cannot trust rather than stamping it as a divisor", async () => {
+    // On web the record is browser-wide localStorage; an out-of-range rate shipped as
+    // session.sample_rate would silently mis-scale every count taken off it.
+    const store = memoryStore({
+      seed: {
+        telemetry_session: JSON.stringify({
+          id: "session_1_corrupt", start: Date.now(), lastActivity: Date.now(),
+          sequence: 0, eventCount: 0, errorCount: 0, sampled: true, sampleRate: -3,
+        }),
+      },
+    });
+
+    const { t, sent } = launch({ store, sessionSampleRate: 1 });
+    await t.log("custom_event");
+    await t.flush();
+
+    expect(attrsOf(sent, "custom_event")[0]["session.sample_rate"]).toBe(1);
+  });
+
   it("the decision survives process death and is re-rolled only at rotation", async () => {
     const store = memoryStore();
     const roll = vi.spyOn(Math, "random").mockReturnValue(0.9);   // 0.9 >= 0.5 — sampled out
