@@ -21,20 +21,20 @@ export function memoryStore(opts: MemoryStoreOpts & { async: true }): AsyncStore
 export function memoryStore(opts?: MemoryStoreOpts & { async?: false }): SyncStore;
 export function memoryStore(opts: MemoryStoreOpts = {}): Store {
     const map = new Map<string, string>(Object.entries(opts.seed ?? {}));
-    const down = opts.unavailable === true;
+    const unavailable = opts.unavailable === true;
 
     const get = (key: string): StoreRead => {
-        if (down) return { status: "unavailable" };
+        if (unavailable) return { status: "unavailable" };
         const value = map.get(key);
         return value === undefined ? { status: "miss" } : { status: "hit", value };
     };
     const set = (key: string, value: string): StoreWrite => {
-        if (down) return { status: "unavailable" };
+        if (unavailable) return { status: "unavailable" };
         map.set(key, value);
         return { status: "ok" };
     };
     const remove = (key: string): StoreWrite => {
-        if (down) return { status: "unavailable" };
+        if (unavailable) return { status: "unavailable" };
         map.delete(key);
         return { status: "ok" };
     };

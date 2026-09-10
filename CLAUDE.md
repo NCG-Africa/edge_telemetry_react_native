@@ -205,7 +205,8 @@ what `device.id_ephemeral` reports. Never throw out of a Store, and never collap
 Each entry injects its default (`webStore()` / `nativeStore()`); `TelemetryOpts.store`
 overrides. `memoryStore({ async?, unavailable?, seed? })` is a shipped in-memory
 implementation — a production-shaped seam, not a test-only affordance — configurable to either
-build's shape.
+build's shape. A direct `new Telemetry()` with no injected store falls back to
+`memoryStore({ unavailable: true })`, so shared core never has to special-case a missing one.
 
 ### Event allowlist
 
@@ -241,7 +242,9 @@ ingest.
 - The code uses `any` liberally in older paths. Prefer `unknown` and concrete types in **new**
   code; don't widen what's already typed.
 - Public types live in `src/core/telemetry.ts` (`TelemetryEvent`, `Sender`, `DeviceInfo`,
-  `UserProfile`, the `*Handler` interfaces).
+  `UserProfile`, the `*Handler` interfaces). The one exception is the `Store` port, which lives
+  in `src/core/store.ts` — it has to, since `telemetry.ts` imports it. A second port gets its
+  own file too; anything else goes in `telemetry.ts`.
 - Native adapters may use RN / `react-native-device-info` / `@react-native-async-storage` —
   **peer deps** (`device-info` optional). Web adapters must not import them.
 - Guard native-only globals (`ErrorUtils`, `AppState`) before use.

@@ -234,8 +234,11 @@ api:
       being refused (incognito, partitioned iframe, ITP eviction, full disk) is a distinct
       non-throwing outcome, never conflated with a key that isn't there; it is the population
       v4's device.id_ephemeral will report. memoryStore() ships as an in-memory implementation
-      configurable to either shape. NOT YET READ BY ANYTHING — the seam exists for v4's
-      device.id, session resume, sticky sample rate and capped offline store.
+      configurable to either shape, and memoryStore({unavailable:true}) is shared core's fallback
+      when no store is injected. NOT YET READ BY ANYTHING — the seam exists for v4's device.id,
+      session resume, sticky sample rate and capped offline store.
+      evidence core/store.ts, core/memoryStore.ts, adapters/web/store.web.ts,
+      adapters/native/store.native.ts, telemetry.ts:169, index.web.ts / index.native.ts
   custom_event_api: "log(event: string, data?: Record<string, any>): Promise<void>"   # index.base.ts:21-24
   user_id_api: "setUserId(id): Promise<void>; generateUserId(): Promise<string>"      # index.base.ts:45-53
   other_public_methods:

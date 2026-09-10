@@ -52,11 +52,3 @@ export interface AsyncStore {
  * guarantee narrows with `if (store.sync)` or takes `SyncStore` outright.
  */
 export type Store = SyncStore | AsyncStore;
-
-/** No storage at all. The default in shared core until a build injects a real one. */
-export const unavailableStore: SyncStore = {
-    sync: true,
-    get: () => ({ status: "unavailable" }),
-    set: () => ({ status: "unavailable" }),
-    remove: () => ({ status: "unavailable" }),
-};

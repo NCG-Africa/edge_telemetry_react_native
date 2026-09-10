@@ -8,7 +8,6 @@ export { createTelemetry, type TelemetryOpts } from "./createTelemetry.native";
 // The Store port (#89) — public so a consumer can inject their own persistence,
 // and so the in-memory fake is available outside the test tree.
 export type { Store, SyncStore, AsyncStore, StoreRead, StoreWrite } from "./core/store";
-export { unavailableStore } from "./core/store";
 export { memoryStore, type MemoryStoreOpts } from "./core/memoryStore";
 
 export class TelemetryNative extends TelemetryBase {

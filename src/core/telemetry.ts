@@ -3,7 +3,8 @@ import { NavigationTracker } from "../adapters/navigationTracker";
 import { ScreenTimingTracker } from "../adapters/screenTiming";
 import { BreadcrumbBuffer } from "./breadcrumbs";
 import { randomHex } from "./utils/uuid";
-import { unavailableStore, type Store } from "./store";
+import type { Store } from "./store";
+import { memoryStore } from "./memoryStore";
 import { version as PKG_VERSION } from "../../package.json";
 
 // v3 wire contract constants
@@ -161,10 +162,11 @@ export class Telemetry {
     private deviceInfoHandler: DeviceInfoHandler;
 
     // Persisted state (#89). The entry injects webStore()/nativeStore(); shared core
-    // never imports either. Defaults to reporting `unavailable` so a caller on a build
-    // that forgot to inject takes the same branch as incognito rather than crashing.
-    // ponytail: no reader yet — v4's device.id, session resume, sticky sample rate and
-    // capped offline store are the consumers this seam exists for.
+    // never imports either. Both entries always inject, so the fallback below only
+    // covers a direct `new Telemetry()` — it reports `unavailable`, putting such a
+    // caller on the same branch as incognito rather than crashing.
+    // Public because it is this seam's only observation point until v4's device.id,
+    // session resume, sticky sample rate and capped offline store read it.
     public readonly store: Store;
 
     private frameDropsHandler?: FrameDropsHandler;
@@ -195,7 +197,7 @@ export class Telemetry {
         this.flushIntervalMs = opts?.flushIntervalMs ?? 10000;
         this.endpoint = opts?.endpoint;
         this.platform = opts?.platform;   // set before id generation (suffix source)
-        this.store = opts?.store ?? unavailableStore;
+        this.store = opts?.store ?? memoryStore({ unavailable: true });
 
         // start a session
         this.sessionId = opts?.sessionId ?? this.generateSessionId();

@@ -27,7 +27,8 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
   The store is injectable via `TelemetryOpts.store` and defaulted per build by the entry.
   `memoryStore()` ships alongside it — a real in-memory implementation, configurable to either
-  build's shape so the sync/async asymmetry can be tested deliberately.
+  build's shape so the sync/async asymmetry can be tested deliberately; a direct
+  `new Telemetry()` with no injected store falls back to `memoryStore({ unavailable: true })`.
 
   Nothing reads the store yet; this release only lands the seam.
 

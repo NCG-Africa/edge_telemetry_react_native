@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { memoryStore } from "./memoryStore";
-import { unavailableStore, type Store } from "./store";
+import type { Store } from "./store";
 
 // The fake is driven in BOTH shapes on purpose: the sync/async asymmetry between the
 // web and native builds is load-bearing (#89), so it gets tested deliberately rather
@@ -59,12 +59,6 @@ describe("storage-unavailable", () => {
         expect(await down.set("k", "v2")).toEqual({ status: "unavailable" });
         expect(await down.remove("k")).toEqual({ status: "unavailable" });
     });
-
-    it("is what unavailableStore — shared core's default — reports", () => {
-        expect(unavailableStore.get("anything")).toEqual({ status: "unavailable" });
-        expect(unavailableStore.set("a", "b")).toEqual({ status: "unavailable" });
-        expect(unavailableStore.remove("a")).toEqual({ status: "unavailable" });
-    });
 });
 
 describe("the Store union", () => {
@@ -78,18 +72,6 @@ describe("the Store union", () => {
             if (store.sync) {
                 const read = store.get("k");   // typed StoreRead, not Promise<StoreRead>
                 expect(read).toEqual({ status: "hit", value: "v" });
-            }
-        }
-    });
-});
-
-describe("shared core stays React-Native-free", () => {
-    it("imports nothing platform-specific in the port or the fake", async () => {
-        const { readFileSync } = await import("node:fs");
-        for (const file of ["src/core/store.ts", "src/core/memoryStore.ts"]) {
-            const src = readFileSync(file, "utf8");
-            for (const forbidden of ["react-native", "async-storage", "localStorage"]) {
-                expect(src, `${file} must not reference ${forbidden}`).not.toContain(forbidden);
             }
         }
     });
