@@ -279,6 +279,15 @@ never land behind the host app's first event. It resolves one of three ways:
 - expired record → adopt it, emit `session.finalized` **under the old `session.id` and
   `session.start_time`**, then start a fresh one carrying the same reason.
 
+On web a `pageshow` with `persisted: true` re-runs the same decision, because a bfcache freeze
+can outlast the idle window and a sibling tab may have rotated the shared record meanwhile. That
+re-entry is idempotent: when storage has nothing to say it keeps the live session rather than
+re-announcing one that never ended.
+
+Metrics are samples, not user actions: they never refresh `lastActivity`, but they *are* checked
+against both boundaries — otherwise a backgrounded app sampling memory would ship forever under a
+session that expired hours ago, which is the exact thing the 4-hour cap exists to stop.
+
 `session.reason` ships on both: 3 values on `session.started` (`launch|idle|max_duration`), 2 on
 `session.finalized` (`idle|max_duration`). `session.finalized` keeps `duration_ms` and
 `event_count` even though the backend discards and derives both — the event survives as the
@@ -369,6 +378,16 @@ coordination.
   constructors still accept it as optional.
 - `session.id` still omits the `_web` suffix on the web build; contract §3.3 gives it one in
   v4. `device.id` is already suffixed on all three platforms.
+- **`session.reason: "launch"` undercounts launches.** A resume emits no `session.started` at
+  all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
+  compensator and is not built — count launches from `app.start`, not from `session.reason`.
+- Session state is read at init and on a web bfcache restore, **not live-synced**. Two tabs
+  open at once share the `localStorage` record but keep their own in-memory `lastActivity`, so
+  they can diverge and both finalize the same `session.id`. A `storage`-event listener would
+  close it.
+- A `Store` reporting `unavailable` means the session can't be resumed, so every launch mints
+  one. There is no `session.id_ephemeral` to mark that population — but the same store failed
+  the `device.id` round-trip, so those events already carry `device.id_ephemeral: true`.
 - Crash capture is JS-level only — no native signal/ANR/hang capture.
 - `index.base.ts` `trackErrors()` imports the **native** crash handler in shared code; the
   web build resolves it at runtime and rejects.

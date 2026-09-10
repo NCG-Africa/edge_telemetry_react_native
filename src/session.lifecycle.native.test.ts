@@ -126,24 +126,6 @@ describe("#92 native session continuity — the async Store resumes across proce
     expect(attrsOf(second.sent, "session.started")[0]["session.reason"]).toBe("idle");
     expect(attrsOf(second.sent, "custom_event")[0]["session.id"]).not.toBe(id);
   });
-
-  it("rotates a live session at the 4-hour cap, with the cap reason", async () => {
-    const { t, sent, names } = await launch(memoryStore({ async: true }));
-    await t.log("custom_event");
-    await t.flush();
-    const id = attrsOf(sent, "custom_event")[0]["session.id"];
-
-    for (let i = 0; i < 9; i++) {          // busy throughout, so only the cap can end it
-      vi.setSystemTime(Date.now() + 27 * MIN);
-      await t.log("custom_event");
-    }
-    await t.flush();
-
-    expect(attrsOf(sent, "session.finalized")[0]["session.reason"]).toBe("max_duration");
-    expect(names().filter((n) => n === "session.finalized")).toHaveLength(1);
-    const last = [...sent].reverse().find((e) => e.eventName === "custom_event")!;
-    expect(last.attributes!["session.id"]).not.toBe(id);
-  });
 });
 
 describe("#92 native lifecycle transitions no longer touch the session (§4.2)", () => {

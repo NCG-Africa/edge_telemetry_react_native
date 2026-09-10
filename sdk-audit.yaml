@@ -304,7 +304,7 @@ features:
   network-capture: {status: done, evidence: interceptFetchNative.native.ts + interceptFetchWeb.web.ts, notes: "fetch both platforms; XHR web only; bodies not sent, sizes only"}
   custom-events: {status: done, evidence: telemetry.ts:474-520, notes: "log(); non-allowlisted names remapped to custom_event + event.name"}
   web-vitals: {status: planned, evidence: telemetry.ts:19-21, notes: "LCP/FCP/CLS/INP/TTFB/page_load/resource_timing/long_task allowlisted but NO emitter exists"}
-  app-start: {status: na, evidence: none, notes: "no app-start/cold-start timing event found"}
+  app-start: {status: na, evidence: none, notes: "no app-start/cold-start timing event found. §4.3 makes it the compensator for #92's resume-without-session.started — see inconsistency 11"}
   anr-detection: {status: na, evidence: none, notes: "not implemented"}
   hang-detection: {status: na, evidence: none, notes: "not implemented"}
   frame-stats: {status: done, evidence: frameAggregate.ts + frameDrops*.ts, notes: "frame_render_time metric, p95/max/dropped per 10s window; rAF-based"}
@@ -340,6 +340,18 @@ inconsistencies_and_surprises: >
   10. TelemetryOpts.apiKey typed required in createTelemetry (assertApiKey throws on missing/bad
       prefix), but TelemetryWeb/Native constructors still accept apiKey as optional — validation
       only enforced through the factory, not the class.
+  11. #92 made sessions resume without re-emitting session.started, so session.reason="launch"
+      now UNDERCOUNTS launches — a relaunch inside the idle window emits no row at all. §4.3's
+      app.start is the compensator and is NOT built yet (features.app-start = na). Until it
+      lands, do not count app launches from session.reason.
+  12. #92 session state is read at init and on a web bfcache restore (pageshow, persisted), NOT
+      live-synced. Two tabs open at once share the localStorage record but keep their own
+      in-memory lastActivity, so they can diverge and both finalize the same session.id. A
+      `storage`-event listener would close it; not built (no AC asked for it).
+  13. A Store reporting `unavailable` means the session cannot be resumed, so every launch mints
+      one and COUNT(session.started) over-counts that population. There is no session.id_ephemeral
+      on the contract to mark it — but the same store failed the device.id round-trip, so those
+      events already carry device.id_ephemeral: true. Filter on that.
 
 ci_cd:
   what_exists: >

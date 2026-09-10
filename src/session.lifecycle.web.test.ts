@@ -34,13 +34,30 @@ function launch(store: SyncStore) {
 const attrsOf = (sent: TelemetryEvent[], name: string) =>
   sent.filter((e) => e.eventName === name).map((e) => e.attributes!);
 
+/** The listeners the SDK registered on `window`, so a bfcache restore can be fired for real. */
+const listeners: Record<string, ((e: any) => void)[]> = {};
+
+/** Fire `pageshow` with `persisted: true` — a genuine restore, not a fresh load. */
+async function restore() {
+  for (const fn of listeners.pageshow ?? []) fn({ persisted: true });
+  // the handler is fire-and-forget behind instancePromise; drain the chain it kicks off
+  for (let i = 0; i < 100; i++) await Promise.resolve();
+}
+
 beforeEach(() => {
   silenceConsole();
+  for (const k of Object.keys(listeners)) delete listeners[k];
+  vi.stubGlobal("window", {
+    addEventListener: (type: string, fn: (e: any) => void) => {
+      (listeners[type] ??= []).push(fn);
+    },
+  });
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-06-14T10:00:00.000Z"));
 });
 afterEach(() => {
   vi.useRealTimers();
+  vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
 
@@ -205,18 +222,98 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
     expect(last.attributes!["session.id"]).not.toBe(id);
   });
 
-  it("survives a bfcache restore: the live instance keeps the session inside the window", async () => {
+  it("a bfcache restore inside the window keeps the session and emits nothing", async () => {
     const { t, sent, names } = launch(memoryStore());
     await t.log("custom_event");
     await t.flush();
     const id = attrsOf(sent, "custom_event")[0]["session.id"];
 
     vi.setSystemTime(Date.now() + 20 * MIN);   // frozen in bfcache, restored inside the window
+    await restore();
+
+    await t.log("custom_event");
+    await t.flush();
+    expect(names()).not.toContain("session.finalized");
+    expect(names().filter((n) => n === "session.started")).toHaveLength(1);
+    expect(attrsOf(sent, "custom_event")[1]["session.id"]).toBe(id);
+  });
+
+  it("a bfcache restore after the window rotates on the spot", async () => {
+    const { t, sent, names } = launch(memoryStore());
+    await t.log("custom_event");
+    await t.flush();
+    const id = attrsOf(sent, "custom_event")[0]["session.id"];
+
+    vi.setSystemTime(Date.now() + 31 * MIN);   // the freeze outlasted the idle window
+    await restore();
+    await t.flush();
+
+    expect(attrsOf(sent, "session.finalized")[0]["session.reason"]).toBe("idle");
+    expect(attrsOf(sent, "session.finalized")[0]["session.id"]).toBe(id);
+    expect(names().filter((n) => n === "session.started")).toHaveLength(2);
+  });
+
+  it("a bfcache restore picks up a sibling tab's rotation from the shared Store", async () => {
+    // Two tabs, one localStorage. The frozen tab must not keep shipping under an id the
+    // other tab already finalized.
+    const store = memoryStore();
+    const frozen = launch(store);
+    await frozen.t.log("custom_event");
+    await frozen.t.flush();
+    const original = attrsOf(frozen.sent, "custom_event")[0]["session.id"];
+
+    vi.setSystemTime(Date.now() + 31 * MIN);
+    const sibling = launch(store);           // the other tab rotates while this one is frozen
+    await sibling.t.log("custom_event");
+    await sibling.t.flush();
+    const rotated = attrsOf(sibling.sent, "custom_event")[0]["session.id"];
+    expect(rotated).not.toBe(original);
+
+    await restore();
+    await frozen.t.log("custom_event");
+    await frozen.t.flush();
+
+    const last = [...frozen.sent].reverse().find((e) => e.eventName === "custom_event")!;
+    expect(last.attributes!["session.id"]).toBe(rotated);
+  });
+
+  it("a bfcache restore with an unavailable Store keeps the live session rather than re-announcing it", async () => {
+    const { t, sent, names } = launch(memoryStore({ unavailable: true }));
+    await t.log("custom_event");
+    await t.flush();
+    const id = attrsOf(sent, "custom_event")[0]["session.id"];
+
+    vi.setSystemTime(Date.now() + 5 * MIN);
+    await restore();
     await t.log("custom_event");
     await t.flush();
 
-    expect(names()).not.toContain("session.finalized");
+    expect(names().filter((n) => n === "session.started")).toHaveLength(1);
     expect(attrsOf(sent, "custom_event")[1]["session.id"]).toBe(id);
+  });
+
+  it("a metric is not activity, but is still checked against the boundaries", async () => {
+    // A backgrounded app sampling memory must not hold a session open forever — that is the
+    // whole reason the cap exists — and must not refresh the idle window either.
+    const { t, sent, names } = launch(memoryStore());
+    // logMetric() has no TelemetryBase delegate, so the core instance is the only way to
+    // drive the metric path. This is the real method on the real object, not private state.
+    const inst = await (t as any).instancePromise;
+    await t.log("custom_event");
+    await t.flush();
+    const id = attrsOf(sent, "custom_event")[0]["session.id"];
+
+    vi.setSystemTime(Date.now() + 20 * MIN);
+    await inst.logMetric("memory_usage", 42);       // does not refresh lastActivity
+    expect(names()).not.toContain("session.finalized");
+
+    vi.setSystemTime(Date.now() + 20 * MIN);        // 40 min since the last real event
+    await inst.logMetric("memory_usage", 43);       // ...so this one trips the idle boundary
+    await t.flush();
+
+    expect(attrsOf(sent, "session.finalized")[0]["session.reason"]).toBe("idle");
+    const lastMetric = [...sent].reverse().find((e) => e.metricName === "memory_usage")!;
+    expect(lastMetric.attributes!["session.id"]).not.toBe(id);
   });
 
   it("session.finalized still carries duration_ms and event_count", async () => {

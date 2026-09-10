@@ -85,6 +85,25 @@ export class TelemetryWeb extends TelemetryBase {
         this.attachAppLifecycle().catch(err => {
             debug.log("Web attachAppLifecycle errors", err);
         });
+        this.attachBfcacheRestore().catch(err => {
+            debug.log("Web attachBfcacheRestore errors", err);
+        });
+    }
+
+    /**
+     * A bfcache restore resumes a frozen JS context, so the in-memory session survives on its
+     * own — but the freeze can have outlasted the idle window, and a sibling tab may have
+     * rotated the shared localStorage record while this one was suspended. Re-running the
+     * init decision against the Store is what reconciles both (#92, §4.2).
+     */
+    private async attachBfcacheRestore() {
+        if (typeof window === "undefined") return;
+        const inst = await this.instancePromise;
+        window.addEventListener("pageshow", (e: PageTransitionEvent) => {
+            if (!e.persisted) return;   // an ordinary load already ran this at init
+            inst.resumeOrStartSession()
+                .catch((err: any) => debug.warn("Web bfcache session resume failed:", err));
+        });
     }
 
     // app_lifecycle on tab visibility change — web equivalent of native AppState (#30)

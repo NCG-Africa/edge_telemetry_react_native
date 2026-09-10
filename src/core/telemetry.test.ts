@@ -417,7 +417,7 @@ describe("v3 session lifecycle — started / finalized", () => {
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    await t.startSession();
+    await t.startSession("launch");
     await t.flush();
 
     expect(sent.map((e) => e.eventName)).toContain("session.started");
@@ -458,7 +458,7 @@ describe("v3 session lifecycle — 30-min idle rotation", () => {
         deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
       });
 
-      await t.startSession();
+      await t.startSession("launch");
       await t.log("custom_event");
 
       vi.setSystemTime(new Date(31 * 60 * 1000));   // 31 minutes of inactivity
@@ -488,7 +488,7 @@ describe("v3 session lifecycle — 30-min idle rotation", () => {
         deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
       });
 
-      await t.startSession();
+      await t.startSession("launch");
       await t.log("custom_event");
       vi.setSystemTime(new Date(10 * 60 * 1000));   // only 10 minutes
       await t.log("custom_event");
