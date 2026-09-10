@@ -44,7 +44,13 @@ events:
       - {field: app_lifecycle.state, type: string, unit: none, always_present: true}   # "foreground" | "background"
 
   - name: navigation
-    trigger: route change (React Navigation state listener native / history+popstate web) AND screenStart(). evidence src/adapters/navigationTracker.ts:12-19; src/adapters/screenTiming.ts:14-24
+    trigger: >
+      DEPRECATED, removed in v5 (contract 4.11). Route change (React Navigation state listener, now
+      shared — adapters/navigationRef.ts) AND screenStart(). Gated on the entry-supplied
+      `deprecatedScreenFeeds` opt, which the WEB entry sets false (index.web.ts) so a shared
+      attachNavigation cannot start a feed web has never had; web's own history+popstate path still
+      emits it. evidence src/adapters/navigationTracker.ts:12-19; src/adapters/screenTiming.ts;
+      telemetry.ts recordRouteChange; adapters/web/navigationWeb.web.ts
     payload_fields:
       - {field: navigation.from_screen, type: string, unit: none, always_present: false}   # null on first screenStart
       - {field: navigation.to_screen, type: string, unit: none, always_present: true}
@@ -52,11 +58,39 @@ events:
       - {field: navigation.route_type, type: string, unit: none, always_present: true}     # "screen"
 
   - name: screen.duration
-    trigger: screenEnd(name) — dwell time since matching screenStart. evidence src/adapters/screenTiming.ts:27-39
+    trigger: >
+      DEPRECATED, removed in v5 (contract 4.11). screenEnd(name), AND — new in #96 — every native
+      route change, which now ends the departing screen's timing. ⚠ ITS VOLUME GOES UP: v3's two
+      native screen paths were disjoint (attachNavigation never touched `screens`), so a React
+      Navigation consumer emitted `navigation` on every route change and NEVER a single
+      screen.duration. Unifying both paths onto the ViewManager fixes that, so a deprecated event
+      starts firing where it never has. Do not size rum_screen_durations from v3 traffic.
+      evidence src/adapters/screenTiming.ts; telemetry.ts recordRouteChange
     payload_fields:
       - {field: screen.name, type: string, unit: none, always_present: true}
       - {field: screen.duration_ms, type: int, unit: ms, always_present: true}
       - {field: screen.exit_method, type: string, unit: none, always_present: true}        # "navigation"
+
+  - name: view
+    trigger: >
+      Emitted once at each of the four view exit boundaries (#96, contract 4.5): route change,
+      background, session rotation, and process death — which ends the view but emits NOTHING, so
+      a killed view's dwell is lost by design. Both builds. The initial view opens at SDK init, so
+      view.id is never absent. NOTE: one screen visit can produce several `view` rows (a
+      background/foreground round trip splits it) — sum by view.name.
+      evidence src/adapters/viewManager.ts:104-160; telemetry.ts (rotateSession/newSession, recordRouteChange)
+    payload_fields:
+      - {field: view.host, type: string, unit: none, always_present: false}                # origin only; OMITTED on native — capability check on `location`, not a platform branch
+      - {field: view.referrer, type: string, unit: none, always_present: true}             # previous view.name; "" on the first view, never null
+      - {field: view.load_type, type: string, unit: none, always_present: true}            # initial_load|route_change|resume|session_rotation
+      - {field: view.name_source, type: string, unit: none, always_present: true}          # explicit|route|url|none — the FINAL rung (contract 4.5.1)
+      - {field: view.time_spent, type: int, unit: ms, always_present: true}                # FOREGROUND-only dwell: the clock pauses on background
+      - {field: view.error_count, type: int, unit: none, always_present: true}             # app.crash only — a closed enumeration. NOT failed requests, NOT console.warn
+      - {field: view.action_count, type: int, unit: none, always_present: true}            # user.interaction rows sharing the view.id
+      - {field: view.request_count, type: int, unit: none, always_present: true}           # ALL http.request in the view, failures included; collector POST excluded
+    not_yet_emitted:
+      - {field: view.loading_time, why: "network-settle heuristic is out of scope for #96 — contract 4.5.2"}
+      - {field: view.loading_time_outcome, why: "ships with view.loading_time or not at all"}
 
   - name: http.request
     trigger: >
@@ -142,6 +176,8 @@ common_attributes:
   - {field: user.id, type: string, unit: none, always_present: false, evidence: telemetry.ts:957}    # consumer-supplied, truncated to 255; OMITTED on anonymous traffic (#91)
   - {field: device.id, type: string, unit: none, always_present: true, evidence: telemetry.ts:954}    # SDK-minted "device_{ms}_{16hex}_{ios|android|web}", persisted via Store key telemetry_device_id (#91)
   - {field: device.id_ephemeral, type: bool, unit: none, always_present: false, evidence: telemetry.ts:955}   # true only when the Store reported unavailable; omitted when false (#91)
+  - {field: view.id, type: string, unit: none, always_present: true, evidence: telemetry.ts collectContext}      # "view_{ms}_{16hex}", frozen per view; NEVER spans a session.id or a process (#96)
+  - {field: view.name, type: string, unit: none, always_present: true, evidence: telemetry.ts collectContext}    # resolved at log time by lookup on the frozen view.id; "unknown" until a rung names it. MUTABLE within a view's lifetime — the `view` event's copy is authoritative
   - {field: session.id, type: string, unit: none, always_present: true, evidence: telemetry.ts:958}
   - {field: session.start_time, type: string, unit: none, always_present: true, evidence: telemetry.ts:959}   # ISO 8601
   - {field: session.sequence, type: int, unit: none, always_present: true, evidence: telemetry.ts:960}         # ++ per acknowledged batch
@@ -276,9 +312,11 @@ privacy:
     http.request carries NO per-request URL at any SDK setting (#95): http.url and http.path are removed and
     replaced by http.host (with port, omitted on a relative URL) and http.route, a template normalized SDK-side
     per contract 4.4.1 — nothing raw ever leaves the device and the processor never re-derives. Residue: an
-    all-alpha slug such as /accounts/savings survives as itself. STILL UNSANITISED: web navigation captures
-    window.location.pathname+search with the query string retained. evidence httpAttributes.ts:14-33,64-75,88-121,
-    navigationWeb.web.ts:42
+    all-alpha slug such as /accounts/savings survives as itself. view.name's URL rung (#96, the LAST rung)
+    reuses the same normalizeRoute() over location.pathname with the query dropped, and there is no view.url —
+    so no per-view URL reaches the wire either. STILL UNSANITISED: the deprecated `navigation` event's
+    from_screen/to_screen on web are window.location.pathname+search with the query string retained.
+    evidence httpAttributes.ts:14-33,64-75,88-121, navigationWeb.web.ts (handleChange)
   user_identifiers: >
     Auto: session.id; device.id ("device_{ms}_{16hex}_{ios|android|web}", SDK-minted and
     persisted through the Store under telemetry_device_id, uninstall-scoped, never rotated —
@@ -312,8 +350,8 @@ privacy:
     evidence core/beforeSend.ts, core/beforeSend.test.ts, telemetry.ts:1039-1058
   pii_risks: >
     HIGH surface. (1) email/phone/fullName/avatar sent plaintext once profile set.
-    (2) web navigation paths keep their query string (navigationWeb.web.ts:42); http.request itself no
-        longer carries any URL (#95).
+    (2) the deprecated web `navigation` event keeps its query string (navigationWeb.web.ts handleChange);
+        http.request carries no URL (#95) and view.name's URL rung is normalized and query-free (#96).
     (3) crash.message / crash.stacktrace — arbitrary error text, incl. console.error/warn
     args stringified (captureConsole default ON) — may contain user data.
     (4) crash.breadcrumbs — JSON trail of last 20 event names+timestamps.
@@ -351,7 +389,8 @@ api:
     - "identify({name?, email?, phone?, avatar?, customAttributes?}) => emits user.profile.update"
     - "trackErrors({captureConsole?})"
     - "getDeviceInfo() / getNetworkInfo()"
-    - "TelemetryNative only: attachNavigation(ref), trackRoute(from,to), screenStart(name), screenEnd(name), interactionProps()"
+    - "attachNavigation(ref) — BOTH builds as of #96; getCurrentRoute() is a navigation-tree API, not a native one"
+    - "TelemetryNative only: trackRoute(from,to), screenStart(name), screenEnd(name), interactionProps()"
     - "trackFrameDrops/trackNetworkRequests/trackMemoryUsage/autoTrackNavigation — auto-started in constructor, not meant for direct call"
 
 # ============================================================
@@ -360,7 +399,7 @@ api:
 features:
   sampling-and-scrubbing: {status: done, evidence: "core/beforeSend.ts + telemetry.ts:198-205, 384-386, 760, 882, 905-916", notes: "sessionSampleRate sticky per session and re-rolled at rotation; beforeSend sync at enqueue over events and metrics with A/B/C tier re-stamping and fail-closed (#93). Both constructor-only, both builds, shared core."}
   session-tracking: {status: done, evidence: "telemetry.ts:367-474 + index.native.ts:77, index.web.ts:60", notes: "resume through the Store across process death; 30-min idle + 4-hour cap; session.reason on started/finalized; no lifecycle rotation on either build (#92)"}
-  view-tracking: {status: done, evidence: screenTiming.ts + navigationTracker.ts, notes: "navigation (route + screenStart) and screen.duration events"}
+  view-tracking: {status: done, evidence: "adapters/viewManager.ts + adapters/navigationRef.ts + screenTiming.ts + navigationTracker.ts", notes: "#96 ViewManager: view.id/view.name on every row, the `view` event at four exit boundaries, and the explicit>route>url>none name ladder (rank beats order — a higher rung re-stamps in place and never changes view.id). attachNavigation moved to TelemetryBase, so React Navigation names views identically on both builds. view.loading_time NOT built (contract 4.5.2)"}
   error-capture: {status: done, evidence: crashCapture.ts + crashHandler.web.ts/crashHandlerNative.native.ts, notes: "JS errors, unhandled rejections, console.error/warn -> app.crash"}
   crash-capture: {status: partial, evidence: crashHandlerNative.native.ts:15-25, notes: "JS-level only (ErrorUtils/window.onerror). No native iOS/Android signal/ANR crash capture. crash.fatal only on native ErrorUtils path"}
   network-capture: {status: done, evidence: interceptHttpNative.native.ts + interceptFetchWeb.web.ts + xhrIntercept.ts, notes: "XHR only on native (fetch IS XHR there, so axios is covered); fetch+XHR on web; bodies never read, sizes only"}
@@ -394,8 +433,10 @@ inconsistencies_and_surprises: >
      utils/uuid.ts:12-20. On RN that means react-native-get-random-values failed to load, which
      the native entry warns about first (index.native.ts:29-34).
   6. CLOSED by #95: http.request_size is now true UTF-8 bytes (and byteLength/size for buffers and blobs).
-  7. Query strings are never stripped from web navigation paths — PII/token leak risk (navigationWeb.web.ts:42).
-     http.url and http.path no longer exist, so http.request is out of this gap's scope as of #95.
+  7. Query strings are never stripped from the DEPRECATED web `navigation` event's from/to_screen —
+     PII/token leak risk (navigationWeb.web.ts handleChange). http.url and http.path no longer exist
+     (#95) and view.name's URL rung is normalized with the query dropped (#96), so both are out of
+     this gap's scope; only the v5-bound `navigation` feed still carries a raw path.
   8. console.error/warn capture defaults ON (captureConsole=true) — turns every console.error into
      an app.crash event; noisy apps will emit crash events for non-crashes.
   9. wire envelope has no top-level location field though the type name (telemetry_batch) and
@@ -411,6 +452,28 @@ inconsistencies_and_surprises: >
       live-synced. Two tabs open at once share the localStorage record but keep their own
       in-memory lastActivity, so they can diverge and both finalize the same session.id. A
       `storage`-event listener would close it; not built (no AC asked for it).
+  14a. #96: view.id is resolved at LOG time, not frozen at span start (contract 3.1). Point events
+      are unaffected, but an http.request completing after a route change is attributed to the view
+      it LANDED in, so view.request_count counts requests completed in the view where 4.5.2 counts
+      requests STARTED in it. The freeze ships with the span/trace work (contract 6); no trace.id or
+      span.id exists on the wire yet.
+  14b. #96: a LOWER rung swallows its own boundary. 4.5.1's "a lower rung arriving later does not
+      overwrite a higher one" is implemented literally, so screenStart() once + attachNavigation
+      pins the view to the explicit name — route changes stop minting successors and dwell accrues
+      under the stale name. 4.5 separately makes route change an unconditional boundary; the two
+      readings conflict and need a contract ruling. Workaround: call screenStart() per screen, or
+      do not mix it with attachNavigation.
+  14c. #96: view.loading_time_outcome is "never null" in the 4.5 table but ships with
+      view.loading_time or not at all, and 4.5.2 is out of scope for #96. Both omitted; needs
+      sign-off that an outcome without a measurement is not wanted.
+  14. #96's `view` event needs the backend allowlist to accept the name before it ships — an
+      unlisted eventName is dropped on ingest. It IS in the SDK's ALLOWED_NAMES, so it is emitted.
+  15. view.name is mutable within a view's lifetime: rows emitted in the upgrade window (typically
+      single-digit ms, between a route event and a mount effect) carry the lower rung's name in
+      their Context block. The `view` event's copy is authoritative; the Context copy is a
+      join-free convenience (contract 4.5.1).
+  16. There is no cardinality guard on the URL rung, by the same reasoning as http.route: a
+      client-side rolling collapse would make one row mean different things on different phones.
   13. A Store reporting `unavailable` means the session cannot be resumed, so every launch mints
       one and COUNT(session.started) over-counts that population. There is no session.id_ephemeral
       on the contract to mark it — but the same store failed the device.id round-trip, so those

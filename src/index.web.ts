@@ -62,6 +62,11 @@ export class TelemetryWeb extends TelemetryBase {
                 store,
                 beforeSend: opts?.beforeSend,
                 sessionSampleRate: opts?.sessionSampleRate,
+                // §4.11: web has never emitted `screen.duration`, and a now-shared
+                // attachNavigation must not be what starts it. `navigation` is untouched by
+                // this flag — web's own history+popstate path still emits it (see the known
+                // gap in CLAUDE.md); the flag only stops the ref path adding a second feed.
+                deprecatedScreenFeeds: false,
             });
 
             // Resume or start the session before the instance is visible (#92). On web the
@@ -122,9 +127,10 @@ export class TelemetryWeb extends TelemetryBase {
         const inst = await this.instancePromise;
         const { AppLifecycleEmitter } = await import("./adapters/appLifecycle");
         const emitter = new AppLifecycleEmitter(inst);
-        emitter.onState(document.visibilityState === "visible");   // seed current state
-        document.addEventListener("visibilitychange", () =>
-            emitter.onState(document.visibilityState === "visible"));
+        const onState = () => emitter.onState(document.visibilityState === "visible")
+            .catch((e: any) => debug.warn("Web app lifecycle failed:", e));
+        onState();   // seed current state
+        document.addEventListener("visibilitychange", onState);
     }
 
     // Web uses the web crash handler (window.onerror/onunhandledrejection), not the native one.

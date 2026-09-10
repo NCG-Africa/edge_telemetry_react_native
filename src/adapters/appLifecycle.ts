@@ -13,12 +13,26 @@ export class AppLifecycleEmitter {
 
   constructor(private telemetry: Telemetry) {}
 
-  onState(isActive: boolean): void {
-    if (this.active !== undefined && this.active !== isActive) {
-      this.telemetry.log("app_lifecycle", {
-        "app_lifecycle.state": isActive ? "foreground" : "background",
-      });
-    }
+  /**
+   * Returns once the transition's rows are enqueued — **await it before flushing**. The
+   * background boundary's `view` row is the one most likely to be lost to an OS kill, and
+   * the whole point of §4.5's background boundary is that it flushes while the app is still
+   * reliably alive. A caller that fires the flush on the next line instead sends the batch
+   * before the row exists.
+   */
+  async onState(isActive: boolean): Promise<void> {
+    const previous = this.active;
     this.active = isActive;
+    if (previous === undefined || previous === isActive) return;
+
+    // Chained, not fired alongside, so the `app_lifecycle` row lands in the view it happened
+    // in — awaited because a consumer-supplied double may return a plain value.
+    await this.telemetry.log("app_lifecycle", {
+      "app_lifecycle.state": isActive ? "foreground" : "background",
+    });
+    // The view ends and emits, and the successor's clock starts paused so a night spent
+    // backgrounded is not charged as dwell to the screen the user left open.
+    if (isActive) this.telemetry.views.foreground();
+    else await this.telemetry.views.background();
   }
 }

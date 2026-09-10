@@ -124,11 +124,17 @@ export class TelemetryNative extends TelemetryBase {
         const inst = await this.instancePromise;
         const { AppLifecycleEmitter } = await import("./adapters/appLifecycle");
         const emitter = new AppLifecycleEmitter(inst);
-        emitter.onState(AppState.currentState === "active");   // seed current state
+        // seed current state — a transition-only emitter, so this enqueues nothing
+        emitter.onState(AppState.currentState === "active")
+            .catch((e: any) => debug.warn("app lifecycle seed failed:", e));
         AppState.addEventListener("change", (next: string) => {
             const isActive = next === "active";
-            emitter.onState(isActive);
-            if (!isActive) inst.flush().catch((e: any) => debug.warn("background flush failed:", e));
+            // Awaited before the flush, not fired alongside it: backgrounding is a view
+            // boundary (§4.5) and the `view` row it emits is exactly the row this flush
+            // exists to rescue from the kill that usually follows.
+            emitter.onState(isActive)
+                .then(() => (isActive ? undefined : inst.flush()))
+                .catch((e: any) => debug.warn("background flush failed:", e));
         });
     }
 
@@ -171,17 +177,17 @@ export class TelemetryNative extends TelemetryBase {
 
     async screenStart(name: string) {
         const inst = await this.instancePromise;
-        inst.screens.startScreen(name);
+        return inst.screens.startScreen(name);
     }
 
     async screenEnd(name: string) {
         const inst = await this.instancePromise;
-        inst.screens.endScreen(name);
+        return inst.screens.endScreen(name);
     }
 
     async trackRoute(from: string, to: string) {
         const inst = await this.instancePromise;
-        inst.recordRouteChange(from, to);
+        return inst.recordRouteChange(from, to);
     }
 
     // Best-effort native taps → user.interaction (#33). Spread the returned props on your
@@ -194,15 +200,4 @@ export class TelemetryNative extends TelemetryBase {
         return new InteractionEmitter(inst).responderProps();
     }
 
-    async attachNavigation(navigationRef: any) {
-        debug.log("Attaching navigation tracker");
-        if (!navigationRef) {
-            debug.warn("Navigation reference is undefined. Cannot attach navigation tracker.");
-            return;
-        }
-        const inst = await this.instancePromise;
-        const { NavigationTrackerNative } = await import("./adapters/native/navigationNative.native");
-        const tracker = new NavigationTrackerNative(inst);
-        tracker.attach(navigationRef);
-    }
 }
