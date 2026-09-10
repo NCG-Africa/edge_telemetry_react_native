@@ -44,6 +44,10 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
     // `arguments` is forwarded verbatim on both hooks: the SDK reports on the request, it never
     // reshapes the one it passes on. That is the only reason for the two casts in this file.
     xhr.prototype.open = function (this: PatchedXhr, method: string, url: string | URL) {
+        // An XHR may be legally re-opened before the previous request finished — and the old
+        // PendingRequest is about to be dropped. Release its settle hold first, or the view it
+        // started in can never go quiet and reports `abandoned` for the rest of its life.
+        this._telemetryRequest?.settled?.();
         this._telemetryRequest = { method, url: String(url), start: 0 };
         return origOpen.apply(this, arguments as any);
     };
@@ -84,7 +88,14 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
             });
         }
 
-        return origSend.apply(this, arguments as any);
+        try {
+            return origSend.apply(this, arguments as any);
+        } catch (err) {
+            // A send() that throws never reaches `loadend`, so nothing else would ever close
+            // this hold. The fetch half gets this from its `finally`; XHR needs it spelled out.
+            req.settled?.();
+            throw err;
+        }
     };
 
     xhr[PATCHED] = true;

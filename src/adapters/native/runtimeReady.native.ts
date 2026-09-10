@@ -8,8 +8,27 @@
 // launch report `abandoned`.
 
 /** Epoch ms of "bundle evaluated", or undefined where the runtime does not publish it. */
-export function runtimeReadyAt(): Promise<number | undefined> {
-    const timing = (globalThis as any).performance?.rnStartupTiming;
-    const end = timing?.executeJavaScriptBundleEntryPointEnd;
-    return Promise.resolve(typeof end === "number" && end > 0 ? end : undefined);
+type StartupTiming = { executeJavaScriptBundleEntryPointEnd?: unknown };
+
+function read(): number | undefined {
+    // `performance` is a native-only global here and the field is absent on the Old
+    // Architecture, so it is read defensively rather than typed as present.
+    const perf = (globalThis as { performance?: { rnStartupTiming?: StartupTiming } }).performance;
+    const end = perf?.rnStartupTiming?.executeJavaScriptBundleEntryPointEnd;
+    return typeof end === "number" && end > 0 ? end : undefined;
+}
+
+export async function runtimeReadyAt(): Promise<number | undefined> {
+    const early = read();
+    if (early !== undefined) return early;
+
+    // `executeJavaScriptBundleEntryPointEnd` is stamped only once the bundle entry point has
+    // finished, and the common wiring constructs the SDK at module scope — i.e. inside that
+    // entry point, before the field exists. One turn of the event loop is after it by
+    // construction, so re-read once rather than reporting "no marker" to every real app.
+    await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, 0);
+        (timer as { unref?: () => void })?.unref?.();
+    });
+    return read();
 }

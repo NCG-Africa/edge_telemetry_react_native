@@ -84,7 +84,7 @@ events:
       - {field: view.referrer, type: string, unit: none, always_present: true}             # previous view.name; "" on the first view, never null
       - {field: view.load_type, type: string, unit: none, always_present: true}            # initial_load|route_change|resume|session_rotation
       - {field: view.name_source, type: string, unit: none, always_present: true}          # explicit|route|url|none — the FINAL rung (contract 4.5.1)
-      - {field: view.loading_time, type: int, unit: ms, always_present: false}              # network settle (#97, contract 4.5.2). OMITTED when null, and null has three causes — read the outcome beside it. Only `settled` ever carries a number
+      - {field: view.loading_time, type: int, unit: ms, always_present: false}              # network settle (#97, contract 4.5.2). OMITTED when null (not an explicit wire null — see inconsistency 20). Only `settled` ever carries a number; read the outcome beside it
       - {field: view.loading_time_outcome, type: string, unit: none, always_present: true}  # settled|no_activity|capped|abandoned. NEVER null. Free invariant: no_activity <=> view.request_count = 0
       - {field: view.time_spent, type: int, unit: ms, always_present: true}                # FOREGROUND-only dwell: the clock pauses on background
       - {field: view.error_count, type: int, unit: none, always_present: true}             # app.crash only — a closed enumeration. NOT failed requests, NOT console.warn
@@ -402,7 +402,7 @@ features:
   sampling-and-scrubbing: {status: done, evidence: "core/beforeSend.ts + telemetry.ts:198-205, 384-386, 760, 882, 905-916", notes: "sessionSampleRate sticky per session and re-rolled at rotation; beforeSend sync at enqueue over events and metrics with A/B/C tier re-stamping and fail-closed (#93). Both constructor-only, both builds, shared core."}
   session-tracking: {status: done, evidence: "telemetry.ts:367-474 + index.native.ts:77, index.web.ts:60", notes: "resume through the Store across process death; 30-min idle + 4-hour cap; session.reason on started/finalized; no lifecycle rotation on either build (#92)"}
   view-loading-time: {status: done, evidence: "adapters/loadingTime.ts + viewManager.ts + the two interceptors + index.*.ts runtime-ready seed", notes: "#97 network settle, ONE shared module for both builds. 1000ms quiet window subtracted back out (the same constant as 4.6's dead-click window), 30s hard cap emitting null not the cap, zero-network null not 0, collector POST out of scope, initial_load seeded from loadEventEnd (web) / performance.rnStartupTiming (native). Requests count to the view they STARTED in. loading_time omitted when null; loading_time_outcome always ships"}
-  view-tracking: {status: done, evidence: "adapters/viewManager.ts + adapters/navigationRef.ts + screenTiming.ts + navigationTracker.ts", notes: "#96 ViewManager: view.id/view.name on every row, the `view` event at four exit boundaries, and the explicit>route>url>none name ladder (rank beats order — a higher rung re-stamps in place and never changes view.id). attachNavigation moved to TelemetryBase, so React Navigation names views identically on both builds. view.loading_time NOT built (contract 4.5.2)"}
+  view-tracking: {status: done, evidence: "adapters/viewManager.ts + adapters/navigationRef.ts + screenTiming.ts + navigationTracker.ts", notes: "#96 ViewManager: view.id/view.name on every row, the `view` event at four exit boundaries, and the explicit>route>url>none name ladder (rank beats order — a higher rung re-stamps in place and never changes view.id). attachNavigation moved to TelemetryBase, so React Navigation names views identically on both builds. view.loading_time landed separately in #97 — see view-loading-time"}
   error-capture: {status: done, evidence: crashCapture.ts + crashHandler.web.ts/crashHandlerNative.native.ts, notes: "JS errors, unhandled rejections, console.error/warn -> app.crash"}
   crash-capture: {status: partial, evidence: crashHandlerNative.native.ts:15-25, notes: "JS-level only (ErrorUtils/window.onerror). No native iOS/Android signal/ANR crash capture. crash.fatal only on native ErrorUtils path"}
   network-capture: {status: done, evidence: interceptHttpNative.native.ts + interceptFetchWeb.web.ts + xhrIntercept.ts, notes: "XHR only on native (fetch IS XHR there, so axios is covered); fetch+XHR on web; bodies never read, sizes only"}
@@ -476,6 +476,16 @@ inconsistencies_and_surprises: >
       document download, native reads a bundle off local disk. Cross-platform initial_load
       comparison is not apples-to-apples (contract 4.5.2); within-platform release comparison is
       untouched.
+  20. #97: contract 4.5's table says view.loading_time's null has FOUR causes, but the outcome
+      domain has only three null-bearing values (settled carries the number). The fourth is not
+      identified in the contract and is not produced here. Separately, 4.5 says "Null? yes"
+      while 4.11 calls navigation.from_screen "the SDK's only explicit wire null" — the two
+      readings conflict, so the key is OMITTED when null, as every other optional key on this
+      wire is. Both need a contract ruling; neither was invented locally.
+  21. #97: `abandoned` means the user left while it was still loading, and nothing else. A view
+      exiting INSIDE the quiet window still reports `settled` — no further request can start in
+      a view that is exiting, so quiet is confirmed by construction and the remainder of the
+      window is detection delay, which 4.5.2 calls free.
   19. #97: the loading_time clock starts at the route change, NOT at the tap. Tap-to-route-change
       latency runs a handler in the OLD view and belongs to the action envelope (contract 6.6),
       which is not built. A prefetched screen therefore reports no_activity.

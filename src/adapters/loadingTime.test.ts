@@ -45,11 +45,25 @@ describe("NetworkSettle — outcomes", () => {
     expect(s.resolve(at(2000))).toEqual({ loadingTime: null, outcome: "abandoned" });
   });
 
-  it("abandoned: the view exits inside the quiet window, before settle is observable", () => {
+  it("settled: a view exiting inside the quiet window still counts — the window is detection delay", () => {
     const s = new NetworkSettle(T0);
     const done = s.requestStarted(at(100));
     done(at(500));
-    expect(s.resolve(at(500 + QUIET_WINDOW_MS - 1))).toEqual({ loadingTime: null, outcome: "abandoned" });
+    // No further request can *start* in a view that is exiting, so quiet is confirmed by
+    // construction. Calling this `abandoned` would drop the fastest views out of the settled
+    // population and bias the p75 the column exists to serve, in the wrong direction.
+    expect(s.resolve(at(500 + QUIET_WINDOW_MS - 1))).toEqual({ loadingTime: 500, outcome: "settled" });
+  });
+
+  it("abandoned means the user left while it was still loading — nothing else", () => {
+    const stillBusy = new NetworkSettle(T0);
+    stillBusy.requestStarted(at(100));
+    expect(stillBusy.resolve(at(2000)).outcome).toBe("abandoned");
+
+    // and a launch view whose runtime-ready marker never arrived is busy for the same reason
+    const gated = new NetworkSettle(T0, { awaitRuntimeReady: true });
+    gated.requestStarted(at(100))(at(200));
+    expect(gated.resolve(at(2000)).outcome).toBe("abandoned");
   });
 
   it("capped: never settles inside 30 s — emits null, never the cap", () => {
@@ -129,6 +143,16 @@ describe("NetworkSettle — the initial_load runtime-ready seed", () => {
     done(at(300));
     s.seedRuntimeReady(undefined);   // Old Architecture, or a runtime that omits the marker
     expect(s.resolve(at(5000))).toEqual({ loadingTime: 300, outcome: "settled" });
+  });
+
+  it("a seed aimed at an ungated view is ignored — it must not floor a route change", () => {
+    const s = new NetworkSettle(T0);          // a successor, never gated
+    const done = s.requestStarted(at(100));
+    done(at(300));
+    // On web the `load` event routinely lands after the first route change. Flooring this
+    // view at the page-load marker would charge the launch's cost to a route change.
+    s.seedRuntimeReady(at(9000));
+    expect(s.resolve(at(300 + QUIET_WINDOW_MS))).toEqual({ loadingTime: 300, outcome: "settled" });
   });
 
   it("a non-initial view is never gated on a marker", () => {

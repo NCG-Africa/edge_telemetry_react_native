@@ -89,8 +89,8 @@ describe("ViewManager — the name ladder", () => {
   it("carries the referrer and the three counters onto the emitted view event", async () => {
     const { vm, logged } = manager();
     await vm.navigate("Home", "route");
-    vm.count("error"); vm.count("error");
-    vm.count("action");
+    vm.countError(); vm.countError();
+    vm.countAction();
     // request_count is booked at *send*, not at completion (§4.5.2) — the interceptors call
     // this, and the returned callback is what closes the request's hold on the view.
     vm.requestStarted(); vm.requestStarted(); vm.requestStarted();

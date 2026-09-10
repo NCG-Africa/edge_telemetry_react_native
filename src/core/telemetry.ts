@@ -862,8 +862,8 @@ export class Telemetry {
             // and not console.warn. `view.request_count` is NOT booked here: §4.5.2 counts
             // requests *started* in the view, and this row is emitted at completion, which
             // can be a route change later. The interceptors book it at send time instead.
-            if (eventName === 'app.crash') this.views.count('error');
-            else if (eventName === 'user.interaction') this.views.count('action');
+            if (eventName === 'app.crash') this.views.countError();
+            else if (eventName === 'user.interaction') this.views.countAction();
 
             this.enqueue({
                 type: 'event',

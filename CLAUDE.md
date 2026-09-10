@@ -332,9 +332,24 @@ one constant, not two. `ui.dead` must import it rather than declare a second `10
 
 **`view.loading_time` is omitted when null**, following the general absent-means-nothing discipline
 (§4.11 names `navigation.from_screen` as the SDK's only explicit wire null).
-**`view.loading_time_outcome` always ships** — `settled` | `no_activity` | `capped` | `abandoned` —
-because it is what tells the three null causes apart. Read **two** series: p75 where
+**`view.loading_time_outcome` always ships** — `settled` | `no_activity` | `capped` |
+`abandoned` — because it is what tells the null causes apart. Read **two** series: p75 where
 `outcome = 'settled'`, and **% `capped`**. A naive `AVG(loading_time)` mixes populations.
+
+⚠ §4.5 says "null has **four** causes"; only three of the four outcomes are null-bearing
+(`settled` carries the number). The fourth is not identified in the contract and is not produced
+here — see the known gaps.
+
+**`abandoned` means the user left while it was still loading, and nothing else.** A view exiting
+*inside* the quiet window still reports `settled`: no further request can start in a view that is
+exiting, so quiet is confirmed by construction and the rest of the window is detection delay.
+Calling that `abandoned` would drop the fastest views out of the `settled` population and bias the
+p75 the column exists to serve, in the wrong direction.
+
+⚠ **A view that was never gated on the marker ignores the seed.** On web the `load` event
+routinely arrives *after* the first route change; flooring that view's settle at the page's load
+time would charge the launch's cost to a route change. Enforced in `NetworkSettle`, not assumed by
+the caller.
 
 **Free invariant, asserted on both builds: `loading_time_outcome = 'no_activity'` ⇔
 `view.request_count = 0`.** That is why the runtime-ready marker is a *floor on when settle may
@@ -623,6 +638,13 @@ coordination.
 - Native `initial_load` is systematically **smaller** than web's — web includes DNS, TLS and
   document download; native reads a bundle off local disk. **Cross-platform `initial_load`
   comparison is not apples-to-apples.** Within-platform release comparison is untouched.
+- §4.5's table says `view.loading_time`'s null has **four** causes, but its outcome domain has
+  only three null-bearing values. The fourth is unidentified; the SDK produces three. Needs a
+  contract ruling, not a locally invented fourth.
+- **`view.loading_time` is omitted when null, not sent as an explicit `null`.** §4.5's table says
+  "Null? **yes**" while §4.11 calls `navigation.from_screen` "the SDK's only explicit wire null" —
+  the two readings conflict. Omission is what every other optional key on this wire does, so that
+  is what ships; changing it is a wire change and needs backend sign-off.
 - `view.loading_time`'s clock starts at the route change, **not at the tap**. Tap-to-route-change
   latency runs a handler in the *old* view and belongs to the action envelope (§6.6), which is not
   built. A prefetched screen therefore reports `no_activity` — exact as "started no fetches of its

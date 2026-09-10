@@ -103,11 +103,11 @@ export class ViewManager {
         await this.exit("route_change", name, source);
     }
 
-    /** `view.error_count` / `.action_count` — rows sharing this `view.id`. */
-    count(kind: "error" | "action"): void {
-        if (kind === "error") this.view.errors++;
-        else this.view.actions++;
-    }
+    /** `view.error_count` — `app.crash` rows sharing this `view.id`. A closed enumeration. */
+    countError(): void { this.view.errors++; }
+
+    /** `view.action_count` — interaction rows sharing this `view.id`. */
+    countAction(): void { this.view.actions++; }
 
     /**
      * An HTTP request started (§4.5.2). Returns its completion callback, **bound to the view
@@ -122,8 +122,11 @@ export class ViewManager {
     /**
      * The platform's runtime-ready marker — `loadEventEnd` on web,
      * `performance.rnStartupTiming` on native — or `undefined` where the platform has none.
-     * Only the launch view waits on it, so forwarding to whatever view is current is safe:
-     * a successor is never gated and ignores the seed.
+     *
+     * Forwarded to whatever view is current, which is safe because a view that was never gated
+     * *ignores* the seed — enforced in `NetworkSettle`, not assumed here. On web the `load`
+     * event routinely arrives after the first route change, and flooring that view's settle at
+     * the page's load time would charge the launch's cost to a route change.
      */
     seedRuntimeReady(at?: number): void {
         this.view.settle.seedRuntimeReady(at);

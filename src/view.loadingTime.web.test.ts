@@ -275,6 +275,44 @@ describe("#97 the initial_load runtime-ready seed (web)", () => {
     expect(v["view.loading_time"]).toBe(2000);   // the marker, not the 300ms completion
   });
 
+  it("a load event arriving after a route change does not inflate the successor", async () => {
+    const http = installWebFetch();
+    const { t, sent, inst } = await launch();
+
+    // The launch view is still waiting on `load` when the user navigates away.
+    vi.setSystemTime(T0 + 400);
+    await inst.enterView("/home", "url");    // unnamed launch view — re-stamps
+    await inst.enterView("/cart", "url");    // and this is the boundary that ends it
+    await settle();
+
+    // Now the page finally finishes loading, well into the successor's life.
+    vi.setSystemTime(T0 + 9000);
+    http.fireLoad();
+    await settle();
+
+    vi.setSystemTime(T0 + 9100);
+    void g.window.fetch("https://api.example.com/in-cart");
+    await settle();
+    vi.setSystemTime(T0 + 9300);
+    http.finishAll();
+    await settle();
+
+    vi.setSystemTime(T0 + 9300 + QUIET_WINDOW_MS);
+    await inst.enterView("/checkout", "url");
+    await t.flush();
+
+    const [launchView, cart] = views(sent);
+    // The launch view genuinely was abandoned mid-load — the user left before it finished.
+    expect(launchView["view.load_type"]).toBe("initial_load");
+    expect(launchView["view.loading_time_outcome"]).toBe("no_activity");
+
+    // The successor was never gated on the marker, so it must not be floored at it: its
+    // request settled 300ms in, and 9300ms would be the page's load cost, not the screen's.
+    expect(cart["view.name"]).toBe("/cart");
+    expect(cart["view.loading_time_outcome"]).toBe("settled");
+    expect(cart["view.loading_time"]).toBe(9300 - 400);
+  });
+
   it("a document already complete releases the gate rather than reporting abandoned forever", async () => {
     const http = installWebFetch();
     const { t, sent, inst } = await launch();
