@@ -128,12 +128,13 @@ const ALLOWED_NAMES = new Set<string>([
     "app.start",
     "frame_render_time", "memory_usage",
     "LCP", "FCP", "CLS", "INP", "TTFB",
-    // ⚠ `user.interaction`, `page_load`, `resource_timing` and `long_task` are **retired,
-    // not deferred** (§4.0/§10.2, #109). Do not add them back: `page_load`'s job is done
-    // three ways over (`view` + `view.loading_time` + the vitals), `resource_timing` would
-    // blow the 500-event queue on one asset-heavy view for a namespace with no column, and
-    // `long_task`'s only APIs are Chromium-only while `frame_render_time` detects jank on
-    // every runtime. A name off this list is rewritten to `custom_event`.
+    // ⚠ `page_load`, `resource_timing` and `long_task` are **retired, not deferred**
+    // (§10.2, #109) — as `user.interaction` was in #102, four in total for a net-zero v4.
+    // Do not add them back: `page_load`'s job is done three ways over (`view` +
+    // `view.loading_time` + the vitals), `resource_timing` would blow the 500-event queue on
+    // one asset-heavy view for a namespace with no column, and `long_task`'s only APIs are
+    // Chromium-only while `frame_render_time` detects jank on every runtime. A name off this
+    // list is rewritten to `custom_event`, so all four are unreachable, not merely unused.
 ]);
 
 /**

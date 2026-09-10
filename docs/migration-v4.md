@@ -1,8 +1,11 @@
 # Migrating to v4 — @nathanclaire/edge-telemetry-sdk (React Native)
 
-**Ships with the release, not after it.** Of the twenty discontinuities below, **only two are
-visible at compile time**. Everything else surfaces at runtime or in a chart — which is exactly
-why this note has to arrive with the release rather than trailing it.
+**Ships with the release, not after it.** **Exactly one of the twenty discontinuities below is
+visible at compile time** — #2, the accessor return shapes. (The six `@deprecated` `UserProfile`
+fields are the other compile-time-visible change, but they are **not one of the twenty**; they sit
+outside the list, which is why the table below numbers them `—`.) The remaining **nineteen**
+surface at runtime or in a chart — which is exactly why this note has to arrive with the release
+rather than trailing it.
 
 `docs/backend-wire-contract.md` §12 is authoritative for this list; where it and this note
 disagree, the contract wins. `CLAUDE.md` explains the behaviour behind each entry.
@@ -12,15 +15,18 @@ disagree, the contract wins. `CLAUDE.md` explains the behaviour behind each entr
 ## Read this first
 
 - **Two changes break a build.** #2 (accessor return shapes) and the six `@deprecated`
-  `UserProfile` fields. Both are compile-time visible; fix them and your app builds.
-- **Eighteen changes break a chart.** No compile error, no runtime error, no log line — a saved
-  filter quietly returns zero rows, or a series steps at the release boundary.
+  `UserProfile` fields — the latter outside the twenty. Both are compile-time visible; fix them
+  and your app builds.
+- **Nineteen changes break a chart** — every entry of the twenty except #2. No compile error, no
+  runtime error, no log line: a saved filter quietly returns zero rows, or a series steps at the
+  release boundary.
 - **Every one of them is separable only by `sdk.version`.** ⚠ That key is absent from the bag on
   essentially all historical rows, so splitting a *historical* series on it does not work.
   Promoting it going forward is the only version of this that does.
-- **One action item for most consumers:** if you called `setUserProfile()` / `setUserDetails()` /
-  `setUserName()` / `setUserContact()` and never called `identify()`, your profile data now
-  reaches the wire **not at all**. Add one `identify()` call. See #6.
+- **One action item for most consumers:** if you called `setUserProfile()`, `setUserDetails()`,
+  `updateUserProfile()`, `setUserName()` or `setUserContact()` and never called `identify()`,
+  your profile data now reaches the wire **not at all** — those five record state, and only
+  `identify()` emits `user.profile.update`. Add one `identify()` call. See #6.
 
 ---
 
@@ -62,7 +68,7 @@ These are the dangerous ones: the key still exists, the query still runs, the nu
 
 | # | Change | Effect |
 |---|---|---|
-| 10 | `sdk.platform`: `react-native` → `react-native-{ios\|android\|web}` | ⚠ a saved filter on `sdk.platform = 'react-native'` returns **zero rows** — the worst way for a chart to fail |
+| 10 | `sdk.platform`: `react-native` → `react-native-{Platform.OS}` | ⚠ a saved filter on `sdk.platform = 'react-native'` returns **zero rows** — the worst way for a chart to fail. ⚠ **Not** a closed three-value enum: `ios` / `android` / `web` are what the two builds emit today, but RN-Windows would emit `react-native-windows` |
 | 11 | `memory.type`: `"heap"` → `"rss"` | ⚠ on a **promoted column**, with real v3 Hermes data to be silently compared against. RSS counts native allocations — images, native views — which are what actually get a process OOM-killed |
 | 12 | `http.request_size`: UTF-16 units → **UTF-8 bytes** | any non-ASCII traffic's payload-size series steps up **2–3×** |
 | 13 | `session.id` gains a `_web` suffix on the web build | value shape changes; nothing parses it |
@@ -134,6 +140,10 @@ So nobody builds an ANR panel that shows an empty slice forever. Contract §10.1
 | `rum_navigations` / `rum_navigation_events` | `has_arguments` | not adopted; `navigation` is deprecated anyway |
 | `rum_trace_spans`, `rum_user_actions` | **every column** | RN writes neither table. The trace surface lands on `rum_telemetry_events` and `rum_http_requests` |
 | — | any `resource.*` / `long_task` key, `metric_name = 'page_load'` | retired above |
+
+**Plus the 35 allowlist keys `extract.go` reads that RN never sends** — the largest single group of
+empty columns, and the one most likely to be mistaken for a capture bug. Enumerate them with the
+command in contract Appendix A; every one stays NULL for RN traffic.
 
 **Deferred as one bundle, not refused:** `device.cpu_cores`, `device.thermal_status`,
 `device.battery_level`, `device.battery_charging`, `device.power_save`, `app.exit` and its keys,

@@ -223,3 +223,33 @@ describe("createTelemetry (native) — identity (#91)", () => {
     expect(full.last()["device.id"]).toMatch(/^device_\d+_[0-9a-f]{16}_android$/);
   });
 });
+
+// §4.0/§10.2 (#109) — the four retirements, mirrored on native. They are unreachable, not
+// merely unproduced: a consumer's `log("page_load")` gets `custom_event` like any unknown name.
+describe("createTelemetry (native) — the retired allowlist names (#109)", () => {
+  const RETIRED = ["user.interaction", "page_load", "resource_timing", "long_task"];
+
+  it("rewrites every retired name to custom_event, keeping the original as event.name", async () => {
+    silenceConsole();
+    const { createTelemetry } = await import("./createTelemetry.native");
+    const { memoryStore } = await import("./core/memoryStore");
+
+    const sent: TelemetryEvent[] = [];
+    const t = createTelemetry({
+      apiKey: "edge_integration",
+      endpoint: "https://x/telemetry",
+      sender: { send: async (e: TelemetryEvent[]) => { sent.push(...e); } },
+      batchSize: 100,
+      flushIntervalMs: 0,
+      store: memoryStore({ async: true }),
+    });
+
+    for (const name of RETIRED) await t.log(name);
+    await t.flush();
+
+    for (const name of RETIRED) {
+      expect(sent.some((e) => e.eventName === name)).toBe(false);
+      expect(sent.some((e) => e.eventName === "custom_event" && e.attributes?.["event.name"] === name)).toBe(true);
+    }
+  });
+});

@@ -63,9 +63,10 @@ _Avoid_: screen, page, route (those name the *thing*; View names the SDK's bound
 
 **rung**:
 A level on a *name ladder* — the ranked list of sources a name is derived from, where **rank
-beats arrival order**. Two ladders exist: `view.name`'s four rungs (`explicit` > `route` >
-`url` > `none`, reported as `view.name_source`) and `ui.interaction`'s five (`edge_action` >
-`test_id` > `aria_label` > `title` > `text`, reported as `ui.name_source`). A **higher** rung
+beats arrival order**. Two ladders exist: `view.name`'s **three** naming rungs (`explicit` >
+`route` > `url`, reported as `view.name_source`) and `ui.interaction`'s **five** (`edge_action` >
+`test_id` > `aria_label` > `title` > `text`, reported as `ui.name_source`). Both report `none`
+when nothing survived; `none` is the floor, not a rung. A **higher** rung
 re-stamps the name in place — an *upgrade*, not a navigation, so `view.id` does not move; a
 **lower** one is ignored outright, whenever it arrives.
 _Avoid_: priority, fallback, precedence level
@@ -81,10 +82,12 @@ _Avoid_: user journey, flow, transaction
 **root**:
 The span an Action is named by, and the *live* one is held in a single **carrier** field on the
 `Telemetry`-owned `TraceManager` — never a module global, never a thread-local. Four things mint
-one: `app.start` (once per process, `trace.root_type: launch`), `view` at entry, `http.request`
-at send — those three only when no root is live — and `ui.interaction`, which is the **one
-unconditional mint**: a tap is a new user action by definition. Expires at 2 s idle / 10 s cap,
-and background and session rotation both clear it.
+one: `app.start`, once per process in the `Telemetry` constructor and therefore always the first
+root (`trace.root_type: launch`); `view` at entry and `http.request` at send, **those two only
+when no root is live**; and `ui.interaction`, which mints **unconditionally**, replacing whatever
+was live — a tap is a new user action by definition, which is what makes the request a tap fires a
+child of the tap rather than of the route change before it. Expires at 2 s idle / 10 s cap, and
+background and session rotation both clear it.
 _Avoid_: trace, parent, transaction
 
 **span**:

@@ -33,18 +33,18 @@ One SDK, two builds. The bundler picks `index.native.js` or `index.web.js` from 
 
 ## Upgrading to v4 (breaking)
 
-**Read [`docs/migration-v4.md`](docs/migration-v4.md) before you deploy.** Of the twenty
-discontinuities across 3.1.0 and v4, **only two are visible at compile time** — the
-`getDeviceInfo()` / `getNetworkInfo()` return shapes and the six `@deprecated` `UserProfile`
-fields. The other eighteen surface at runtime or in a chart: a saved filter quietly returns zero
-rows, or a series steps at the release boundary. The note also lists the columns RN will never
-write (so nobody builds an ANR panel that stays empty forever) and the five deliberate departures
-from the Android SDK.
+**Read [`docs/migration-v4.md`](docs/migration-v4.md) before you deploy.** Two changes break a
+build — the `getDeviceInfo()` / `getNetworkInfo()` return shapes, and the six `@deprecated`
+`UserProfile` fields. Everything else is silent: of the twenty discontinuities across 3.1.0 and
+v4, **exactly one is visible at compile time** and the other **nineteen** surface at runtime or in
+a chart — a saved filter quietly returns zero rows, or a series steps at the release boundary. The
+note also lists the columns RN will never write (so nobody builds an ANR panel that stays empty
+forever) and the five deliberate departures from the Android SDK.
 
-**The one action item most consumers have:** if you called `setUserProfile()` / `setUserDetails()`
-/ `setUserName()` / `setUserContact()` and never called `identify()`, your profile data no longer
-reaches the wire at all. `user.name` / `.email` / `.phone` now ride `user.profile.update` only,
-and `identify()` is what emits it. Add one call.
+**The one action item most consumers have:** if you called `setUserProfile()`, `setUserDetails()`,
+`updateUserProfile()`, `setUserName()` or `setUserContact()` and never called `identify()`, your
+profile data no longer reaches the wire at all. `user.name` / `.email` / `.phone` now ride
+`user.profile.update` only, and `identify()` is what emits it. Add one call.
 
 ---
 
