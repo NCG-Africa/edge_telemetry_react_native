@@ -8,11 +8,15 @@ import { debug } from "./core/debug";
 
 type ProfileInput = {
     userId?: string;
+    /** @deprecated Removed in v5 — use `identify({ name })`. */
     fullName?: string;
+    /** @deprecated Removed in v5 — never reaches the wire (§3.4). */
     firstName?: string;
+    /** @deprecated Removed in v5 — never reaches the wire (§3.4). */
     lastName?: string;
     email?: string;
     phone?: string;
+    /** @deprecated Removed in v5 — never reaches the wire (§3.4). */
     avatar?: string;
     customAttributes?: Record<string, any>;
 };
@@ -121,9 +125,11 @@ export abstract class TelemetryBase {
         inst.setUserContact(email, phone);
     }
 
-    // EdgeRum-style identify(): emits user.profile.update. It never touches `user.id`,
-    // which is consumer-owned and absent until setUserId/setUserProfile supplies one (#91).
-    async identify(profile: { name?: string; email?: string; phone?: string; avatar?: string; customAttributes?: Record<string, any> }) {
+    // EdgeRum-style identify(): emits `user.profile.update`, the **only** event carrying
+    // `user.name` / `.email` / `.phone` / `user.custom.*` (§4.10, #107).
+    // `userId` is optional and sets the consumer-owned `user.id` the profile upserts on —
+    // omit it and `user.id` is untouched; the SDK still never mints one (§3.2).
+    async identify(profile: { userId?: string; name?: string; email?: string; phone?: string; avatar?: string; customAttributes?: Record<string, any> }) {
         const inst = await this.instancePromise;
         return inst.identify(profile);
     }

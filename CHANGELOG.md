@@ -6,6 +6,53 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
 ### Added
 
+- **The profile PII rides `user.profile.update` and nothing else** (#107, wire contract §4.10).
+  `user.name` / `user.email` / `user.phone` / `user.custom.*` were on the Context block of
+  **every** event, so a 10,000-event session put 10,000 copies of an email address on the wire
+  and at rest to populate a per-user upsert table that needs it **once**. Copies per session go
+  N → 1, and it is self-healing: the profile is in-memory, so `identify()` re-fires every launch.
+
+  `user.id` stays on the Context block — it is the join key, not the payload — and **`identify()`
+  gains an optional `userId`**, so the one call that sends a profile also sets the key it upserts
+  on. It still never mints one: omit `userId` and the traffic stays anonymous.
+
+  Caps are **255 / 255 / 50** (`rum_users.phone` is `VARCHAR(50)`, and the mismatch loses the
+  whole profile behind a 2xx). `user.custom.*` is bounded at **≤64 keys, 64-char keys, 255-char
+  values**, with consumer key casing passed through verbatim; a non-primitive value is
+  `JSON.stringify`'d then truncated. Overflow is dropped, counted in **`user.custom_dropped`**
+  and warned once in dev — **never a throw**.
+
+  ⚠ **Migration:** the other profile setters record state only. `setUserProfile()`,
+  `setUserDetails()`, `updateUserProfile()`, `setUserName()` and `setUserContact()` no longer
+  reach the wire on their own — **call `identify()` for the profile to be sent.**
+
+  ⚠ **Six public profile fields are `@deprecated` but still work**, for removal in v5:
+  `fullName`, `firstName`, `lastName`, `avatar`, `createdAt`, `updatedAt`. Their wire keys
+  (`user.fullName`, `user.firstName`, `user.lastName`, `user.avatar`, `user.createdAt`,
+  `user.updatedAt`) are **gone outright** (§3.4) — `user.fullName` duplicated `user.name`, the
+  next three had no column and no reader, and the last two were byte-identical every session.
+
+### Fixed
+
+- **A bad `identify()` no longer crashes the host app** (#107). `flattenWithPrefix` had no depth
+  guard, so a cyclic value in `customAttributes` recursed to a **`RangeError` inside the SDK** —
+  in the consumer's render tree, on a call that only meant to set a name. The bounded
+  `user.custom.*` rule closes it, along with two more: raw arrays violated the primitive-values
+  rule, and nested objects recursed into the bag. The flattener itself gained a depth cap of 8
+  for the general `log(name, data)` path, stringifying at the cap rather than handing the object
+  through — a cycle passed through raw would only move the throw to `JSON.stringify` in the
+  sender.
+
+  ⚠ **Arrays in a `log(name, data)` payload now ship as JSON strings** — `{ tags: ["a","b"] }`
+  ships `'["a","b"]'` where it shipped a raw array before. The depth cap alone could not close
+  the hole: the flattener never recursed into arrays, so a cycle reached *through* one never met
+  the depth counter, threw in the sender's `JSON.stringify`, and `flush()`'s catch **swallowed
+  it and lost the whole batch silently — no counter, no log.** The collector renders a raw array
+  through `fmt.Sprint` as Go map syntax anyway, so JSON is the better of the two shapes, but it
+  is a value change on an existing key for anyone already passing arrays.
+
+### Added
+
 - **Identity: `device.id` is ours, `user.id` is yours** (#91, wire contract §3.2/§3.3). One
   column used to hold both `user_1749…_a3f9…` and `cust-88213`, so no query could separate a
   visitor from a customer. Now:

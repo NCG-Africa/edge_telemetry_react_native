@@ -9,6 +9,8 @@ import { randomHex } from "./utils/uuid";
 import type { Store } from "./store";
 import { memoryStore } from "./memoryStore";
 import { applyBeforeSend, type BeforeSend } from "./beforeSend";
+import { buildProfileAttributes } from "./userProfile";
+import { stringifyOrDrop } from "./utils/json";
 import { version as PKG_VERSION } from "../../package.json";
 
 export type { BeforeSend } from "./beforeSend";
@@ -20,6 +22,10 @@ const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min of in
 // New in v4 (§4.2). Removing the process-death boundary lets a backgrounded app's
 // http.request traffic hold one session open forever; this bounds length, not count.
 const SESSION_MAX_MS = 4 * 60 * 60 * 1000;
+
+// A cycle needs *a* bound, not a visited-set. Nothing on this wire nests past deviceInfo's
+// two levels, so 8 is unreachable for a real payload and a cycle stops here (§4.10).
+const FLATTEN_MAX_DEPTH = 8;
 
 /**
  * The in-memory queue's cap (§9.4). Drop-oldest, `app.crash` evicted last: a long
@@ -264,14 +270,20 @@ export interface DeviceInfo {
 
 export interface UserProfile {
     userId?: string;
+    /** @deprecated Removed in v5 — use `identify({ name })`. Still the source of `user.name`. */
     fullName?: string;
+    /** @deprecated Removed in v5 — never reached the wire; `identify()` could not set it. */
     firstName?: string;
+    /** @deprecated Removed in v5 — never reached the wire; `identify()` could not set it. */
     lastName?: string;
     email?: string;
     phone?: string;
+    /** @deprecated Removed in v5 — no column and no reader; `user.avatar` is off the wire (§3.4). */
     avatar?: string;
     customAttributes?: Record<string, any>;
+    /** @deprecated Removed in v5 — in-memory only, so it meant "first identify() this process" (§3.4). */
     createdAt?: number;
+    /** @deprecated Removed in v5 — byte-identical to `createdAt` for any one-identify() app (§3.4). */
     updatedAt?: number;
 }
 
@@ -927,25 +939,36 @@ export class Telemetry {
     }
 
     /**
-     * EdgeRum-style identify(): attach host-app identity (name/email/phone) to subsequent
-     * events and emit one `user.profile.update`. The SDK-owned anonymous `user.id` is
-     * preserved — identify never changes it. (#31)
+     * EdgeRum-style identify(): record the host-app profile and emit the one event that
+     * carries it — `user.profile.update` (§4.10, #107). The PII is no longer on the
+     * Context block of every event.
+     *
+     * `userId` is optional and new in v4: the one call that sends a profile should also
+     * set the key that profile attaches to, since `user.id` is consumer-supplied (§3.2)
+     * and an unkeyed profile has nothing to upsert on. Omitting it leaves `user.id`
+     * exactly as it was — identify never mints one.
      */
     public async identify(profile: {
+        userId?: string;
         name?: string;
         email?: string;
         phone?: string;
         avatar?: string;
         customAttributes?: Record<string, any>;
     }) {
+        if (profile.userId !== undefined) this.setUserId(profile.userId);
+        // Only what this call actually supplied — `setUserProfile` merges by spread, so
+        // passing `email: undefined` would wipe an email a prior setUserContact() set.
         this.setUserProfile({
-            fullName: profile.name,
-            email: profile.email,
-            phone: profile.phone,
-            avatar: profile.avatar,
-            customAttributes: profile.customAttributes,
+            ...(profile.name !== undefined ? { fullName: profile.name } : {}),
+            ...(profile.email !== undefined ? { email: profile.email } : {}),
+            ...(profile.phone !== undefined ? { phone: profile.phone } : {}),
+            ...(profile.avatar !== undefined ? { avatar: profile.avatar } : {}),
+            ...(profile.customAttributes !== undefined ? { customAttributes: profile.customAttributes } : {}),
         });
-        await this.log("user.profile.update", {});
+        // Built from the live profile, not from this call's arguments, so a preceding
+        // setUserContact()/setUserName() ships too.
+        await this.log("user.profile.update", buildProfileAttributes(this.userProfile));
     }
 
     /**
@@ -1245,23 +1268,8 @@ export class Telemetry {
             'sdk.version': this.sdkVersion,
         };
 
-        if (this.userProfile) {
-            const userProfileData = {
-                'user.name': this.userProfile.fullName,   // v3 contract key for host identity
-                'user.fullName': this.userProfile.fullName,
-                'user.firstName': this.userProfile.firstName,
-                'user.lastName': this.userProfile.lastName,
-                'user.email': this.userProfile.email,
-                'user.phone': this.userProfile.phone,
-                'user.avatar': this.userProfile.avatar,
-                'user.createdAt': this.userProfile.createdAt,
-                'user.updatedAt': this.userProfile.updatedAt,
-                ...this.flattenWithPrefix('user.custom', this.userProfile.customAttributes || {})
-            };
-            Object.entries(userProfileData).forEach(([key, value]) => {
-                if (value !== undefined) attributes[key] = value;
-            });
-        }
+        // §4.10, #107 — the profile keys are deliberately NOT here; they ride
+        // `user.profile.update` alone. `user.id` above is the join key and stays.
 
         return attributes;
     }
@@ -1358,7 +1366,7 @@ export class Telemetry {
         this.dropReason = reason;
     }
 
-    private flattenWithPrefix(prefix: string, obj: Record<string, any>): Record<string, any> {
+    private flattenWithPrefix(prefix: string, obj: Record<string, any>, depth = 0): Record<string, any> {
         const result: Record<string, any> = {};
 
         for (const key in obj) {
@@ -1367,8 +1375,21 @@ export class Telemetry {
             const value = obj[key];
             const prefixedKey = prefix ? `${prefix}.${key}` : key;
 
-            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-                Object.assign(result, this.flattenWithPrefix(prefixedKey, value));
+            // §4.10, #107 — the depth guard. Without it a cyclic value recursed until the
+            // stack blew, *inside* the SDK, taking the host app's render tree with it. A
+            // bad payload is a dropped key, never a RangeError.
+            if (typeof value === 'object' && value !== null && !Array.isArray(value) && depth < FLATTEN_MAX_DEPTH) {
+                Object.assign(result, this.flattenWithPrefix(prefixedKey, value, depth + 1));
+            } else if (typeof value === 'object' && value !== null) {
+                // An array, or an object at the depth cap. Both ride as a JSON string rather
+                // than as themselves — the primitive-values rule, and the only way to close
+                // the hole a cycle *inside an array* leaves: the array branch never recurses,
+                // so the depth guard cannot see it and the throw would land in the sender's
+                // `JSON.stringify`, where `flush()` swallows it and the whole batch is lost
+                // silently. Stringifying is also what the collector's `fmt.Sprint` would do
+                // to a raw array, only in Go map syntax rather than JSON.
+                const flat = stringifyOrDrop(value);
+                if (flat !== undefined) result[prefixedKey] = flat;
             } else {
                 result[prefixedKey] = value;
             }

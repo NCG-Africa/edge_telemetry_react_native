@@ -72,8 +72,9 @@ async function settle(t: any) {
     await t.instancePromise;
     // Macrotask turns, not just microtasks: the ctor's fire-and-forget trackers each chain
     // several dynamic imports, and `attachAppLifecycle` — the background boundary this file
-    // drives — is the last of them to attach.
-    for (let i = 0; i < 5; i++) await new Promise(r => setTimeout(r, 0));
+    // drives — is the last of them to attach. 5 turns was enough on an idle machine and
+    // flaked once the suite grew enough workers to contend for them.
+    for (let i = 0; i < 25; i++) await new Promise(r => setTimeout(r, 0));
 }
 
 const vitals = (sent: TelemetryEvent[], name?: string) =>
