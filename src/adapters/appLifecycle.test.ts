@@ -1,18 +1,24 @@
 import { describe, it, expect, vi } from "vitest";
 import { AppLifecycleEmitter } from "./appLifecycle";
+import { TraceManager } from "./traceManager";
 
 function fakeTelemetry() {
   const calls: Array<{ name: string; data: any }> = [];
   // `views` is not optional on the real core: background is one of the four view boundaries
   // (§4.5), so a double without it would hide the boundary rather than exercise it.
   const views = { background: vi.fn(async () => {}), foreground: vi.fn(() => {}) };
+  // Nor is `trace`: §6.2 makes background one of the two boundaries that clear the live root.
+  const trace = new TraceManager();
+  const cleared = vi.spyOn(trace, "clear");
   return {
     telemetry: {
       log: vi.fn((name: string, data?: any) => { calls.push({ name, data }); }),
       views,
+      trace,
     } as any,
     calls,
     views,
+    cleared,
   };
 }
 

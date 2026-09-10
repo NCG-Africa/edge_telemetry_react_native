@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { NetworkTrackerNative } from "./interceptHttpNative.native";
+import { TraceManager } from "../traceManager";
 
 // Native is XHR-only (#95): RN's global.fetch IS XMLHttpRequest underneath, so this suite
 // drives requests the way the runtime does — through the XHR prototype — and asserts one
@@ -13,6 +14,9 @@ function fakeTelemetry(endpoint?: string) {
             // hold at *send*, so a double without it hides the very wiring these tests cover.
             getEndpoint: () => endpoint,
             views: { requestStarted: vi.fn(() => vi.fn()) },
+            // A real TraceManager, not a stub: §6.2 books the span at *send* too, and the
+            // mint-vs-attach decision is exactly what a stub would paper over.
+            trace: new TraceManager(),
         } as any,
         calls,
     };

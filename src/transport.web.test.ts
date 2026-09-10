@@ -40,8 +40,8 @@ describe("batch defaults (§9.4)", () => {
       sender: r.sender, flushIntervalMs: 0,   // interval off; only the size trigger is under test
     });
 
-    // session.started is #1, so events 2..49 must not trigger anything.
-    for (let i = 0; i < 48; i++) await t.log("custom_event", { i });
+    // session.started is #1 and app.start #2, so events 3..49 must not trigger anything.
+    for (let i = 0; i < 47; i++) await t.log("custom_event", { i });
     expect(r.batches).toHaveLength(0);
 
     await t.log("custom_event", { last: true });
@@ -125,9 +125,10 @@ describe("event.sequence (§2.4)", () => {
     await t.log("navigation");
     await t.flush();
 
-    // session.started took 0; the two scrubbed rows take nothing; navigation is 1, not 3.
-    // A gap here would be indistinguishable from real loss, which is what §2.4 forbids.
-    expect(seq(r.sent().find(e => e.eventName === "navigation")!)).toBe(1);
+    // session.started took 0 and app.start 1; the two scrubbed rows take nothing, so
+    // navigation is 2, not 4. A gap here would be indistinguishable from real loss, which
+    // is what §2.4 forbids.
+    expect(seq(r.sent().find(e => e.eventName === "navigation")!)).toBe(2);
   });
 
   it("continues across a resume — a restart at 0 would forge duplicate dedup keys", async () => {
@@ -153,8 +154,11 @@ describe("event.sequence (§2.4)", () => {
     await t.flush();
 
     // Resumed: no session.started, and the ordinal picks up where the record left off.
+    // `app.start` still ships — it is once per *process*, and a resume is a new one (§6.2)
+    // — so it takes 42 and navigation follows at 43.
     expect(r.sent().some(e => e.eventName === "session.started")).toBe(false);
-    expect(seq(r.sent().find(e => e.eventName === "navigation")!)).toBe(42);
+    expect(seq(r.sent().find(e => e.eventName === "app.start")!)).toBe(42);
+    expect(seq(r.sent().find(e => e.eventName === "navigation")!)).toBe(43);
   });
 
   it("cannot be forged or deleted by beforeSend — it is Tier A", async () => {
@@ -172,7 +176,7 @@ describe("event.sequence (§2.4)", () => {
 
     await t.log("navigation");
     await t.flush();
-    expect(r.sent().map(seq)).toEqual([0, 1]);
+    expect(r.sent().map(seq)).toEqual([0, 1, 2]);   // session.started, app.start, navigation
   });
 });
 
@@ -213,9 +217,10 @@ describe("the crash path (§2 / §9.4)", () => {
       sender: r.sender, batchSize: 2, flushIntervalMs: 0,
     });
 
-    await t.log("navigation", { n: 1 });   // session.started + navigation = the 2-event batch
+    await t.flush();                       // drain session.started + app.start
     await Promise.resolve(); await Promise.resolve();
     r.batches.length = 0;
+    r.persisted.length = 0;
 
     await t.log("custom_event", { n: 2 });
     await t.log("app.crash", { "crash.message": "boom" });

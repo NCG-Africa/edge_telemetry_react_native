@@ -121,7 +121,7 @@ describe("#93 native — beforeSend", () => {
 
     expect(sent.map((e) => e.eventName)).toEqual(["navigation"]);
     const a = attrsOf(sent, "navigation")[0];
-    expect(a["sdk.hook_failed"]).toBe(2);    // session.started + the first custom_event
+    expect(a["sdk.hook_failed"]).toBe(3);    // session.started + app.start + the first custom_event
     expect(a["sdk.hook_dropped"]).toBe(1);
   });
 });
@@ -158,7 +158,8 @@ describe("#93 native — sessionSampleRate over the async Store", () => {
     const third = await launch({ store, sessionSampleRate: 0.5 });
     await third.t.log("custom_event");
     await third.t.flush();
-    expect(third.names()).toEqual(["session.started", "custom_event"]);
+    // `app.start` is once per *process*, so each relaunch emits its own (§6.2).
+    expect(third.names()).toEqual(["session.started", "app.start", "custom_event"]);
     for (const e of third.sent) expect(e.attributes!["session.sample_rate"]).toBe(0.5);
   });
 });

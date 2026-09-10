@@ -26,8 +26,15 @@ const RANK: Record<ViewNameSource, number> = { none: 0, url: 1, route: 2, explic
 /** `view.name` before anything has named the view. A literal, never null (§4.5.1). */
 export const UNKNOWN_VIEW_NAME = "unknown";
 
-/** All ViewManager needs of core. Structural, so the manager stays unit-testable alone. */
-type Emitter = { log(name: string, data?: Record<string, any>): unknown };
+/**
+ * All ViewManager needs of core. Structural, so the manager stays unit-testable alone.
+ * `trace` is optional for that reason and for that reason only — every real `Telemetry`
+ * has one, and a view with no trace source simply carries no §6 keys.
+ */
+type Emitter = {
+    log(name: string, data?: Record<string, any>): unknown;
+    trace?: { viewSpan(entryAt: number): Record<string, string | number> };
+};
 
 type View = {
     id: string;
@@ -44,6 +51,10 @@ type View = {
     // `view.request_count` and `view.loading_time` both live here — both count requests
     // *started* in this view, so one object owns both and they cannot disagree (§4.5.2).
     settle: NetworkSettle;
+    // §6.3's Tier 1 keys, captured at view **entry**: a `view` row parents to the root that
+    // was live when the screen opened, not the one live when the user left it. Held here
+    // rather than read at exit precisely so the later root cannot claim it.
+    span: Record<string, string | number>;
 };
 
 /** `view_{ms}_{16hex}` (§3.3). No platform suffix — a view never leaves its process. */
@@ -69,6 +80,10 @@ export class ViewManager {
             // The launch view is the one `load_type` that seeds from the platform's
             // runtime-ready marker: it is busy until the bundle has evaluated (§4.5.2).
             settle: new NetworkSettle(now, { awaitRuntimeReady: true }),
+            // The launch root is live here — it is minted in the same `Telemetry` constructor,
+            // just above this one — so the initial view is its child and a web hard load
+            // reports `launch`, never `navigation` (§6.2).
+            span: telemetry.trace?.viewSpan(now) ?? {},
         };
     }
 
@@ -146,6 +161,10 @@ export class ViewManager {
         const v = this.view;
         const { loadingTime, outcome } = v.settle.resolve();
         await this.telemetry.log("view", {
+            // A **point span** (§6.3): `span.start_time` from view entry and never
+            // `span.duration_ms`. View dwell is `view.time_spent`, not span width — a width
+            // here would stretch every tap-that-navigates envelope across the whole visit.
+            ...v.span,
             ...(this.host ? { "view.host": this.host } : {}),
             "view.referrer": v.referrer,
             "view.load_type": v.loadType,
@@ -177,6 +196,9 @@ export class ViewManager {
             elapsed: 0, resumedAt: now, errors: 0, actions: 0,
             // No runtime-ready seed: only `initial_load` has a platform marker to wait on.
             settle: new NetworkSettle(now),
+            // A view start *extends* the live root; with none live it mints a `navigation`
+            // one (§6.2). Its exit does not extend anything (§6.7).
+            span: this.telemetry.trace?.viewSpan(now) ?? {},
         };
     }
 

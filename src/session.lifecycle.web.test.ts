@@ -327,7 +327,7 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
 
     const fin = attrsOf(sent, "session.finalized")[0];
     expect(typeof fin["session.duration_ms"]).toBe("number");
-    expect(fin["session.event_count"]).toBe(2);
+    expect(fin["session.event_count"]).toBe(3);   // app.start + custom_event + app.crash
     expect(fin["sdk.error_count"]).toBe(1);
   });
 

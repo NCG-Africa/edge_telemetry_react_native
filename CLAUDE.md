@@ -51,6 +51,7 @@ src/
 │   ├── crashCapture.ts    ← shared crash normalisation → app.crash
 │   ├── viewManager.ts     ← the View entity: view.id/view.name, the `view` event, the ladder
 │   ├── loadingTime.ts     ← shared network-settle: view.loading_time + the 4-value outcome
+│   ├── traceManager.ts    ← §6 trace/span: the live-root carrier, three roots, three tiers
 │   ├── navigationRef.ts   ← React Navigation ref listener, shared (getCurrentRoute works on web)
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
@@ -374,6 +375,73 @@ a promise for exactly this reason: on native, backgrounding forces a `flush()` b
 only lives in memory, and the `view` row the boundary emits is the row that flush exists to rescue.
 Firing the flush on the next line sends the batch before the row is enqueued.
 
+### Trace and span
+
+`adapters/traceManager.ts`, shared by both builds (§6, #98). It owns the live-root **carrier**,
+root minting, and the key builders for the three tiers. Header injection is **not** here —
+`traceHostAllowlist`, the `traceparent` header and its seven-value outcome are #99, so ids are
+stamped locally and nothing crosses the wire to a third party yet.
+
+**`rum.action.id` is the root's `span.id`**: `== span.id` on a root, `== parent.span.id` on a
+child. That identity is the single thing that makes an action's envelope one `GROUP BY` instead of
+a self-join. `trace.root_type` is denormalized onto every child so launch traffic separates from
+tap traffic without joining back to the root.
+
+⚠ **No request tag and no thread-local.** Android's `Call.Factory` tag and its process-global
+`lastRoot` exist to defeat OkHttp's dispatcher-pool threads; both RN builds patch a
+single-threaded JS transport, so a plain field read synchronously inside the patch is correct
+**by construction** (§6.7). The crash and unhandled-rejection handlers read the carrier directly.
+The carrier is a field on a `Telemetry`-owned manager rather than §6.7's literal module-level
+`let`: a module singleton would let one `Telemetry` inherit another's live root inside one
+process, which is the hazard that actually exists here. `ViewManager` is owned the same way.
+
+| Root | Minted | `trace.root_type` |
+|---|---|---|
+| `app.start` | once per process, in the `Telemetry` constructor | `launch` |
+| `view` | at view **entry**, when no root is live | `navigation` |
+| `http.request` | at **send**, when no root is live | `request` |
+
+`interaction` has **no producer** — §6.2's tap root arrives with #102/#103, so `user.interaction`
+is trace-free today. The launch root is minted **before** `ViewManager`, so the initial view is
+its child and **a web hard load is `launch`, never `navigation`**. Web's launch span starts at
+`performance.timeOrigin`, native's at SDK `initialize()`; neither is a fork time and the two are
+**not the same interval** — do not compare native and web launch envelopes.
+
+**Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request` (`ui.interaction` with
+#102/#103). Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
+`app.crash` and `custom_event` (`app.error` with #100). ⚠ `custom_event` is the one place RN goes
+past Android, flagged as an invention. **Tier 3 is trace-free**: *all metrics*, plus
+`app_lifecycle`, `network_change`, the session events, `user.profile.update` and the deprecated
+feeds. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
+invite a `GROUP BY` over a number that was never attributable — and the join would look valid.
+
+**Tier 2 never mints**: with no live root it carries no trace keys at all, rather than inventing a
+root nothing else will join.
+
+⚠ **`view` carries `span.start_time` but never `span.duration_ms`, not even as a child.** View
+dwell is `view.time_spent`, not span width: with a duration, `MAX(child.start + child.duration) −
+root.start` would stretch every tap-that-navigates envelope across the entire time the user sat on
+the screen. Omitting it makes `view` a **point span**, and `NULL` drops out of the `MAX`.
+
+⚠ **A `view` row parents to the root live at view *entry*** — the action that opened the screen,
+not the one that closed it. Its wire `timestamp` is the exit and its `span.start_time` the entry,
+so **a navigation root's row arrives after its own children**. On RN that is the normal case.
+
+**`span.duration_ms` is Tier 1 children only** — a root's is derived server-side at query time.
+
+**Expiry is 2 s idle / 10 s cap**, Android's numbers, as **internal constants and never
+`TelemetryOpts` surface**: `injected_expired` exists so the numbers are falsifiable, so ship
+Android's and tune on evidence. A span's *start* extends the root; a view's *exit* does not. The
+clock is `Date.now()`, and a **negative delta is clamped to expired** — an NTP correction must not
+hold one root open forever. **Background and session rotation both clear the carrier**: a resumed
+app's first fetch mints its own root, and `trace.id` never spans a `session.id` (§6.6).
+
+The invariants worth asserting: `trace.id` never spans a `session.id`; `rum.action.id` **may**
+span a `view.id`, and §6.6 states the absence of a third invariant rather than letting you infer a
+hierarchy. An action genuinely outlives its view — a root minted in A, a route change to B that
+*extends* it, and B's mount fetch as a child of an A-minted root: one `rum.action.id`, two
+`view.id`s, every row correct.
+
 ### The Store port
 
 Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
@@ -454,7 +522,7 @@ discarded behind a 2xx:
 
 | Tier | Keys | Rule |
 |---|---|---|
-| **A — immutable** | `type`, `eventName`/`metricName`, `timestamp`, `session.id`, `session.start_time`, `session.sequence`, `event.sequence`, all `sdk.*`, all `app.*`, `device.platform`, `trace.id`, `span.id`, `parent.span.id`, `rum.action.id`, `view.id` | replaced wholesale from the original — covers deletion *and* forgery |
+| **A — immutable** | `type`, `eventName`/`metricName`, `timestamp`, `session.id`, `session.start_time`, `session.sequence`, `event.sequence`, all `sdk.*`, all `app.*`, `device.platform`, `trace.id`, `span.id`, `parent.span.id`, `rum.action.id`, `view.id` | replaced wholesale from the original — covers deletion *and* forgery. ⚠ `trace.root_type`, `span.start_time` and `span.duration_ms` are **not** on §3.6's list and are Tier C |
 | **B — rewritable, not deletable** | `device.id` | a hashed id is legitimate; a missing one 400s the whole batch at the collector |
 | **C — free** | everything else — `user.*`, `http.*`, `error.*`, `ui.target`, `vital.target`, `user.custom.*`, caller `data` | untouched; this is where the PII lives |
 
@@ -544,6 +612,7 @@ the original name as `event.name`. Currently emitted:
 | `app.crash` | JS error, unhandled rejection, console.error/warn |
 | `user.interaction` | native taps via `interactionProps()` |
 | `view` | each of the four view exit boundaries (§4.5) |
+| `app.start` | once per process at init — the `launch` root, and §4.3's launch compensator |
 | `network_change` | connectivity type transition |
 | `user.profile.update` | `identify()` |
 | `custom_event` | any non-allowlisted `log()` name |
@@ -653,6 +722,14 @@ coordination.
   route change still charges the departing screen's frames to the arriving one.
 - The deprecated web `navigation` event still carries `location.pathname + search` raw, query
   string included. `http.request` and `view.name` are both clean; this feed is not.
+- **`app.start` needs backend allowlist sign-off before it ships** — it is already in
+  `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
+- `trace.root_type = interaction` has **no producer**: §6.2's tap root arrives with #102/#103.
+  Until then `user.interaction` is trace-free and a tap starts no action.
+- Header injection is **not built**: `traceHostAllowlist`, the `traceparent` header and
+  `traceparent.outcome`'s seven values are #99. Ids are stamped locally; nothing leaves the device.
+- An XHR `send()` that throws **synchronously** never reaches `loadend`, so a `request` root it
+  minted lives out its 2 s window with no row describing it. Rare, and knowingly left.
 - **`view.id` is resolved at log time, not frozen at span start** (§3.1). Point events are
   unaffected — they have no span — but an `http.request` that completes after a route change is
   attributed to the view it *landed* in, and `view.request_count` therefore counts requests
