@@ -149,6 +149,11 @@ events:
       - {field: trace.root_type, type: string, unit: none, always_present: true}          # launch|interaction|navigation|request, denormalized onto children
       - {field: span.start_time, type: string, unit: none, always_present: true}          # ISO 8601, the SEND time
       - {field: span.duration_ms, type: int, unit: ms, always_present: false}             # CHILDREN ONLY — a root's is derived server-side
+      # §6.5's outcome ladder (#99). ABSENT = not traced: an empty traceHostAllowlist (the default),
+      # an unsampled session, and the collector's own POST all carry no outcome key at all.
+      # On `adopted` the row mirrors the CONSUMER's ids: trace.id and span.id come from their
+      # header, parent.span.id and trace.root_type are ABSENT, and the carrier is not touched.
+      - {field: traceparent.outcome, type: string, unit: none, always_present: false}     # skipped_off_allowlist|skipped_no_cors (fetch-only)|skipped_consumer_set|adopted|injected_attributed|injected_expired|injected_unattributed. NO injected_unwired — RN patches in the ctor, there is no wiring step
     removed_fields:
       - {field: http.url, removed_in: "#95", why: "the identifier lives in the path, so query-stripping did not address the threat — contract 9.1"}
       - {field: http.path, removed_in: "#95", why: "raw values vs http.route's templates; not a rename a COALESCE can paper over"}
@@ -425,7 +430,7 @@ privacy:
 # 6. Public API surface
 # ============================================================
 api:
-  init_config_options: [apiKey (required, must start with "edge_"), sender, batchSize, flushIntervalMs, endpoint, captureConsole, debug, store, beforeSend, sessionSampleRate]   # evidence createTelemetry.web.ts:4-13 / .native.ts; assertApiKey validates edge_ prefix
+  init_config_options: [apiKey (required, must start with "edge_"), sender, batchSize, flushIntervalMs, endpoint, captureConsole, debug, store, beforeSend, sessionSampleRate, traceHostAllowlist]   # evidence createTelemetry.web.ts / .native.ts; assertApiKey validates edge_ prefix, normalizeAllowlist validates the hosts
   exported_ports:
     store: |
       Store port (#89). Narrow get/set/remove over persisted state, declared in shared core
@@ -594,9 +599,45 @@ inconsistencies_and_surprises: >
       just clearing the carrier) so trace.id cannot span a session.id. Cost: the retired trace
       keeps one child — the initial `view` row under the old session — and no root row. Same
       condition process death already produces; the alternative broke contract 6.6 invariant 2.
-  29. #98: header injection is NOT here. `traceHostAllowlist`, the `traceparent` header and
-      `traceparent.outcome`'s seven values are #99 — so ids are stamped locally and nothing
-      crosses the wire to a third party yet.
+  29. #99: header injection now ships. `traceHostAllowlist` is constructor-only, bare hosts,
+      exact match, punycode-normalized, PORTS IGNORED — a deliberate mismatch with http.host,
+      which keeps the port. Do not join them. Empty by default: v4 is dark on upgrade.
+      evidence src/adapters/traceHeader.ts; traceManager.ts requestTrace()/decide();
+      xhrIntercept.ts setRequestHeader patch; web/interceptFetchWeb.web.ts.
+  30. #99: a MALFORMED allowlist entry throws in __DEV__ and is dropped-and-warned in production
+      — a stated divergence from Android's unconditional require(). The throw is raised in the
+      SYNCHRONOUS createTelemetry() factory, not in core: the core Telemetry is built inside
+      instancePromise, which deliberately never rethrows, so a throw there would be a silently
+      rejected promise. A direct `new TelemetryWeb()` therefore skips the throw — the same gap
+      apiKey already has (see 17).
+  31. #99: NEVER-STRIP and READ-SCOPE. The SDK reads exactly one header name (`traceparent`,
+      case-insensitive) for exactly one purpose — a presence check — and writes exactly one
+      header name, ever. No b3, no tracestate, in either direction. Ownership is the consumer's
+      WRITE-TIME presence flag (recorded in the setRequestHeader patch on XHR, read off
+      init.headers/Request on fetch), never inferred from the value's shape. The fetch path
+      passes a COPY of the headers, so the consumer's Request/Headers object is never mutated.
+  32. #99: NO retry-without-the-header and NO preflight probe, both declined on the record —
+      a rejected preflight and a dead server are the same TypeError, and retrying would
+      double-send a non-idempotent POST. A consumer's OWN retry re-enters the patch and gets a
+      fresh span.id: each attempt is its own http.request, so each attempt is its own span.
+  33. #99: an UNSAMPLED session injects no header at all — not a flags=00 id. Sampling stays
+      session-level; the injected flags byte is always 01.
+  34. #99: `injected_expired` vs `injected_unattributed` is decided by reading the carrier field
+      BEFORE liveRoot() drops an expired root — a carrier that just aged out is expired (context
+      lost), no carrier at all is unattributed (no action). That is the split contract 6.5 asks
+      the backend to keep as injected_unattributed_context_lost / _no_action.
+  35. #99 OPEN, backend-owned: contract 0.3/6.5's `injected_inbound_malformed`. The live enum
+      says INJECT over a malformed inbound header; never-strip says SKIP. RN ships the skip as
+      `skipped_consumer_set` and that rung is NOT final. Population is 0 rows either way. Its
+      price, said out loud: Android REPAIRS a malformed consumer header and the request becomes
+      traceable; here it goes out broken and is unattributed on both ends.
+  36. #99 DIVERGENCE from a literal reading of 6.5: with an EMPTY allowlist (the default) no
+      `traceparent.outcome` is emitted at all, rather than stamping `skipped_off_allowlist` on
+      every row of every consumer who never opted in. "Absent means not traced" is the contract's
+      own words and a consumer with no allowlist is not traced; the rung stays reachable the
+      moment an allowlist exists and a host is off it. Flag it if the backend wants the constant.
+  37. #99: `traceparent.outcome` is NOT on contract 3.6's Tier A list, so beforeSend can delete
+      or rewrite it (Tier C) — same status as trace.root_type, span.start_time and span.duration_ms.
 
 ci_cd:
   what_exists: >

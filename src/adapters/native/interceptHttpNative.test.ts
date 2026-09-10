@@ -13,6 +13,7 @@ function fakeTelemetry(endpoint?: string) {
             // `views` is not optional on the real core: §4.5.2 books request_count and the settle
             // hold at *send*, so a double without it hides the very wiring these tests cover.
             getEndpoint: () => endpoint,
+            isSampled: () => true,
             views: { requestStarted: vi.fn(() => vi.fn()) },
             // A real TraceManager, not a stub: §6.2 books the span at *send* too, and the
             // mint-vs-attach decision is exactly what a stub would paper over.

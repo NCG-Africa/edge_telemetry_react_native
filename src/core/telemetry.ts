@@ -247,6 +247,10 @@ type Opts = {
     // all land — that window is the reason, and it is not negotiable.
     beforeSend?: BeforeSend;
     sessionSampleRate?: number; // 0.0-1.0, sticky per session; default 1 (send everything)
+    // §6.4, #99. Bare hosts, exact match, ports ignored, **empty by default** — v4 is dark
+    // on upgrade, so nobody's CORS breaks until they opt in. Listing a host is the
+    // consumer's assertion that that host's CORS config allows the `traceparent` header.
+    traceHostAllowlist?: string[];
     // The deprecated native screen feeds — `navigation` and `screen.duration` (§4.11) — on
     // the ROUTE path. Defaults on, because shared core's v3 behaviour *is* the native one;
     // the web entry opts out, having never emitted `screen.duration` at all. It does not
@@ -403,7 +407,7 @@ export class Telemetry {
         // Before the ViewManager, not after: the launch root is minted in this constructor so
         // the initial view can parent to it. A view that minted its own root instead would
         // make a web hard load report `trace.root_type = navigation` (§6.2).
-        this.trace = new TraceManager(opts?.traceLaunchStart);
+        this.trace = new TraceManager(opts?.traceLaunchStart, opts?.traceHostAllowlist);
         // The initial view opens here, at SDK init — so no row can ever precede a view (§4.5).
         this.views = new ViewManager(this);
 
@@ -507,6 +511,15 @@ export class Telemetry {
     /** Collector endpoint, so fetch/XHR adapters can skip self-capturing the SDK's own POST. */
     public getEndpoint(): string | undefined {
         return this.endpoint;
+    }
+
+    /**
+     * Sampling stays **session-level** (§6.5): an unsampled session injects no header at
+     * all — not a `flags=00` id. Read by the interceptors, which sit outside `log()`'s own
+     * sampled-out early return and so need the decision directly.
+     */
+    isSampled(): boolean {
+        return this.sampled;
     }
 
     // ---------- Session lifecycle (#29) ----------

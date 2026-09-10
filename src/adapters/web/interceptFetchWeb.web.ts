@@ -2,6 +2,7 @@
 import { Telemetry } from "../../core/telemetry";
 import { buildHttpAttributes, contentLengthSize, isCollectorUrl } from "../httpAttributes";
 import { patchXHR } from "../xhrIntercept";
+import { TRACEPARENT, readHeader, withHeader } from "../traceHeader";
 
 /**
  * NetworkTrackerWeb intercepts HTTP made through `window.fetch` and `XMLHttpRequest`.
@@ -43,14 +44,34 @@ export class NetworkTrackerWeb {
                 // own POST is excluded from settle for the same reason it is excluded from
                 // `http.request`: the SDK must not hold a view open with its own traffic.
                 const settled = isCollector ? undefined : telemetry.views.requestStarted(start);
-                // §6.3's Tier 1, captured at send for the same reason: the root live *now*
-                // is the parent, and a root minted here is this request's own (§6.2).
-                const span = isCollector ? undefined : telemetry.trace.requestSpan(start);
+                // §6.3's Tier 1 plus §6.5's outcome ladder, captured at send for the same
+                // reason: the root live *now* is the parent, and a root minted here is this
+                // request's own (§6.2). `init.headers` *replaces* a Request's own headers
+                // per the fetch spec, so the presence check mirrors that precedence rather
+                // than merging the two — read-scope means one name, one presence check.
+                const reqHeaders = init?.headers !== undefined
+                    ? init.headers
+                    : (input as any)?.headers;
+                const trace = isCollector ? undefined : telemetry.trace.requestTrace(start, {
+                    url,
+                    sampled: telemetry.isSampled(),
+                    consumerTraceparent: readHeader(reqHeaders, TRACEPARENT),
+                    // fetch-only, and the sharper statement than "web-only": on a `no-cors`
+                    // request the headers guard drops the consumer's traceparent too.
+                    noCors: (init?.mode ?? (input as any)?.mode) === "no-cors",
+                });
+                const span = trace?.finish;
+                // A **copy**. The consumer's Request/Headers object is never touched, so
+                // never-strip holds by construction and their retry of the same Request
+                // carries no SDK header — each attempt gets its own fresh `span.id`.
+                const fetchInit = trace?.header
+                    ? { ...init, headers: withHeader(reqHeaders, TRACEPARENT, trace.header) }
+                    : init;
                 let response: Response | null = null;
                 let error: any = null;
 
                 try {
-                    response = await originalFetch(input, init);
+                    response = await originalFetch(input, fetchInit as RequestInit);
                     return response;
                 } catch (err) {
                     error = err;

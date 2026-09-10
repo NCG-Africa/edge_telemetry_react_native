@@ -56,7 +56,7 @@ describe("#98 minting when no root is live", () => {
     it("a request with no live root mints a request root and reports no duration", () => {
         const t = new TraceManager();
         t.clear();
-        const finish = t.requestSpan(Date.now());
+        const finish = t.requestTrace(Date.now(), { url: "https://api.example.com/x", sampled: true }).finish;
         const r = finish(Date.now() + 250);
         expect(r["trace.root_type"]).toBe("request");
         expect(r["rum.action.id"]).toBe(r["span.id"]);
@@ -65,7 +65,8 @@ describe("#98 minting when no root is live", () => {
 
     it("a request under a live root is a child and does carry span.duration_ms", () => {
         const t = new TraceManager();
-        const r = t.requestSpan(Date.now())(Date.now() + 250);
+        const r = t.requestTrace(Date.now(), { url: "https://api.example.com/x", sampled: true })
+            .finish(Date.now() + 250);
         expect(r["trace.root_type"]).toBe("launch");
         expect(r["parent.span.id"]).toBe(t.launchRootAttributes()["span.id"]);
         expect(r["span.duration_ms"]).toBe(250);

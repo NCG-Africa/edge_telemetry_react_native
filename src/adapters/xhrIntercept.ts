@@ -1,6 +1,7 @@
 import { Telemetry } from "../core/telemetry";
 import { buildHttpAttributes, contentLengthSize, isCollectorUrl } from "./httpAttributes";
 import type { TraceAttributes } from "./traceManager";
+import { TRACEPARENT } from "./traceHeader";
 
 // Double-patching is the exact defect #95 exists to kill: two patches mean two `loadend`
 // listeners and two `http.request` events per call. `trackNetworkRequests()` is public and the
@@ -25,6 +26,13 @@ interface PendingRequest {
      * the same pair of timestamps `http.duration_ms` uses.
      */
     span?: (endedAt: number) => TraceAttributes;
+    /**
+     * §6.4's ownership flag: the consumer's own `traceparent`, recorded **at their write
+     * time** in the `setRequestHeader` patch. Never inferred from the value's shape — an
+     * SDK-minted and a consumer-minted header are byte-identical by construction — and reset
+     * by `open()`, which per spec clears the author request headers anyway.
+     */
+    consumerTraceparent?: string;
 }
 
 interface PatchedXhr extends XMLHttpRequest {
@@ -47,6 +55,9 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
 
     const origOpen = xhr.prototype.open;
     const origSend = xhr.prototype.send;
+    // May legitimately be absent on a minimal XHR polyfill; when it is, there is no way to
+    // observe a consumer header and no way to write ours, so tracing simply stays dark.
+    const origSetRequestHeader = xhr.prototype.setRequestHeader;
 
     // `arguments` is forwarded verbatim on both hooks: the SDK reports on the request, it never
     // reshapes the one it passes on. That is the only reason for the two casts in this file.
@@ -59,6 +70,18 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
         return origOpen.apply(this, arguments as any);
     };
 
+    if (origSetRequestHeader) {
+        xhr.prototype.setRequestHeader = function (this: PatchedXhr, name: string, value: string) {
+            // Read-scope (§6.4): **exactly one header name, for exactly one purpose** — a
+            // presence check. Names are compared case-insensitively; no other header is
+            // inspected, logged or forwarded, and this one is passed straight through.
+            if (this._telemetryRequest && String(name).toLowerCase() === TRACEPARENT) {
+                this._telemetryRequest.consumerTraceparent = value;
+            }
+            return origSetRequestHeader.apply(this, arguments as any);
+        };
+    }
+
     xhr.prototype.send = function (this: PatchedXhr, body?: Document | XMLHttpRequestBodyInit | null) {
         const req = this._telemetryRequest;
         if (!req) return origSend.apply(this, arguments as any);  // send() without open() — let it throw its own way
@@ -70,9 +93,22 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
         if (!isCollectorUrl(req.url, telemetry.getEndpoint?.())) {
             req.settled = telemetry.views.requestStarted(req.start);
             // Mints a `request` root when nothing is live, and extends the live one otherwise
-            // (§6.2). Same gate as settle: the SDK's own POST neither holds a view open nor
-            // starts an action.
-            req.span = telemetry.trace.requestSpan(req.start);
+            // (§6.2), and resolves §6.5's outcome ladder. Same gate as settle: the SDK's own
+            // POST neither holds a view open, starts an action, nor carries an outcome.
+            // No `noCors` — `mode` is a fetch concept XHR cannot express, so `skipped_no_cors`
+            // needs no platform branch to stay fetch-only.
+            const trace = telemetry.trace.requestTrace(req.start, {
+                url: req.url,
+                sampled: telemetry.isSampled(),
+                consumerTraceparent: req.consumerTraceparent,
+            });
+            req.span = trace.finish;
+            // Written through the *original*, so our own write can never be misread as the
+            // consumer's on a later inspection — and only ever when their flag is unset, so
+            // there is no SDK-owned header for never-strip to have to protect.
+            if (trace.header && origSetRequestHeader) {
+                origSetRequestHeader.call(this, TRACEPARENT, trace.header);
+            }
         }
 
         // One listener per *instance*, not per send: an XHR may be legally reused, and adding
@@ -117,6 +153,7 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
     return () => {
         xhr.prototype.open = origOpen;
         xhr.prototype.send = origSend;
+        if (origSetRequestHeader) xhr.prototype.setRequestHeader = origSetRequestHeader;
         delete xhr[PATCHED];
     };
 }

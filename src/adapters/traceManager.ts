@@ -20,6 +20,13 @@
 // reason.
 
 import { randomHex } from "../core/utils/uuid";
+import {
+    allowsHost,
+    formatTraceparent,
+    normalizeAllowlist,
+    parseTraceparent,
+    type TraceOutcome,
+} from "./traceHeader";
 
 /** §6.1's four root types. `interaction` has no producer until the interaction tickets. */
 export type TraceRootType = "launch" | "interaction" | "navigation" | "request";
@@ -47,6 +54,26 @@ type Root = {
 /** A flat bag of wire keys. An absent key means the SDK had nothing (§6.1). */
 export type TraceAttributes = Record<string, string | number>;
 
+/** What the interceptor observed at `send()`, and nothing it had to interpret. */
+export type RequestTraceCtx = {
+    url: string;
+    /** An unsampled session injects no header at all (§6.5). Sampling stays session-level. */
+    sampled: boolean;
+    /**
+     * The consumer's own `traceparent`, captured by the interceptor **at their write time**.
+     * Absent (not empty-string) means they set none — never sniffed back off the request.
+     */
+    consumerTraceparent?: string | null;
+    /** fetch-only. `mode` is a fetch concept XHR cannot express, so native never sets it. */
+    noCors?: boolean;
+};
+
+export type RequestTrace = {
+    /** The one header value to write, or nothing at all. Never a `flags=00` placeholder. */
+    header?: string;
+    finish: (endedAt: number) => TraceAttributes;
+};
+
 /** 32 lowercase hex, W3C (§6.1). */
 const mintTraceId = () => randomHex(32);
 /** 16 lowercase hex, W3C (§6.1). */
@@ -54,6 +81,8 @@ const mintSpanId = () => randomHex(16);
 
 export class TraceManager {
     private root?: Root;
+    /** Bare hosts, punycode-normalized, ports ignored. Empty by default: v4 is dark on upgrade. */
+    private readonly allowlist: ReadonlySet<string>;
     /** Kept whether or not it is still the carrier: `app.start` reports it at any age. */
     private launch: Root;
 
@@ -64,7 +93,10 @@ export class TraceManager {
      * JS bundle loads is invisible and JS cannot see process fork. Do not compare the two
      * platforms' launch envelopes as if they measured the same interval.
      */
-    constructor(launchStartMs?: number) {
+    constructor(launchStartMs?: number, traceHostAllowlist?: string[]) {
+        // Constructor-only (§6.4). Normalized once, here, so a malformed entry throws at the
+        // one moment a developer is looking — not on the first request to a typo'd host.
+        this.allowlist = normalizeAllowlist(traceHostAllowlist);
         const now = Date.now();
         // Minted here and not at `app.start`'s emit, because the initial view opens in the
         // same `Telemetry` constructor and has to parent to it: a view minting its own root
@@ -93,20 +125,73 @@ export class TraceManager {
 
     /**
      * Tier 1 for an `http.request`, captured at **send** — the root live then is the parent,
-     * and `span.start_time` is the send. Returns the finisher, so duration is stamped from
-     * the same pair of timestamps the row's `http.duration_ms` uses.
+     * and `span.start_time` is the send — plus §6.5's outcome ladder and the one header the
+     * SDK ever writes. Returns the finisher, so duration is stamped from the same pair of
+     * timestamps the row's `http.duration_ms` uses.
      *
      * ponytail: a `send()` that throws synchronously never calls the finisher, so a root it
      * minted lives on for up to 2 s with no row describing it. Rare enough to leave; give
      * the finisher a `discard()` sibling if the orphan ratio ever shows up.
      */
-    requestSpan(startedAt: number): (endedAt: number) => TraceAttributes {
-        const { root, isRoot } = this.attach("request", startedAt);
-        const keys = spanKeys(root, isRoot, startedAt);
+    requestTrace(startedAt: number, ctx: RequestTraceCtx): RequestTrace {
+        const decision = this.decide(ctx);
+
+        // `adopted` is the consumer's trace, not ours: §6.1 says `span.id` mirrors the
+        // foreign parent-id and `parent.span.id` is omitted, so the row is root-shaped inside
+        // *their* trace. The carrier is deliberately left untouched — extending a local root
+        // from a request that reports foreign ids would attribute their action to ours.
+        if (decision === "adopted") {
+            const foreign = parseTraceparent(ctx.consumerTraceparent)!;
+            const keys: TraceAttributes = {
+                "trace.id": foreign.traceId,
+                "span.id": foreign.spanId,
+                "rum.action.id": foreign.spanId,
+                "span.start_time": new Date(startedAt).toISOString(),
+                "traceparent.outcome": "adopted",
+            };
+            return { finish: () => keys };
+        }
+
+        // **Every skip still stamps local ids with no wire header** (§6.5) — that is what
+        // makes "missing DB join ⇒ header stripped in transit" computable, so attribution
+        // runs before the ladder is resolved and regardless of what it says.
+        const { root, isRoot, attribution } = this.attach("request", startedAt);
+        const outcome: TraceOutcome | undefined =
+            decision === "inject" ? attribution : decision;
+        const keys: TraceAttributes = {
+            ...spanKeys(root, isRoot, startedAt),
+            ...(outcome ? { "traceparent.outcome": outcome } : {}),
+        };
         // `span.duration_ms` is Tier 1 **children only** (§6.1) — a root's is derived.
-        return isRoot
+        const finish = isRoot
             ? () => keys
             : (endedAt: number) => ({ ...keys, "span.duration_ms": Math.max(0, endedAt - startedAt) });
+
+        return decision === "inject"
+            ? { finish, header: formatTraceparent(root.traceId, String(keys["span.id"])) }
+            : { finish };
+    }
+
+    /**
+     * §6.5's ladder above the `injected_*` split, in table order — the precedence *is* the
+     * order of these returns. `undefined` means the attribute is omitted entirely: absent
+     * means not traced, which is the honest report for a consumer who never opted in and for
+     * a sampled-out session (which injects no header at all, not a `flags=00` id).
+     */
+    private decide(ctx: RequestTraceCtx): TraceOutcome | "inject" | undefined {
+        if (this.allowlist.size === 0 || !ctx.sampled) return undefined;
+        if (!allowsHost(this.allowlist, ctx.url)) return "skipped_off_allowlist";
+        // Outranks `skipped_consumer_set` because a `no-cors` request's headers guard drops
+        // the *consumer's* traceparent too — mirroring its ids would manufacture a false
+        // correlation against a header no server ever saw.
+        if (ctx.noCors) return "skipped_no_cors";
+        // Never-strip: ownership is the consumer's **write-time presence flag**, recorded by
+        // the interceptor when they set it — never inferred from the value's shape, because
+        // an SDK-minted and a consumer-minted traceparent are byte-identical by construction.
+        if (ctx.consumerTraceparent != null) {
+            return parseTraceparent(ctx.consumerTraceparent) ? "adopted" : "skipped_consumer_set";
+        }
+        return "inject";
     }
 
     /**
@@ -154,14 +239,30 @@ export class TraceManager {
         this.launch = this.mint("launch", Date.now(), this.launch.spanStartMs);
     }
 
-    /** Join the live root, or mint one of `mintAs`. A span's *start* extends the root. */
-    private attach(mintAs: TraceRootType, now: number): { root: Root; isRoot: boolean } {
+    /**
+     * Join the live root, or mint one of `mintAs`. A span's *start* extends the root.
+     *
+     * `attribution` is read **before** `liveRoot()` drops an expired carrier, which is the
+     * only place the two unattributed causes are still distinguishable: a carrier that just
+     * aged out is `injected_expired` (context lost), no carrier at all is
+     * `injected_unattributed` (no action) — the split §6.5 asks the backend to keep.
+     */
+    private attach(mintAs: TraceRootType, now: number): {
+        root: Root;
+        isRoot: boolean;
+        attribution: "injected_attributed" | "injected_expired" | "injected_unattributed";
+    } {
+        const hadCarrier = this.root !== undefined;
         const live = this.liveRoot(now);
         if (live) {
             live.lastTouch = now;
-            return { root: live, isRoot: false };
+            return { root: live, isRoot: false, attribution: "injected_attributed" };
         }
-        return { root: this.mint(mintAs, now, now), isRoot: true };
+        return {
+            root: this.mint(mintAs, now, now),
+            isRoot: true,
+            attribution: hadCarrier ? "injected_expired" : "injected_unattributed",
+        };
     }
 
     private mint(rootType: TraceRootType, now: number, spanStartMs: number): Root {
