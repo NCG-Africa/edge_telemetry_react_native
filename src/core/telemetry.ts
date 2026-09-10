@@ -104,10 +104,13 @@ const USER_ID_MAX = 255;
 // (slice: native metrics) isn't remapped.
 const ALLOWED_NAMES = new Set<string>([
     "session.started", "session.finalized", "app_lifecycle", "page_load", "navigation",
-    "screen.duration", "http.request", "user.interaction", "network_change",
+    "screen.duration", "http.request", "network_change",
     "user.profile.update", "custom_event", "app.crash", "view",
     // ⚠ `app.error` needs backend allowlist sign-off before it ships (#100, §4.7).
     "app.error",
+    // §4.6/#102 — replaces `user.interaction`, which is off the list as of v4. The
+    // `rum_ui_interactions` columns are already built; the name still needs sign-off.
+    "ui.interaction",
     // ⚠ `app.start` needs backend allowlist sign-off before it ships (#98, §4.3/§6.2) — an
     // unlisted eventName is dropped on ingest. It is listed here, so it is being emitted.
     "app.start",
@@ -125,10 +128,24 @@ const ALLOWED_NAMES = new Set<string>([
  *
  * ⚠ "% of errors attributed to an action" is bounded well below 100% by design: a consumer
  * calling `captureError()` from a background retry has no live root and gets no trace keys at
- * all. `ui.interaction` joins Tier 1 with #102/#103, which is also what gives
- * `user.interaction` a root to mint — until then it is trace-free.
+ * all. `ui.interaction` is Tier 1: its keys are captured at the click's
+ * mint and handed in as `data`, like the other three.
  */
 const TIER_2_NAMES = new Set<string>(["app.crash", "app.error", "custom_event"]);
+
+/**
+ * §4.6's mint/emit split, for the one event that has one. A `ui.interaction` is emitted
+ * after its dead-click window, so its wire `timestamp` and its `view.id` / `view.name` /
+ * `session.id` are snapshotted at the click and replayed here — otherwise a tap that
+ * navigates is booked against the view it opened.
+ */
+export type LogSnapshot = {
+    /** Epoch ms of the click. Becomes the row's `timestamp`. */
+    at: number;
+    viewId: string;
+    viewName: string;
+    sessionId: string;
+};
 
 // Events carry `eventName`; metrics carry `metricName` + numeric `value` (v3 §"Event vs Metric").
 // Kept as one loose shape (not a strict union) so callers can read `.eventName` without narrowing;
@@ -320,8 +337,12 @@ export class Telemetry {
     // mints and the tier key builders. Public for the same reason `views` is — the
     // interceptors, the lifecycle adapter and ViewManager all read it, synchronously.
     public readonly trace: TraceManager;
+    // The web click tracker, parked here so `trackInteractions()` is idempotent: a second
+    // call must reuse this tracker rather than add a second capture-phase listener (#102).
+    // Untyped and unset on native, which has no producer until #103.
+    public webInteractions?: { start(): void };
     private readonly deprecatedScreenFeeds: boolean;
-    // last-known screen; best-effort context for user.interaction taps (#33)
+    // last-known screen; best-effort context for the deprecated screen feeds (#33)
     public currentScreen?: string;
 
     private networkInfoHandler: NetworkInfoHandler;
@@ -575,6 +596,20 @@ export class Telemetry {
 
     public getSessionId(): string {
         return this.sessionId;
+    }
+
+    /**
+     * Freeze the identity a deferred row must report (§4.6). Read **synchronously at the
+     * moment the thing happened**, so a `log()` that lands after a route change or a session
+     * rotation still books the click where it occurred.
+     */
+    public snapshot(at: number = Date.now()): LogSnapshot {
+        return {
+            at,
+            viewId: this.views.id,
+            viewName: this.views.name,
+            sessionId: this.sessionId,
+        };
     }
 
     /** Collector endpoint, so fetch/XHR adapters can skip self-capturing the SDK's own POST. */
@@ -964,7 +999,7 @@ export class Telemetry {
      * Log a named event. Keeps existing signature compatibility.
      * Automatically attaches userId and sessionId to every queued event.
      */
-    async log(name: string, data?: Record<string, any>) {
+    async log(name: string, data?: Record<string, any>, snapshot?: LogSnapshot) {
         this.eventCount++;
         let activity = false;
         let crashed = false;
@@ -1022,12 +1057,24 @@ export class Telemetry {
             // requests *started* in the view, and this row is emitted at completion, which
             // can be a route change later. The interceptors book it at send time instead.
             if (isErrorName(eventName)) this.views.countError();
-            else if (eventName === 'user.interaction') this.views.countAction();
+            else if (eventName === 'ui.interaction') this.views.countAction();
+
+            // §4.6's mint/emit split. `ui.interaction` is emitted up to a dead-click window
+            // *after* the click happened, so the row reports where and when the click was —
+            // not where the emit landed. Stamping emit time would attribute a navigating tap
+            // to **the view it opened**, silently inverting every "which screen frustrates
+            // users" query. Applied after `collectContext`, with the identity keys, so it is
+            // the SDK's snapshot and never a caller's `data`.
+            if (snapshot) {
+                attributes['view.id'] = snapshot.viewId;
+                attributes['view.name'] = snapshot.viewName;
+                attributes['session.id'] = snapshot.sessionId;
+            }
 
             this.enqueue({
                 type: 'event',
                 eventName,
-                timestamp: new Date().toISOString(),
+                timestamp: new Date(snapshot?.at ?? Date.now()).toISOString(),
                 attributes,
             });
 
@@ -1375,7 +1422,7 @@ export class Telemetry {
      * that, which is why a *deprecated* event starts firing where it never has.
      */
     async recordRouteChange(from: string, to: string) {
-        this.currentScreen = to;   // best-effort screen for subsequent taps (#33)
+        this.currentScreen = to;   // best-effort screen for the deprecated feeds (#33)
         if (this.deprecatedScreenFeeds) {
             // Both rows describe the transition, so both are emitted — and awaited — before
             // the view boundary: they belong to the view being left.

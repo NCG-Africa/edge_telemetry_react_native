@@ -67,6 +67,8 @@ export class ViewManager {
     private view: View;
     /** Origin only, and only where there is one — omitted on native (§4.5). */
     private readonly host?: string;
+    /** §4.6's aliveness subscribers. Empty on native and on a web build with no DOM. */
+    private readonly activityListeners = new Set<() => void>();
 
     constructor(private telemetry: Emitter) {
         // A capability check, not a platform branch: RN has no `location`, and a
@@ -132,7 +134,28 @@ export class ViewManager {
      * never reaches here; the interceptors filter it before calling.
      */
     requestStarted(now?: number): (endedAt?: number) => void {
+        this.notifyActivity();
         return this.view.settle.requestStarted(now);
+    }
+
+    /**
+     * §4.6's dead-click gate, in the two places this manager already sees: a request started
+     * and a view minted (a route change, a resume, a session rotation). The web tracker adds
+     * DOM mutation on top, which it can observe on its own; these two it cannot.
+     *
+     * Deliberately fires for the background and rotation boundaries too. Those are not
+     * navigations the click caused, so counting them as aliveness **under-reports** dead
+     * clicks — which is the direction §4.6 requires: `ui.dead` must never falsely accuse.
+     *
+     * @returns an unsubscribe, so a tracker that is torn down does not keep the manager alive.
+     */
+    onActivity(fn: () => void): () => void {
+        this.activityListeners.add(fn);
+        return () => { this.activityListeners.delete(fn); };
+    }
+
+    private notifyActivity(): void {
+        for (const fn of this.activityListeners) fn();
     }
 
     /**
@@ -186,6 +209,7 @@ export class ViewManager {
      * rotation do not move the user off the screen they were on.
      */
     beginView(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): void {
+        this.notifyActivity();
         const prev = this.view;
         const now = Date.now();
         this.view = {

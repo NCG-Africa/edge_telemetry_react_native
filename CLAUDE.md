@@ -1,11 +1,25 @@
 # CLAUDE.md — @nathanclaire/edge-telemetry-sdk (React Native) Development Guide
 
-Source of truth for AI-assisted development on this repo. Read it before writing code.
+**The** source of truth for development on this repo. Read it before writing code.
 
-`sdk-audit.yaml` (repo root) is the machine-readable companion: every emitted event, every
-common attribute, transport behaviour and known gap, each with a `file:line` citation. When
-this doc and the audit disagree, the audit was generated from the code — trust it and fix
-this doc.
+There is no companion file. `sdk-audit.yaml` was retired: a second hand-maintained
+description of the same behaviour drifts from the first, and two documents disagreeing is
+worse than one being incomplete. Its known gaps and its backend sign-off asks were already
+duplicated in this file and stayed. What went with it was a third copy of the per-event
+field tables — type, null discipline, `always_present` — which `docs/backend-wire-contract.md`
+pins and this file explains; and a `done | partial | na` feature checklist, which said nothing
+Known gaps did not already say more precisely.
+
+Two documents outrank this one, and only within their scope:
+
+| Document | Authority |
+|---|---|
+| `docs/backend-wire-contract.md` | **every wire key** — name, type, null discipline, cardinality, enum domain. It is a cross-SDK contract; where it and this doc disagree, it wins. |
+| `docs/wire-inventory.md` | a **historical record**, pinned to v3.0.1 at `9b7bf83`. Read it for what shipped then, never for what ships now. |
+
+Anything else — architecture, conventions, why a decision went the way it did, what is still
+broken — lives here. When the code and this doc disagree, the code won and this doc is the
+bug: fix it in the same commit.
 
 ---
 
@@ -58,7 +72,7 @@ src/
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
 │   │                        idempotent, and one listener per instance — see below
 │   ├── frameAggregate.ts  ← rAF deltas → one frame_render_time metric per 10s window
-│   ├── interaction.ts     ← user.interaction tap emitter
+│   ├── uiInteraction.ts   ← §4.6 role gate, the five-rung name ladder, the rage window
 │   ├── networkChange.ts   ← edge-triggered network_change emitter
 │   ├── navigationTracker.ts / screenTiming.ts
 │   ├── webSender.ts / nativeSender.ts
@@ -131,12 +145,11 @@ captureError(error: unknown, context?)   // emits app.error — never app.crash
 `getCurrentRoute()` is a navigation-tree API, not a native one, so one wiring gives web and native
 the same `view.name`.
 
-Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `screenEnd(name)`,
-`interactionProps()`.
+Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `screenEnd(name)`.
 
-`trackErrors`, `trackFrameDrops`, `trackNetworkRequests`, `trackMemoryUsage` and
-`autoTrackNavigation` are auto-started in the constructor — consumers don't call them.
-`interactionProps()` is the exception: the consumer must spread it onto their root `<View>`.
+`trackErrors`, `trackFrameDrops`, `trackNetworkRequests`, `trackMemoryUsage`,
+`autoTrackNavigation` and (web) `trackInteractions` are auto-started in the constructor —
+consumers don't call them.
 
 ---
 
@@ -380,6 +393,89 @@ a promise for exactly this reason: on native, backgrounding forces a `flush()` b
 only lives in memory, and the `view` row the boundary emits is the row that flush exists to rescue.
 Firing the flush on the next line sends the batch before the row is enqueued.
 
+### `ui.interaction`
+
+`adapters/uiInteraction.ts` (the shared rules) + `adapters/web/interactionWeb.web.ts` (the DOM
+wiring), §4.6, #102. Replaces `user.interaction`, which is **off the allowlist**; `ui.screen` is
+never emitted. The `rum_ui_interactions` columns already exist backend-side.
+
+**Every click emits, actionable or not.** Suppressing the role-less ones would destroy dead-click
+detection at the source, and it is what makes `unnamed` readable *against* `surface`.
+
+**The name ladder is five rungs, gated on element role.** Rungs 2–5 read the nearest ancestor in
+`composedPath()` that is actionable **by role** — `<button>`, `<a href>`,
+`<input type=submit|button|reset>`, `<summary>`, `<option>`, or
+`role=button|link|tab|checkbox|radio|switch|menuitem|option`. Deriving only from role-bearing
+elements is what keeps a clickable div full of customer data from being auto-named; on RN-Web
+`createDOMProps` maps the `role` prop onto a semantic element, so a `Pressable` lands there for
+free.
+
+| # | Source | `ui.name_source` |
+|---|---|---|
+| 1 | `data-edge-action-name` — **works on role-less elements, always wins, unnormalized and uncapped** | `edge_action` |
+| 2 | `data-testid` — read, never written | `test_id` |
+| 3 | `aria-label` | `aria_label` |
+| 4 | `title` | `title` |
+| 5 | `textContent` | `text` |
+| — | nothing survived | `none` |
+
+Rungs 2–5 are normalized — trim, lowercase, non-alphanumeric → `_`, collapse runs, **cap 64** —
+and edge underscores are dropped, so `"Add to cart!"` is `add_to_cart`. Rung 1 passes through
+byte-for-byte: it is explicit author intent and a consumer must be able to predict the value they
+just set.
+
+**Three unnamed values, not two.**
+
+| Click lands on | `ui.target` |
+|---|---|
+| role-bearing, a rung matched | the derived name |
+| role-bearing, nothing survived | `unnamed` — an instrumentation gap worth closing |
+| role-less, `cursor: pointer` | `unnamed` — same gap |
+| role-less, default cursor | `surface` — whitespace, nothing to fix |
+
+Collapsing the last two gives `40% unnamed` with no way to tell missing instrumentation from
+people tapping padding.
+
+⚠ **The role gate is a proxy, not a privacy guarantee.** `<button>Delete John Kamau</button>`
+still ships that text. `beforeSend` is the answer and there is deliberately **no second
+per-element masking mechanism** — no mask attribute, no placeholder mode.
+
+⚠ **`ui.tag` is the *resolved* element's tag**, not the click target's — a click on the `<span>`
+inside a `<button>` reports `button`.
+
+**The mint/emit split is the whole reason `log()` takes a third argument.** An actionable click is
+emitted a full dead-click window *after* it happened, so its wire `timestamp` and its `view.id` /
+`view.name` / `session.id` are snapshotted at the click and replayed by `Telemetry.snapshot()`.
+Stamping emit time would attribute a navigating tap to **the view it opened**, silently inverting
+every "which screen frustrates users" query.
+
+**`ui.rage`** is ≥3 clicks in a 1000 ms sliding window **on the same live element node**, flagged
+**once per burst** on the crossing click — so *rage bursts = count of flagged rows*. ⚠ Identity is
+the node reference, **never `ui.target`**: three clicks on three different `unnamed` divs are
+indistinguishable on the wire, which is precisely why this runs client-side. **Omitted when
+false**, deliberately asymmetric with `ui.dead`.
+
+**`ui.dead`** is no DOM mutation (attribute-only counts — a CSS class flip is alive), no request
+started and no navigation within **1000 ms**. ⚠ **The same constant as §4.5.2's quiet window** —
+`QUIET_WINDOW_MS`, imported from `loadingTime.ts`, never a second literal `1000`. Aliveness reaches
+the tracker through `ViewManager.onActivity()`, the one seam requests and view mints already pass;
+DOM mutation it observes itself, and only while a window is open. **Omitted when not evaluated** —
+a non-actionable click, text entry, a `download`/`_blank` anchor, or a runtime with no
+`MutationObserver` — and that absence is load-bearing: the signal **under-reports by construction
+and never falsely accuses**, since routine React re-rendering makes dead clicks read *alive*.
+
+**Error click spends no key.** It is the join — a `ui.interaction` whose `rum.action.id` appears on
+an `app.crash` or `app.error` row **where `trace.root_type = 'interaction'`**. ⚠ That filter is not
+optional; without it the signal absorbs launch and route-change errors. No fourth causality window
+was invented.
+
+**Native has no producer.** `interactionProps()` is deleted, not renamed: it sat on the consumer's
+**root** `<View>`, where `PressEvent.nativeEvent.target` is a node tag number with no public API
+resolving it, so it could not tell a tap on a button from a tap on padding and every row it emitted
+was un-nameable. §4.6 makes native **explicit-only** — #103 restores taps as `trackTap(name)`, with
+a two-value `ui.name_source`, no `surface`, and **no `ui.dead` at all** (no DOM, hence no mutation
+signal — ⚠ any dead-click *rate* must filter to the web build).
+
 ### Trace and span
 
 `adapters/traceManager.ts`, shared by both builds (§6, #98/#99). It owns the live-root
@@ -405,15 +501,16 @@ process, which is the hazard that actually exists here. `ViewManager` is owned t
 | `app.start` | once per process, in the `Telemetry` constructor | `launch` |
 | `view` | at view **entry**, when no root is live | `navigation` |
 | `http.request` | at **send**, when no root is live | `request` |
+| `ui.interaction` | at **every** click — the one unconditional mint | `interaction` |
 
-`interaction` has **no producer** — §6.2's tap root arrives with #102/#103, so `user.interaction`
-is trace-free today. The launch root is minted **before** `ViewManager`, so the initial view is
+⚠ **A click mints unconditionally**, replacing whatever root was live rather than joining it: a
+tap is a new user action by definition, which is what makes the request a tap fires a child of the
+tap and not of the route change before it. Native taps mint nothing until #103. The launch root is minted **before** `ViewManager`, so the initial view is
 its child and **a web hard load is `launch`, never `navigation`**. Web's launch span starts at
 `performance.timeOrigin`, native's at SDK `initialize()`; neither is a fork time and the two are
 **not the same interval** — do not compare native and web launch envelopes.
 
-**Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request` (`ui.interaction` with
-#102/#103). Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
+**Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request`, `ui.interaction`. Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
 `app.crash`, `app.error` and `custom_event`. ⚠ `custom_event` is the one place RN goes
 past Android, flagged as an invention. **Tier 3 is trace-free**: *all metrics*, plus
 `app_lifecycle`, `network_change`, the session events, `user.profile.update` and the deprecated
@@ -800,7 +897,7 @@ the original name as `event.name`. Currently emitted:
 | `http.request` | XHR only on native (fetch *is* XHR there); fetch + XHR on web |
 | `app.crash` | JS error or unhandled rejection — **unhandled only**, no public path (§4.7) |
 | `app.error` | `captureError()`, an opted-in `console.error`, and a re-routed public `log("app.crash")` |
-| `user.interaction` | native taps via `interactionProps()` |
+| `ui.interaction` | every web click — actionable or not (§4.6). No native producer until #103 |
 | `view` | each of the four view exit boundaries (§4.5) |
 | `app.start` | once per process at init — the `launch` root, and §4.3's launch compensator |
 | `network_change` | connectivity type transition |
@@ -858,8 +955,9 @@ ingest.
 
 ## Known gaps
 
-Real, current, from `sdk-audit.yaml`. Flag before "fixing" — several need backend
-coordination.
+Real and current, maintained by hand as behaviour changes. Flag before "fixing" — several
+need backend coordination, and several are deliberate trade-offs with the reasoning recorded
+above rather than defects.
 
 - `memory_usage` is **single-shot**: `trackMemoryUsage()` calls `recordMemoryUsage()` once;
   the periodic `start()` in the memory adapters is never invoked.
@@ -884,6 +982,28 @@ coordination.
   dev-only, once per process, and from the stack-capture chokepoint so #23's "construct → log →
   flush is silent by default" still holds. It is the second of the two carve-outs the
   Conventions bullet names, not an exception to it.
+- **`ui.interaction` needs backend allowlist sign-off before it ships** — it is already in
+  `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
+  `user.interaction` came off the list in the same change.
+- **Native emits no interaction rows at all** until #103's `trackTap(name)`. `interactionProps()`
+  and the root-responder auto-tap are gone, so `view.action_count` is 0 on every native view and
+  `trace.root_type = interaction` has no native producer.
+- **`ui.dead`'s navigation signal fires on the background and session-rotation boundaries too** —
+  neither is a navigation the click caused, so those clicks report *alive*. Under-reporting is the
+  direction §4.6 requires; the alternative is a false accusation.
+- **`ui.dead` is omitted, not false, where there is no `MutationObserver`.** The row still ships
+  with every other key — absence means "not evaluated", exactly as it does for the exempt cases.
+- **§4.6's key table caps `ui.target` at 64 while its prose exempts rung 1.** The issue's
+  acceptance criteria say `data-edge-action-name` ships "unnormalized and uncapped", so that is
+  what ships. Flag it if the backend column is a hard 64.
+- **A hard navigation drains open dead-click windows, but `log()` is still async.** `pagehide`
+  and `visibilitychange: hidden` emit every pending row with `ui.dead` **omitted** — the window
+  never closed, so it was not evaluated. The enqueue itself is a promise, so a document that
+  unloads inside that microtask still loses the row; the same residue the crash path documents,
+  and awaiting harder does not change it.
+- **`ui.x` / `ui.y` are `0` on a synthetic or keyboard-driven click**, where `clientX`/`clientY`
+  are absent. §4.6 types both as never-null, so there is no honest way to omit them; a keyboard
+  activation is genuinely at no viewport coordinate.
 - **`app.error` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
 - Crash capture is still JS-level, so **`error.fatal: true` means "`ErrorUtils` called it fatal"**,
@@ -959,8 +1079,8 @@ coordination.
   the same gap `apiKey` already has — both are only enforced in the factory.
 - `traceparent.outcome` is **not** on §3.6's Tier A list, so `beforeSend` can delete or rewrite
   it (Tier C) — same status as `trace.root_type`, `span.start_time` and `span.duration_ms`.
-- `trace.root_type = interaction` has **no producer**: §6.2's tap root arrives with #102/#103.
-  Until then `user.interaction` is trace-free and a tap starts no action.
+- `trace.root_type = interaction` has **no native producer**: web clicks mint one as of #102,
+  native taps start no action until #103's `trackTap(name)`.
 - An XHR `send()` that throws **synchronously** never reaches `loadend`, so a `request` root it
   minted lives out its 2 s window with no row describing it. Rare, and knowingly left.
 - **`view.id` is resolved at log time, not frozen at span start** (§3.1). Point events are
@@ -987,4 +1107,5 @@ coordination.
 4. New attributes? → flatten to dot-notation, keep values primitive.
 5. New public method? → `async`, and add it to `TelemetryBase` if it's platform-agnostic.
 6. New dependency? → peer dep? native-only? optional? Don't bundle RN/React.
-7. Changed behaviour? → update `sdk-audit.yaml` in the same commit.
+7. Changed behaviour? → update this file in the same commit — the affected section *and*
+   Known gaps. It is the only description of this SDK there is.

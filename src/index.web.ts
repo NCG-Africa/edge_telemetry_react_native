@@ -123,6 +123,9 @@ export class TelemetryWeb extends TelemetryBase {
         this.autoTrackNavigation().catch(err => {
             debug.log("Web autoTrackNavigation errors", err);
         });
+        this.trackInteractions().catch(err => {
+            debug.log("Web trackInteractions errors", err);
+        });
         this.attachAppLifecycle().catch(err => {
             debug.log("Web attachAppLifecycle errors", err);
         });
@@ -186,6 +189,20 @@ export class TelemetryWeb extends TelemetryBase {
         const inst = await this.instancePromise;
         const memoryTracker = new TelemetryMemoryUsageWeb(inst);
         return inst.trackMemoryUsage(memoryTracker);
+    }
+
+    /**
+     * §4.6/#102 — one capture-phase `click` listener on `document`. Auto-started, like every
+     * other capture: `ui.interaction` is what §6.2's interaction root hangs off, so a
+     * consumer forgetting to call it would leave every tap-driven request unattributed.
+     */
+    async trackInteractions() {
+        const { InteractionTrackerWeb } = await import("./adapters/web/interactionWeb.web");
+        const inst = await this.instancePromise;
+        // One tracker per core instance, like the XHR patch: `start()`'s own guard is
+        // per-tracker, so constructing a fresh one on a second call would add a second
+        // capture-phase listener and double every `ui.interaction` row.
+        (inst.webInteractions ??= new InteractionTrackerWeb(inst)).start();
     }
 
     async autoTrackNavigation() {

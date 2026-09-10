@@ -3,7 +3,7 @@
 //
 //   1. the carrier: the one root that is currently live, plus its 2 s idle / 10 s cap expiry;
 //   2. root minting — `launch` at construction, `navigation` at a view entry with no live
-//      root, `request` at a send with no live root. (`interaction` arrives with #102/#103.)
+//      root, `request` at a send with no live root, and `interaction` at every click/tap.
 //   3. the key builders for the three tiers (§6.3), so no call site hand-assembles them.
 //
 // ⚠ **No request tag and no thread-local.** Android needs both because OkHttp runs its
@@ -28,7 +28,7 @@ import {
     type TraceOutcome,
 } from "./traceHeader";
 
-/** §6.1's four root types. `interaction` has no producer until the interaction tickets. */
+/** §6.1's four root types. */
 export type TraceRootType = "launch" | "interaction" | "navigation" | "request";
 
 /**
@@ -130,6 +130,20 @@ export class TraceManager {
     viewSpan(entryAt: number): TraceAttributes {
         const { root, isRoot } = this.attach("navigation", entryAt);
         return spanKeys(root, isRoot, entryAt).keys;
+    }
+
+    /**
+     * Tier 1 for a `ui.interaction`, captured at the click's **mint** (§4.6/§6.2). The one
+     * unconditional mint in the table: a tap is a new user action by definition, so it
+     * *replaces* whatever root was live rather than joining it — which is what makes the
+     * request a tap fires a child of the tap and not of the route change before it.
+     *
+     * A root, so `span.id === rum.action.id`, no `parent.span.id`, and no `span.duration_ms`
+     * (§6.1 — a root's width is derived server-side).
+     */
+    interactionSpan(mintedAt: number): TraceAttributes {
+        const root = this.mint("interaction", mintedAt, mintedAt);
+        return spanKeys(root, true, mintedAt).keys;
     }
 
     /**

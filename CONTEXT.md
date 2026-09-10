@@ -5,8 +5,8 @@ context and ships it to the shared EdgeTelemetryProcessor backend — the same b
 Ionic/Angular and iOS SDKs feed. v3 brought this repo onto that backend's wire contract.
 
 This file is the shared vocabulary. Code, commits, issues and docs use these words and avoid
-the listed alternatives. Behaviour lives in `CLAUDE.md`; ground truth with `file:line`
-citations lives in `sdk-audit.yaml`.
+the listed alternatives. Behaviour lives in `CLAUDE.md`, which is the single source of truth;
+the wire keys themselves are pinned by `docs/backend-wire-contract.md`.
 
 ## Language
 
@@ -77,8 +77,14 @@ _Avoid_: visit, run
 unless the consumer passes `debug: true`. Bare `console.log` in `src/` is a defect.
 _Avoid_: logger, verbose mode
 
-**Audit**:
-`sdk-audit.yaml` — the generated, citation-backed description of what the SDK actually
-emits and does today, including its known gaps. Update it in the same commit as any
-behaviour change.
-_Avoid_: spec, docs (it describes, it does not prescribe)
+**Contract**:
+`docs/backend-wire-contract.md` — the cross-SDK agreement on every wire key: name, type,
+null discipline, cardinality, enum domain. It *prescribes*, and it outranks every other
+document here. Changing anything it pins needs backend sign-off first.
+_Avoid_: schema, API spec
+
+**Known gaps**:
+The section of `CLAUDE.md` listing what this SDK does not do, does partially, or does
+deliberately differently — each with its reasoning. Update it in the same commit as any
+behaviour change. Not a backlog: several entries are settled trade-offs.
+_Avoid_: TODOs, tech debt

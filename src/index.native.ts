@@ -212,14 +212,9 @@ export class TelemetryNative extends TelemetryBase {
         return inst.recordRouteChange(from, to);
     }
 
-    // Best-effort native taps → user.interaction (#33). Spread the returned props on your
-    // app root <View>; each tap emits user.interaction with the current screen when known.
-    //   const props = await telemetry.interactionProps();
-    //   <View {...props}>{app}</View>
-    async interactionProps() {
-        const inst = await this.instancePromise;
-        const { InteractionEmitter } = await import("./adapters/interaction");
-        return new InteractionEmitter(inst).responderProps();
-    }
-
+    // ⚠ `interactionProps()` is gone with `user.interaction` (§4.6, #102). It sat on the
+    // consumer's **root** `<View>`, where `PressEvent.nativeEvent.target` is a node tag
+    // number with no public API resolving it — so it could not tell a tap on a button from a
+    // tap on padding, and every row it emitted was an un-nameable one. §4.6 makes native
+    // **explicit-only**: #103 restores taps as a public `trackTap(name)`.
 }
