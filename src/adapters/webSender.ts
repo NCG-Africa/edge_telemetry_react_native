@@ -83,24 +83,27 @@ export function webSender(
         async onFailure(events: TelemetryEvent[]) {
             return persistFailed(store, events);
         },
+        // Web had no replay hook at all and no caller for its standalone twin, so the
+        // queue only ever grew (#113). Same single path as native now: core calls this
+        // once per launch from its constructor.
+        //
+        // No `guardedDrain()` here, unlike native, and the store's SYNC guarantee is
+        // exactly why: `takeFailed()` has cleared the key before this function first
+        // yields, so a second concurrent caller reads a miss and returns. The race the
+        // guard exists for cannot be constructed on a `SyncStore` — and a guard whose
+        // bucket is permanently empty is eventually read as one that is working.
+        async replayFailed() {
+            const stored = takeFailed(store);
+            if (stored.length === 0) return;
+            debug.log("Replaying failed events, count:", stored.length);
+            try {
+                await sendWithRetry(endpoint, apiKey, stored, retryCount);
+            } catch (err) {
+                // If replay fails again, re-persist. Exactly one copy: this path never
+                // goes through core's flush(), so onFailure() does not also persist it.
+                persistFailed(store, stored);
+                throw err;
+            }
+        },
     };
 }
-
-// Replay failed events on startup
-export function replayFailedWeb(
-    endpoint: string = DEFAULT_ENDPOINT,
-    apiKey?: string,
-    store: SyncStore = webStore(),
-    retryCount: number = 3,
-) {
-    debug.log("Telemetry replayFailedWeb launched");
-    const stored = takeFailed(store);
-    if (stored.length > 0) {
-        return sendWithRetry(endpoint, apiKey, stored, retryCount).catch(err => {
-            // If replay fails again, re-persist
-            persistFailed(store, stored);
-            debug.warn("Telemetry replay failed:", err);
-        });
-    }
-}
-

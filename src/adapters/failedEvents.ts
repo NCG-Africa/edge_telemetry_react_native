@@ -70,3 +70,18 @@ export function encodeFailed(
 
     return { json: JSON.stringify(kept), dropped };
 }
+
+/**
+ * One drain per sender, however many callers there are (#113).
+ *
+ * `takeFailed()` clears the key before the send is attempted, so a *single* drain can
+ * never double-send. Two concurrent drains can: both read the payload before either
+ * removes it, and the recovered batch goes out twice — worst exactly when the network
+ * was bad, which is when the data mattered. Returning the in-flight promise makes the
+ * second caller a no-op that still awaits the first, and the guard is per-sender rather
+ * than per-module so two `Telemetry` instances in one process keep their own.
+ */
+export function guardedDrain(drain: () => Promise<void>): () => Promise<void> {
+    let inFlight: Promise<void> | undefined;
+    return () => (inFlight ??= drain().finally(() => { inFlight = undefined; }));
+}

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { decodeFailed, encodeFailed, FAILED_EVENTS_KEY, STORE_MAX_BYTES, STORE_MAX_EVENTS } from "./failedEvents";
+import { decodeFailed, encodeFailed, guardedDrain, FAILED_EVENTS_KEY, STORE_MAX_BYTES, STORE_MAX_EVENTS } from "./failedEvents";
 import type { TelemetryEvent } from "../core/telemetry";
 
 const event = (eventName: string): TelemetryEvent => ({
@@ -100,5 +100,45 @@ describe("encodeFailed — the §9.4 cap", () => {
 describe("the key", () => {
     it("is unchanged, so queues written by earlier versions still replay", () => {
         expect(FAILED_EVENTS_KEY).toBe("telemetry_failed_events");
+    });
+});
+
+describe("guardedDrain — one drain at a time (#113)", () => {
+    const deferred = () => {
+        let release!: () => void, fail!: (e: unknown) => void;
+        const promise = new Promise<void>((res, rej) => { release = res; fail = rej; });
+        return { promise, release, fail };
+    };
+
+    it("hands a concurrent caller the in-flight promise instead of a second drain", async () => {
+        const gate = deferred();
+        let runs = 0;
+        const drain = guardedDrain(async () => { runs++; await gate.promise; });
+
+        const a = drain(), b = drain();
+        gate.release();
+        await Promise.all([a, b]);
+
+        expect(runs).toBe(1);
+    });
+
+    it("re-arms once the drain settles — a later launch still drains", async () => {
+        let runs = 0;
+        const drain = guardedDrain(async () => { runs++; });
+
+        await drain();
+        await drain();
+
+        expect(runs).toBe(2);
+    });
+
+    it("re-arms after a rejection too, so one bad network does not wedge the queue", async () => {
+        let runs = 0;
+        const drain = guardedDrain(async () => { runs++; throw new Error("network down"); });
+
+        await expect(drain()).rejects.toThrow("network down");
+        await expect(drain()).rejects.toThrow("network down");
+
+        expect(runs).toBe(2);
     });
 });

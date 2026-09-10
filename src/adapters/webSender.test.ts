@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { TelemetryEvent } from "../core/telemetry";
-import { webSender, replayFailedWeb } from "./webSender";
+import { webSender } from "./webSender";
 import { memoryStore } from "../core/memoryStore";
 import { decodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
 
@@ -93,7 +93,7 @@ describe("webSender — the offline queue through the Store port (#89)", () => {
     vi.stubGlobal("fetch", fetchMock);
     const store = memoryStore({ seed: { [FAILED_EVENTS_KEY]: JSON.stringify([event("app.crash")]) } });
 
-    await replayFailedWeb("https://x/collect", "edge_k", store);
+    await webSender("https://x/collect", "edge_k", store).replayFailed!();
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(store.get(FAILED_EVENTS_KEY)).toEqual({ status: "miss" });
@@ -103,7 +103,8 @@ describe("webSender — the offline queue through the Store port (#89)", () => {
     vi.stubGlobal("fetch", failing());
     const store = memoryStore({ seed: { [FAILED_EVENTS_KEY]: JSON.stringify([event("app.crash")]) } });
 
-    await replayFailedWeb("https://x/collect", "edge_k", store, 1);
+    await expect(webSender("https://x/collect", "edge_k", store, 1).replayFailed!())
+      .rejects.toThrow();
 
     expect(decodeFailed(store.get(FAILED_EVENTS_KEY)).map(e => e.eventName)).toEqual(["app.crash"]);
   });
@@ -113,9 +114,10 @@ describe("webSender — the offline queue through the Store port (#89)", () => {
     vi.stubGlobal("fetch", fetchMock);
     const store = memoryStore({ seed: { [FAILED_EVENTS_KEY]: '[{"type":"eve' } });
 
-    // Nothing to replay, so no promise is returned and nothing is sent — and crucially
-    // the junk is gone, rather than being re-read and re-dropped on every launch.
-    expect(() => replayFailedWeb("https://x/collect", "edge_k", store)).not.toThrow();
+    // Nothing to replay, so nothing is sent — and crucially the junk is gone, rather
+    // than being re-read and re-dropped on every launch.
+    await expect(webSender("https://x/collect", "edge_k", store).replayFailed!())
+      .resolves.toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(store.get(FAILED_EVENTS_KEY)).toEqual({ status: "miss" });
   });
@@ -124,7 +126,7 @@ describe("webSender — the offline queue through the Store port (#89)", () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }) as any);
     vi.stubGlobal("fetch", fetchMock);
 
-    await replayFailedWeb("https://x/collect", "edge_k", memoryStore());
+    await webSender("https://x/collect", "edge_k", memoryStore()).replayFailed!();
 
     expect(fetchMock).not.toHaveBeenCalled();
   });
