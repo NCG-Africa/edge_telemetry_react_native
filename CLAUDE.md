@@ -511,6 +511,14 @@ reporting foreign ids would attribute their action to ours.
 ⚠ **An unsampled session injects no header at all** — not a `flags=00` id. Sampling stays
 session-level; the injected flags byte is always `01`.
 
+`session.started` carries **`sdk.trace_allowlist_size`** (§4.1) — **count only, never the
+hosts**, so a zero tells "nobody opted in" apart from "the header is being stripped" without
+shipping a customer's internal hostnames.
+
+⚠ Per the fetch spec a **non-empty `init` resets a `Request`'s `referrer` and `referrerPolicy`**.
+The web patch carries both across when the consumer passed none, so adding our header is not a
+behaviour change the SDK was never entitled to make.
+
 `injected_expired` vs `injected_unattributed` is decided by reading the carrier field **before**
 `liveRoot()` drops an expired root. That is the split §6.5 asks the backend to keep as
 `injected_unattributed_context_lost` / `_no_action`.

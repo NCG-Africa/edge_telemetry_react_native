@@ -213,6 +213,14 @@ describe("#99 native — never-strip and read-scope", () => {
 });
 
 describe("#99 native — the rest of the ladder", () => {
+  it("reports the allowlist SIZE on session.started, and never the hosts", async () => {
+    const { t, sent } = await launch({ traceHostAllowlist: ["api.example.com"] });
+    await t.flush();
+    const started = sent.find((e) => e.eventName === "session.started")!.attributes!;
+    expect(started["sdk.trace_allowlist_size"]).toBe(1);
+    expect(JSON.stringify(started)).not.toContain("api.example.com");
+  });
+
   it("an unsampled session injects no header at all", async () => {
     const { t } = await launch({ traceHostAllowlist: ["api.example.com"], sessionSampleRate: 0 });
     await request();

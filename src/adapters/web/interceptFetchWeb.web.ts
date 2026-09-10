@@ -5,6 +5,19 @@ import { patchXHR } from "../xhrIntercept";
 import { TRACEPARENT, readHeader, withHeader } from "../traceHeader";
 
 /**
+ * Per the fetch spec a **non-empty `init` resets a `Request`'s `referrer` and
+ * `referrerPolicy`**. When the consumer passed no init at all, handing fetch one just to carry
+ * our header would silently change their request — and §6.4 is explicit that the SDK does
+ * nothing else at runtime. So carry both across. A consumer who already passed a non-empty
+ * init has triggered the same reset themselves, and their values win over these.
+ */
+function carriedReferrer(input: unknown, init: RequestInit | undefined): RequestInit {
+    const req = input as { referrer?: unknown; referrerPolicy?: unknown };
+    if (init || typeof req?.referrer !== "string") return {};
+    return { referrer: req.referrer, referrerPolicy: req.referrerPolicy as ReferrerPolicy };
+}
+
+/**
  * NetworkTrackerWeb intercepts HTTP made through `window.fetch` and `XMLHttpRequest`.
  *
  * Both are patched here, unlike native: browser `fetch` is a native implementation, not
@@ -65,7 +78,7 @@ export class NetworkTrackerWeb {
                 // never-strip holds by construction and their retry of the same Request
                 // carries no SDK header — each attempt gets its own fresh `span.id`.
                 const fetchInit = trace?.header
-                    ? { ...init, headers: withHeader(reqHeaders, TRACEPARENT, trace.header) }
+                    ? { ...carriedReferrer(input, init), ...init, headers: withHeader(reqHeaders, TRACEPARENT, trace.header) }
                     : init;
                 let response: Response | null = null;
                 let error: any = null;

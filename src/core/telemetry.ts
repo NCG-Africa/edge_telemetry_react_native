@@ -660,7 +660,12 @@ export class Telemetry {
     public async startSession(reason: SessionReason) {
         this.lastActivity = Date.now();
         await this.persistSession();   // durable before it is announced
-        await this.log("session.started", { "session.reason": reason });
+        await this.log("session.started", {
+            "session.reason": reason,
+            // §4.1, count only — never the hosts (#99). Ships on every session so a zero is
+            // legible as "nobody opted in" rather than as a stripped header.
+            "sdk.trace_allowlist_size": this.trace.allowlistSize(),
+        });
     }
 
     /**

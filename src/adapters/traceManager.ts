@@ -105,6 +105,15 @@ export class TraceManager {
     }
 
     /**
+     * §4.1's `sdk.trace_allowlist_size` — **count only, never the hosts**, so an operator can
+     * tell "nobody opted in" apart from "the header is being stripped" without the SDK
+     * shipping a customer's internal hostnames to the collector.
+     */
+    allowlistSize(): number {
+        return this.allowlist.size;
+    }
+
+    /**
      * `app.start`'s own row — a root, so `span.id === rum.action.id` and there is no
      * `parent.span.id`. No `span.duration_ms` either: roots derive theirs server-side.
      */

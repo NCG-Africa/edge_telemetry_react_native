@@ -20,7 +20,7 @@ const win: any = {};
 const doc: any = {};
 
 /** Every call the SDK forwarded to the real fetch, as the network would have seen it. */
-const calls: Array<{ url: string; headers: Record<string, string> }> = [];
+const calls: Array<{ url: string; headers: Record<string, string>; init: any }> = [];
 /** The unpatched fetch the SDK wraps — the network, as far as this test is concerned. */
 let rawFetch: any;
 
@@ -78,7 +78,7 @@ beforeEach(() => {
     (win._listeners[type] ??= []).push(fn);
   };
   rawFetch = vi.fn(async (url: any, init: any) => {
-    calls.push({ url: String(url), headers: headersOf(init) });
+    calls.push({ url: String(url), headers: headersOf(init), init });
     return { status: 200, headers: { get: () => null } };
   });
   win.fetch = rawFetch;
@@ -220,6 +220,38 @@ describe("#99 never-strip and read-scope", () => {
     expect(first).toBeDefined();
     expect(second).toBeDefined();
     expect(second).not.toBe(first);
+  });
+});
+
+describe("#99 what else the SDK does at runtime — nothing", () => {
+  it("reports the allowlist SIZE on session.started, and never the hosts", async () => {
+    const { t, sent } = launch({ traceHostAllowlist: ["api.example.com", "cdn.example.com"] });
+    await settle();
+    await t.flush();
+
+    const started = sent.find((e) => e.eventName === "session.started")!.attributes!;
+    expect(started["sdk.trace_allowlist_size"]).toBe(2);
+    expect(JSON.stringify(started)).not.toContain("api.example.com");
+
+    const off = launch();
+    await settle();
+    await off.t.flush();
+    expect(off.sent.find((e) => e.eventName === "session.started")!
+      .attributes!["sdk.trace_allowlist_size"]).toBe(0);
+  });
+
+  it("carries a Request's referrer across, since a non-empty init would reset it", async () => {
+    const { t } = launch({ traceHostAllowlist: ["api.example.com"] });
+    await settle();
+    const req: any = { referrer: "https://app.example.com/checkout", referrerPolicy: "origin",
+                       headers: {}, toString: () => API };
+    await win.fetch(req);            // no init at all — the case where the reset would bite
+    await vi.advanceTimersByTimeAsync(0);
+    await t.flush();
+
+    expect(lastCall().headers.traceparent).toBeDefined();
+    expect(lastCall().init.referrer).toBe("https://app.example.com/checkout");
+    expect(lastCall().init.referrerPolicy).toBe("origin");
   });
 });
 
