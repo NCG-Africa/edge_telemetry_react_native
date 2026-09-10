@@ -6,6 +6,34 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
 ### Added
 
+- **The v4 migration note ships with the release, not after it** (#109, contract §12).
+  [`docs/migration-v4.md`](docs/migration-v4.md) enumerates all twenty discontinuities across
+  3.1.0 and v4 and marks which are visible at compile time — **only two are** (the
+  `getDeviceInfo()` / `getNetworkInfo()` return shapes, and the six `@deprecated` `UserProfile`
+  fields). The other eighteen surface at runtime or in a chart, which is precisely why the note
+  cannot trail the release. It also documents **the columns RN will never write** — the ANR, hang,
+  battery/power, `app.exit` and native-crash surface, plus `rum_trace_spans` and
+  `rum_user_actions` in full — so nobody builds a panel that stays empty forever, and records the
+  **five deliberate departures from Android** (§13) so the next person diffing the two SDKs does
+  not file a decision as drift.
+
+### Removed
+
+- ⚠ **Four event names are retired from the allowlist — and they are retired, not deferred**
+  (#109, §4.0 / §10.2): `user.interaction`, `page_load`, `resource_timing`, `long_task`. They are
+  **unreachable**, so a consumer calling `log("page_load")` now gets `custom_event` carrying
+  `event.name: "page_load"`, as with any unknown name. `user.interaction` was superseded by
+  `ui.interaction` (#102); the other three were allowlisted but **never produced**, so no chart
+  exists on any of them and the retirement adds nothing to the migration story. Their jobs are
+  done: `page_load` three ways over (`view` with `load_type: initial_load`, `view.loading_time`,
+  and TTFB/FCP/LCP with the phase splits), `resource_timing` by nothing — it would put hundreds of
+  per-asset rows in a namespace with no column and exceed the 500-event queue on one asset-heavy
+  view — and `long_task` by `frame_render_time`, since a >50 ms long task **is** a long rAF delta
+  and both of the long-task APIs are Chromium-only. The allowlist's v4 movement is **net zero**:
+  `view`, `ui.interaction`, `app.error` and `app.start` in, these four out.
+
+### Added
+
 - **The Context block is frozen at its final 39-key shape** (#108, wire contract §3.3 / §3.4 /
   §3.1). This is the integration point: every prior ticket contributed keys, this one makes the
   block match the contract exactly and removes what should never have been there.

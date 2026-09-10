@@ -16,6 +16,7 @@ Two documents outrank this one, and only within their scope:
 |---|---|
 | `docs/backend-wire-contract.md` | **every wire key** — name, type, null discipline, cardinality, enum domain. It is a cross-SDK contract; where it and this doc disagree, it wins. |
 | `docs/wire-inventory.md` | a **historical record**, pinned to v3.0.1 at `9b7bf83`. Read it for what shipped then, never for what ships now. |
+| `docs/migration-v4.md` | the **consumer-facing** release note: contract §12's twenty discontinuities, the columns RN will never write, and the five deliberate Android departures. It restates; it does not rule. |
 
 Anything else — architecture, conventions, why a decision went the way it did, what is still
 broken — lives here. When the code and this doc disagree, the code won and this doc is the
@@ -1205,8 +1206,14 @@ the original name as `event.name`. Currently emitted:
 | `LCP` `FCP` `TTFB` | **metric** — **web only**, once on the initial load (§5.3) |
 | `CLS` `INP` | **metric** — **web only**, running values drained at the background boundary (§5.3) |
 
-Allowlisted but with **no producer**: `page_load`, `resource_timing`, `long_task`. The
-remainder of the RN-Web track, not built yet.
+**Four names are retired, not deferred** (§4.0/§10.2, #109) — off the list and unreachable, so a
+consumer's `log("page_load")` is rewritten to `custom_event` like any other unknown name. Do not
+add them back. `user.interaction` is superseded by `ui.interaction`; `page_load`'s job is done
+three ways over (`view` + `view.loading_time` + the vitals); `resource_timing` would blow the
+500-event queue on one asset-heavy view for a namespace with no column; and `long_task`'s only
+APIs are Chromium-only while `frame_render_time` detects jank on every runtime. The last three
+were **allowlisted but never produced**, so none of them adds anything to the migration story.
+Asserted in `src/integration.web.test.ts`.
 
 **Adding a new `eventName` requires backend sign-off** — unlisted names are dropped on
 ingest.

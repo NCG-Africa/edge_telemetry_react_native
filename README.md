@@ -16,6 +16,7 @@ One SDK, two builds. The bundler picks `index.native.js` or `index.web.js` from 
 
 ## Contents
 
+- [Upgrading to v4](#upgrading-to-v4-breaking)
 - [Upgrading to v3](#upgrading-to-v3-breaking)
 - [Install](#install)
 - [Quick start](#quick-start)
@@ -27,6 +28,23 @@ One SDK, two builds. The bundler picks `index.native.js` or `index.web.js` from 
 - [Reliability](#reliability)
 - [Debugging](#debugging)
 - [Development](#development)
+
+---
+
+## Upgrading to v4 (breaking)
+
+**Read [`docs/migration-v4.md`](docs/migration-v4.md) before you deploy.** Of the twenty
+discontinuities across 3.1.0 and v4, **only two are visible at compile time** — the
+`getDeviceInfo()` / `getNetworkInfo()` return shapes and the six `@deprecated` `UserProfile`
+fields. The other eighteen surface at runtime or in a chart: a saved filter quietly returns zero
+rows, or a series steps at the release boundary. The note also lists the columns RN will never
+write (so nobody builds an ANR panel that stays empty forever) and the five deliberate departures
+from the Android SDK.
+
+**The one action item most consumers have:** if you called `setUserProfile()` / `setUserDetails()`
+/ `setUserName()` / `setUserContact()` and never called `identify()`, your profile data no longer
+reaches the wire at all. `user.name` / `.email` / `.phone` now ride `user.profile.update` only,
+and `identify()` is what emits it. Add one call.
 
 ---
 
@@ -343,8 +361,10 @@ honestly measure. The five **Core Web Vitals** ship on the metric path with attr
 per-vital breakdowns (LCP's four phases sum exactly to its `value`). CLS and INP are held as
 running values and emitted when the tab is hidden, not on every change. All five are
 **page-load-scoped**, so `view.id` on a vital row is always the *initial* view's — group vitals by
-entry point, not by "the screen this happened on". `page_load`, `resource_timing` and `long_task`
-are allowlisted but not yet produced.
+entry point, not by "the screen this happened on". ⚠ `page_load`, `resource_timing` and
+`long_task` are **retired** in v4 — off the allowlist and unreachable. Their jobs are done by
+`view`, `view.loading_time`, the vitals and `frame_render_time`; see
+[`docs/migration-v4.md`](docs/migration-v4.md).
 
 ---
 
