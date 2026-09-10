@@ -116,6 +116,11 @@ describe("#96 view.id / view.name on the Context block (web)", () => {
     await t.log("app.crash", { "error.message": "boom" });
     await t.log("user.interaction", { "interaction.type": "tap" });
     await t.log("http.request", { "http.status_code": 500 });
+    // request_count is booked at *send* (§4.5.2), which is what the interceptors call — an
+    // `http.request` row is the completion and may belong to an earlier view. The real
+    // fetch/XHR path is driven end-to-end in view.loadingTime.web.test.ts.
+    const inst = await (t as any).instancePromise;
+    inst.views.requestStarted()();
     vi.setSystemTime(Date.now() + 5000);
 
     nav.go("Cart");
@@ -131,7 +136,7 @@ describe("#96 view.id / view.name on the Context block (web)", () => {
     expect(view["view.time_spent"]).toBe(5000);
     expect(view["view.error_count"]).toBe(1);       // app.crash only — a 500 is not an error here
     expect(view["view.action_count"]).toBe(1);
-    expect(view["view.request_count"]).toBe(1);
+    expect(view["view.request_count"]).toBe(1);   // the send, not the completion row
 
     // and the successor is a different view under the same session
     const after = attrsOf(sent, "view")[0];

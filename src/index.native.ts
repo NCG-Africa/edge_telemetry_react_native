@@ -87,6 +87,19 @@ export class TelemetryNative extends TelemetryBase {
             // Never rethrown into instancePromise: finalizeSession() flushes, flush() rethrows on a
             // dead collector, and a rejected instancePromise would brick every public method for the
             // life of the process. Hydration has already run; only the emission is lost.
+            // §4.5.2's `initial_load` seed: the launch view stays busy until the platform's
+            // runtime-ready marker. The *module* is awaited with everything else, so the seed
+            // is armed before `instancePromise` resolves; the *marker* is not, because on web
+            // it arrives with the load event and blocking init on it would delay every host
+            // call behind the page's own images.
+            const { runtimeReadyAt } = await import("./adapters/native/runtimeReady.native");
+            void runtimeReadyAt()
+                .then((at) => telemetry.views.seedRuntimeReady(at))
+                .catch((err: any) => {
+                    debug.warn("Native runtime-ready marker unavailable:", err);
+                    telemetry.views.seedRuntimeReady(undefined);   // release the gate anyway
+                });
+
             await telemetry.resumeOrStartSession()
                 .catch(err => debug.warn("Native session resume failed:", err));
 

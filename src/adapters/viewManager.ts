@@ -3,7 +3,8 @@
 //
 //   1. `view.id` + `view.name`, denormalized onto the Context block of every event and
 //      metric, so "errors by screen" and "p95 by screen" need no join.
-//   2. the `view` event emitted at exit, carrying dwell and the three counters.
+//   2. the `view` event emitted at exit, carrying dwell, the three counters and the
+//      network-settle verdict from `loadingTime.ts` (#97).
 //   3. the name ladder, and the four lifetime boundaries.
 //
 // It never imports a platform API. The entries feed it: route changes via
@@ -12,6 +13,7 @@
 // initial view, and the killed view's dwell is lost by design (no `view` event was emitted).
 
 import { randomHex } from "../core/utils/uuid";
+import { NetworkSettle } from "./loadingTime";
 
 /** §4.5.1's ladder. `none` is the literal `"unknown"` name, not an absent one. */
 export type ViewNameSource = "explicit" | "route" | "url" | "none";
@@ -39,7 +41,9 @@ type View = {
     resumedAt?: number;    // undefined = the clock is paused (app backgrounded)
     errors: number;
     actions: number;
-    requests: number;
+    // `view.request_count` and `view.loading_time` both live here — both count requests
+    // *started* in this view, so one object owns both and they cannot disagree (§4.5.2).
+    settle: NetworkSettle;
 };
 
 /** `view_{ms}_{16hex}` (§3.3). No platform suffix — a view never leaves its process. */
@@ -57,10 +61,14 @@ export class ViewManager {
         // white-label web bundle serving two banks needs the origin to tell them apart.
         this.host = typeof location !== "undefined" && location?.origin ? location.origin : undefined;
         // The initial view opens at SDK init, so `view.id` is never absent (§4.5).
+        const now = Date.now();
         this.view = {
             id: mintViewId(), name: UNKNOWN_VIEW_NAME, source: "none",
             referrer: "", loadType: "initial_load",
-            elapsed: 0, resumedAt: Date.now(), errors: 0, actions: 0, requests: 0,
+            elapsed: 0, resumedAt: now, errors: 0, actions: 0,
+            // The launch view is the one `load_type` that seeds from the platform's
+            // runtime-ready marker: it is busy until the bundle has evaluated (§4.5.2).
+            settle: new NetworkSettle(now, { awaitRuntimeReady: true }),
         };
     }
 
@@ -95,11 +103,30 @@ export class ViewManager {
         await this.exit("route_change", name, source);
     }
 
-    /** `view.error_count` / `.action_count` / `.request_count` — rows sharing this `view.id`. */
-    count(kind: "error" | "action" | "request"): void {
+    /** `view.error_count` / `.action_count` — rows sharing this `view.id`. */
+    count(kind: "error" | "action"): void {
         if (kind === "error") this.view.errors++;
-        else if (kind === "action") this.view.actions++;
-        else this.view.requests++;
+        else this.view.actions++;
+    }
+
+    /**
+     * An HTTP request started (§4.5.2). Returns its completion callback, **bound to the view
+     * that was live at start** — a request that finishes after a route change belongs to the
+     * view it started in and does not hold the arriving one open. The collector's own POST
+     * never reaches here; the interceptors filter it before calling.
+     */
+    requestStarted(now?: number): (endedAt?: number) => void {
+        return this.view.settle.requestStarted(now);
+    }
+
+    /**
+     * The platform's runtime-ready marker — `loadEventEnd` on web,
+     * `performance.rnStartupTiming` on native — or `undefined` where the platform has none.
+     * Only the launch view waits on it, so forwarding to whatever view is current is safe:
+     * a successor is never gated and ignores the seed.
+     */
+    seedRuntimeReady(at?: number): void {
+        this.view.settle.seedRuntimeReady(at);
     }
 
     /**
@@ -107,19 +134,25 @@ export class ViewManager {
      * `view.name_source` reports the *final* rung; the Context-block copy on rows emitted
      * early in the view may still carry a lower rung's name (§4.5.1).
      *
-     * `view.loading_time` / `.loading_time_outcome` are deliberately not emitted yet (#96).
+     * `view.loading_time` is **omitted when null**, following this contract's general
+     * absent-means-the-SDK-had-nothing discipline (§4.11 names `navigation.from_screen` as the
+     * only explicit wire null). `view.loading_time_outcome` always ships: it is what tells the
+     * three null causes apart, and reading p75-of-settled beside %-capped is the whole point.
      */
     async endView(): Promise<void> {
         const v = this.view;
+        const { loadingTime, outcome } = v.settle.resolve();
         await this.telemetry.log("view", {
             ...(this.host ? { "view.host": this.host } : {}),
             "view.referrer": v.referrer,
             "view.load_type": v.loadType,
             "view.name_source": v.source,
             "view.time_spent": this.timeSpent(),
+            ...(loadingTime === null ? {} : { "view.loading_time": loadingTime }),
+            "view.loading_time_outcome": outcome,
             "view.error_count": v.errors,
             "view.action_count": v.actions,
-            "view.request_count": v.requests,
+            "view.request_count": v.settle.requestCount,
         });
     }
 
@@ -131,13 +164,16 @@ export class ViewManager {
      */
     beginView(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): void {
         const prev = this.view;
+        const now = Date.now();
         this.view = {
             id: mintViewId(),
             name: name ?? prev.name,
             source: source ?? prev.source,
             referrer: prev.name,
             loadType: successorLoadType,
-            elapsed: 0, resumedAt: Date.now(), errors: 0, actions: 0, requests: 0,
+            elapsed: 0, resumedAt: now, errors: 0, actions: 0,
+            // No runtime-ready seed: only `initial_load` has a platform marker to wait on.
+            settle: new NetworkSettle(now),
         };
     }
 

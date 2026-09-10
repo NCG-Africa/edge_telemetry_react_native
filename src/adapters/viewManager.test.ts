@@ -91,7 +91,9 @@ describe("ViewManager — the name ladder", () => {
     await vm.navigate("Home", "route");
     vm.count("error"); vm.count("error");
     vm.count("action");
-    vm.count("request"); vm.count("request"); vm.count("request");
+    // request_count is booked at *send*, not at completion (§4.5.2) — the interceptors call
+    // this, and the returned callback is what closes the request's hold on the view.
+    vm.requestStarted(); vm.requestStarted(); vm.requestStarted();
 
     await vm.navigate("Cart", "route");
     const [{ data }] = logged;

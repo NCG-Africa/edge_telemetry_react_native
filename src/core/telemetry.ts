@@ -857,13 +857,13 @@ export class Telemetry {
                 this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
             }
 
-            // §4.5's three counters, booked against the view this row is pinned to.
+            // Two of §4.5's three counters, booked against the view this row is pinned to.
             // `view.error_count` is a closed enumeration — crashes only, not failed requests
-            // and not console.warn — and `view.request_count` counts every http.request,
-            // failures included; the adapters already exclude the collector's own POST.
+            // and not console.warn. `view.request_count` is NOT booked here: §4.5.2 counts
+            // requests *started* in the view, and this row is emitted at completion, which
+            // can be a route change later. The interceptors book it at send time instead.
             if (eventName === 'app.crash') this.views.count('error');
             else if (eventName === 'user.interaction') this.views.count('action');
-            else if (eventName === 'http.request') this.views.count('request');
 
             this.enqueue({
                 type: 'event',

@@ -12,6 +12,12 @@ interface PendingRequest {
     url: string;
     start: number;
     body?: unknown;
+    /**
+     * Closes this request's contribution to §4.5.2's network settle. Bound at `send()` to the
+     * view that was live *then*, so a response landing after a route change belongs to the view
+     * it started in and does not hold the arriving one open.
+     */
+    settled?: (endedAt?: number) => void;
 }
 
 interface PatchedXhr extends XMLHttpRequest {
@@ -47,6 +53,12 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
         if (!req) return origSend.apply(this, arguments as any);  // send() without open() — let it throw its own way
         req.start = Date.now();
         req.body = body;
+        // The collector's own POST is out of scope for settle exactly as it is for
+        // `http.request` — checked here as well as at loadend, because the view must not be
+        // held open by the SDK's own traffic (§4.5.2).
+        if (!isCollectorUrl(req.url, telemetry.getEndpoint?.())) {
+            req.settled = telemetry.views.requestStarted(req.start);
+        }
 
         // One listener per *instance*, not per send: an XHR may be legally reused, and adding
         // a listener on every send() would emit N events on the Nth one. The handler reads
@@ -56,6 +68,7 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
             this.addEventListener("loadend", () => {
                 const done = this._telemetryRequest;
                 if (!done) return;
+                done.settled?.();
                 // Invariant: an http.request never describes the SDK's own collector POST.
                 if (isCollectorUrl(done.url, telemetry.getEndpoint?.())) return;
 

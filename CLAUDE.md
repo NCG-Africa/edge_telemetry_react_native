@@ -50,6 +50,7 @@ src/
 │   ├── appLifecycle.ts    ← AppLifecycleEmitter (edge-triggered foreground/background)
 │   ├── crashCapture.ts    ← shared crash normalisation → app.crash
 │   ├── viewManager.ts     ← the View entity: view.id/view.name, the `view` event, the ladder
+│   ├── loadingTime.ts     ← shared network-settle: view.loading_time + the 4-value outcome
 │   ├── navigationRef.ts   ← React Navigation ref listener, shared (getCurrentRoute works on web)
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
@@ -312,7 +313,37 @@ digit milliseconds, between a route event and a mount effect — carry the lower
 `view` event's `view.name` and `view.name_source` are authoritative**; the Context-block copy is a
 join-free convenience.
 
-`view.loading_time` / `view.loading_time_outcome` are **not built** (§4.5.2, a separate change).
+**`view.loading_time` is network settle, one shared module, both builds** (`adapters/loadingTime.ts`,
+§4.5.2). In-flight `fetch`/XHR is the one signal both builds genuinely have — DOM-mutation quiet is
+meaningless under React's re-rendering and rAF quiet never settles against RN's animation driver —
+so web and native run the *same module* rather than one column name over two meanings.
+
+| Rule | Why |
+|---|---|
+| quiet window **1000 ms**, subtracted back out | it is detection delay only, and free because the `view` event emits at view *exit*, not at settle |
+| a request starting during an already-quiet period does **not** reopen the view | or a 30-second poller re-arms forever |
+| hard cap **30 s**, emitting **null, not the cap** | a spike at exactly the cap makes 30 s and 90 s the same row |
+| zero network is **null, never 0** | a `0` makes p75 track the *cache-hit rate*, so a backend caching win renders as a frontend regression, reversed |
+| scope is everything **except the SDK's own collector POST** | the user waits on third-party widgets too |
+| `initial_load` seeds from the platform's runtime-ready marker | `loadEventEnd` on web, `performance.rnStartupTiming` on native. A platform with no marker seeds `undefined`, which *releases* the gate — a marker that never arrives must not make every launch report `abandoned` |
+
+⚠ **The 1000 ms quiet window is the same constant as §4.6's dead-click window** — `QUIET_WINDOW_MS`,
+one constant, not two. `ui.dead` must import it rather than declare a second `1000`.
+
+**`view.loading_time` is omitted when null**, following the general absent-means-nothing discipline
+(§4.11 names `navigation.from_screen` as the SDK's only explicit wire null).
+**`view.loading_time_outcome` always ships** — `settled` | `no_activity` | `capped` | `abandoned` —
+because it is what tells the three null causes apart. Read **two** series: p75 where
+`outcome = 'settled'`, and **% `capped`**. A naive `AVG(loading_time)` mixes populations.
+
+**Free invariant, asserted on both builds: `loading_time_outcome = 'no_activity'` ⇔
+`view.request_count = 0`.** That is why the runtime-ready marker is a *floor on when settle may
+happen*, not a source of activity — a launch that fetched nothing reports `no_activity`, not the
+platform's own startup time.
+
+⚠ **`view.request_count` and `view.loading_time` both count requests *started* in the view**, so
+both are booked by the interceptors at **send** time, not by `log()` at completion. A request in
+flight across a view boundary belongs to the old view and does not hold the new one open.
 
 **`navigation` and `screen.duration` are unified onto this module on native**, which fixes the v3
 defect where `attachNavigation` never touched `inst.screens` — so a React Navigation consumer
@@ -586,7 +617,16 @@ coordination.
   web build resolves it at runtime and rejects.
 - **`view` needs backend allowlist sign-off before it ships** — an unlisted `eventName` is
   dropped on ingest. It is already in the SDK's `ALLOWED_NAMES`, so it is being emitted.
-- `view.loading_time` and `view.loading_time_outcome` have no producer (§4.5.2).
+- Settle sees only what the SDK intercepts — JS `fetch`/XHR. `rn-fetch-blob`, RN Firebase, native
+  Apollo links, `expo-file-system`, `Image` loading and `WebSocket` are outside the chokepoint, so a
+  view whose real wait is one of those reports `no_activity`. Same boundary as `http.request`.
+- Native `initial_load` is systematically **smaller** than web's — web includes DNS, TLS and
+  document download; native reads a bundle off local disk. **Cross-platform `initial_load`
+  comparison is not apples-to-apples.** Within-platform release comparison is untouched.
+- `view.loading_time`'s clock starts at the route change, **not at the tap**. Tap-to-route-change
+  latency runs a handler in the *old* view and belongs to the action envelope (§6.6), which is not
+  built. A prefetched screen therefore reports `no_activity` — exact as "started no fetches of its
+  own", wrong if read as "does not fetch".
 - The frame window does **not** reset at a view boundary (§5.1), so a 10 s window straddling a
   route change still charges the departing screen's frames to the arriving one.
 - The deprecated web `navigation` event still carries `location.pathname + search` raw, query

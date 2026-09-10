@@ -9,7 +9,10 @@ function fakeTelemetry(endpoint?: string) {
     return {
         telemetry: {
             log: vi.fn((name: string, data?: any) => { calls.push({ name, data }); }),
+            // `views` is not optional on the real core: §4.5.2 books request_count and the settle
+            // hold at *send*, so a double without it hides the very wiring these tests cover.
             getEndpoint: () => endpoint,
+            views: { requestStarted: vi.fn(() => vi.fn()) },
         } as any,
         calls,
     };
