@@ -68,3 +68,73 @@ describe("createTelemetry (web) — public API → wire", () => {
     expect(names).not.toContain("network_info");
   });
 });
+
+// #88 — the seven camelCase Context keys are respelled snake_case at the DeviceInfo /
+// NetworkInfo interface. Asserted on the wire, where the contract lives (§9.3 / §3.3).
+describe("createTelemetry (web) — Context keys are snake_case on the wire (#88)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  function stubDom() {
+    vi.stubGlobal("document", {
+      title: "WebApp",
+      visibilityState: "visible",
+      addEventListener: () => {},
+    });
+    vi.stubGlobal("window", {
+      location: { hostname: "app.example.com", pathname: "/" },
+      addEventListener: () => {},
+    });
+    vi.stubGlobal("navigator", {
+      userAgent: "UA",
+      platform: "MacIntel",
+      appVersion: "5.0 (Macintosh)",
+      vendor: "Acme",
+      onLine: true,
+    });
+    process.env.BUILD_NUMBER = "42";
+  }
+
+  async function firstEventAttributes() {
+    const sent: TelemetryEvent[] = [];
+    const t = createTelemetry({
+      apiKey: "edge_integration",
+      endpoint: "https://x/collector/telemetry",
+      sender: { send: async (e: TelemetryEvent[]) => { sent.push(...e); } },
+      batchSize: 10,
+      flushIntervalMs: 0,
+      captureConsole: false,
+    });
+    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.flush();
+    return sent.find((e) => e.eventName === "navigation")!.attributes!;
+  }
+
+  it("ships all seven respelled keys", async () => {
+    silenceConsole();
+    stubDom();
+    const a = await firstEventAttributes();
+
+    expect(a["app.build_number"]).toBe("42");
+    expect(a["app.package_name"]).toBe("app.example.com");
+    expect(a["device.platform_version"]).toBe("5.0 (Macintosh)");
+    // undefined on web, but present under the respelled key (JSON drops them on the wire)
+    expect(Object.keys(a)).toContain("device.android_sdk");
+    expect(Object.keys(a)).toContain("device.android_release");
+    expect(Object.keys(a)).toContain("device.ios_system_name");
+    expect(a["network.is_connected"]).toBe(true);
+  });
+
+  it("ships none of the old camelCase spellings", async () => {
+    silenceConsole();
+    stubDom();
+    const a = await firstEventAttributes();
+
+    for (const dead of [
+      "app.buildNumber", "app.packageName", "device.platformVersion",
+      "device.androidSdk", "device.androidRelease", "device.iosSystemName",
+      "network.isConnected",
+    ]) {
+      expect(Object.keys(a)).not.toContain(dead);
+    }
+  });
+});

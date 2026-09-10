@@ -50,7 +50,7 @@ export interface CrashHandler {
 }
 export interface NetworkInfo {
     type?: string;        // "wifi", "cellular", "ethernet", "unknown", etc.
-    isConnected?: boolean;
+    is_connected?: boolean;
 }
 
 export interface WebExtraNetworkInfo {
@@ -90,22 +90,22 @@ export interface DeviceInfo {
     app: {
         name: string;
         version: string;
-        buildNumber?: string;
-        packageName?: string;
+        build_number?: string;
+        package_name?: string;
     };
     device: {
         id: string;
         platform: string;
-        platformVersion?: string;
+        platform_version?: string;
         model?: string;
         manufacturer?: string;
         brand?: string;
-        androidSdk?: string;
-        androidRelease?: string;
+        android_sdk?: string;
+        android_release?: string;
         fingerprint?: string;
         hardware?: string;
         product?: string;
-        iosSystemName?: string;
+        ios_system_name?: string;
         iosDeviceName?: string;
     };
 }

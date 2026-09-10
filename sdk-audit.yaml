@@ -2,7 +2,7 @@ repo: NCG-Africa/edge_telemetry_react_native
 component_type: sdk
 platform: react-native   # dual build: react-native + web (React Native Web), file-split at build time
 language: TypeScript
-current_version: 3.0.1    # package.json "version"
+current_version: 3.1.0    # package.json "version"
 build_variants: dual entry — web (dist/index.web.js|.cjs) + native (dist/index.native.js|.cjs), selected by package.json exports/react-native fields; bundler is Vite (package.json "build": "vite build")
 registry: npm            # @nathanclaire/edge-telemetry-sdk, publishConfig.access=public
 
@@ -131,24 +131,24 @@ common_attributes:
   # --- device block (from DeviceInfo handler; present when collect() succeeds) ---
   - {field: app.name, type: string, unit: none, always_present: false, evidence: adapters/native/deviceInfo.native.ts:52 / web/deviceInfo.web.ts:16}
   - {field: app.version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:53}
-  - {field: app.buildNumber, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:54}
-  - {field: app.packageName, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:55}   # web: window.location.hostname
+  - {field: app.build_number, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:54}
+  - {field: app.package_name, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:55}   # web: window.location.hostname
   - {field: device.id, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:59}         # native getUniqueId(); web "device_{ms}_{uuidv4}_web"
   - {field: device.platform, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:60}   # "ios"|"android"|"web"
-  - {field: device.platformVersion, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:61}
+  - {field: device.platform_version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:61}
   - {field: device.model, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:62}      # web: userAgent
   - {field: device.manufacturer, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:63}
   - {field: device.brand, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:64}
-  - {field: device.androidSdk, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:67}       # android only
-  - {field: device.androidRelease, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:68}   # android only
+  - {field: device.android_sdk, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:67}       # android only
+  - {field: device.android_release, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:68}   # android only
   - {field: device.fingerprint, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:44}      # android only
   - {field: device.hardware, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:44}         # android only
   - {field: device.product, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:45}          # android only
-  - {field: device.iosSystemName, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:48}    # ios only
+  - {field: device.ios_system_name, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:48}    # ios only
   - {field: device.iosDeviceName, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:49}    # ios only
   # --- network block (from NetworkInfo handler) ---
   - {field: network.type, type: string, unit: none, always_present: false, evidence: adapters/native/networkInfo.native.ts:19}    # "wifi"/"cellular"/"unknown"
-  - {field: network.isConnected, type: bool, unit: none, always_present: false, evidence: networkInfo.native.ts:20}
+  - {field: network.is_connected, type: bool, unit: none, always_present: false, evidence: networkInfo.native.ts:20}
   # --- user profile (only when a profile is set; undefined values dropped) ---
   - {field: user.name, type: string, unit: none, always_present: false, evidence: telemetry.ts:558}      # = fullName (v3 contract key)
   - {field: user.fullName, type: string, unit: none, always_present: false, evidence: telemetry.ts:559}

@@ -16,26 +16,26 @@ export class DeviceInfoTrackerWeb {
             app: {
                 name: document.title || "WebApp",
                 version: process.env.APP_VERSION || "1.0.0",
-                buildNumber: process.env.BUILD_NUMBER,
-                packageName: window.location.hostname,
+                build_number: process.env.BUILD_NUMBER,
+                package_name: window.location.hostname,
             },
             device: {
                 id: `device_${Date.now()}_${uuidv4()}_web`,
                 platform: "web",
-                platformVersion: navigator.appVersion,
+                platform_version: navigator.appVersion,
                 model: ua,
                 manufacturer: "browser",
                 brand: navigator.vendor || "unknown",
 
                 // Android placeholders
-                androidSdk: undefined,
-                androidRelease: undefined,
+                android_sdk: undefined,
+                android_release: undefined,
                 fingerprint: undefined,
                 hardware: undefined,
                 product: undefined,
 
                 // iOS placeholders
-                iosSystemName: undefined,
+                ios_system_name: undefined,
                 iosDeviceName: undefined,
             },
         };
