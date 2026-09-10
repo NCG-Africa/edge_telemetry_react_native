@@ -1,5 +1,6 @@
 // adapters/web/deviceInfoWeb.web.ts
 import { DeviceInfo, Telemetry } from "../../core/telemetry";
+import { viewportKeys } from "../viewport";
 
 export class DeviceInfoTrackerWeb {
     private telemetry?: Telemetry;
@@ -12,13 +13,11 @@ export class DeviceInfoTrackerWeb {
         const ua = navigator.userAgent;
 
         // §3.3 ✱ — viewport, read on every collect() because a browser window resizes and a
-        // phone rotates; §3.1 keeps device state on the log-time side of the freeze.
-        // CSS px x DPR, so the key means the same quantity as native's `Dimensions` x
-        // `PixelRatio`. ponytail: no `screen.orientation` read — the width/height compare is
-        // the same two values the successor keys already ship, and it needs no feature check.
+        // phone rotates; §3.1 keeps device state on the log-time side of the freeze. The
+        // *viewport*, not `screen.*`: that is the quantity CLS and LCP scale with. Shaped by
+        // the shared `adapters/viewport.ts`, so the key means the same thing native ships.
         const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
-        const w = window.innerWidth ?? 0;
-        const h = window.innerHeight ?? 0;
+        const viewport = viewportKeys(window.innerWidth ?? 0, window.innerHeight ?? 0, dpr);
 
         return {
             app: {
@@ -45,10 +44,7 @@ export class DeviceInfoTrackerWeb {
 
                 // `cpu_abi` / `low_ram` are native-only (§3.3's `N`) — a browser exposes
                 // neither, and a fabricated value is worse than an absent key.
-                screen_density: dpr,
-                screen_width_px: Math.round(w * dpr),
-                screen_height_px: Math.round(h * dpr),
-                orientation: w > h ? "landscape" : "portrait",
+                ...viewport,
             },
         };
     }

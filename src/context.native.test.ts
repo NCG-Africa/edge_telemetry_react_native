@@ -147,6 +147,39 @@ describe("#108 the Context block — native", () => {
     expect(attrs("custom_event")["user.id"]).toBe("u1");
   });
 
+  it("lets caller data override app./device./network.* but never an identity key", async () => {
+    const { t, attrs } = await build();
+    await t.log("custom_event", {
+      "device.model": "spoof", "network.type": "spoof", "app.name": "spoof",
+      "session.id": "forged", "view.id": "forged",
+      "sdk.platform": "forged", "device.id": "forged",
+    });
+    await t.flush();
+
+    const a = attrs("custom_event");
+    expect(a["device.model"]).toBe("spoof");
+    expect(a["network.type"]).toBe("spoof");
+    expect(a["app.name"]).toBe("spoof");
+    expect(a["session.id"]).not.toBe("forged");
+    expect(a["view.id"]).not.toBe("forged");
+    expect(a["sdk.platform"]).toBe("react-native-android");
+    expect(a["device.id"]).not.toBe("forged");
+  });
+
+  it("carries a non-null view.id on every row — events and metrics alike", async () => {
+    const { t, sent } = await build();
+    await t.log("custom_event");
+    const inst = await (t as any).instancePromise;
+    await inst.logMetric("frame_render_time", 12);
+    await t.flush();
+
+    expect(sent.length).toBeGreaterThan(1);
+    for (const e of sent) {
+      expect(e.attributes!["view.id"]).toMatch(/^view_\d+_[0-9a-f]{16}$/);
+      expect(typeof e.attributes!["view.name"]).toBe("string");
+    }
+  });
+
   it("suffixes session.id with the OS on native too (§3.3 / §12's item 13)", async () => {
     const { t, attrs } = await build();
     await t.log("custom_event");
@@ -250,6 +283,48 @@ describe("#108 the attribution freeze (§3.1) — native", () => {
     const req = sent.find((e) => e.eventName === "http.request")!;
     expect(req.attributes!["view.id"]).toBe(frozen);
     expect(req.attributes!["view.name"]).toBe("Shopping cart");
+  });
+
+  it("keeps network, device state and user.* at log time while the identity freezes", async () => {
+    const { t, sent, inst, settle } = await launch();
+    await inst.enterView("Cart", "route");
+
+    const xhr = new g.XMLHttpRequest();
+    xhr.open("GET", "https://api.example.com/v1/cart");
+    xhr.send();
+
+    // Everything §3.1 puts on the log-time side changes *after* the span opened.
+    await t.setUserId("cust-1");
+    await inst.enterView("Checkout", "route");
+
+    settle();
+    await tick();
+    await t.flush();
+
+    const req = sent.find((e) => e.eventName === "http.request")!.attributes!;
+    // A mid-flight identify() lands the identity we know now — the freeze is not a
+    // whole-Context snapshot, and a regression that widened LogSnapshot would show here.
+    expect(req["user.id"]).toBe("cust-1");
+    expect(req["network.type"]).toBe("wifi");
+    expect(req["device.orientation"]).toBe("portrait");
+    // ...while the attribution keys stayed behind with the span
+    expect(req["view.name"]).toBe("Cart");
+  });
+
+  it("carries §3.3's whole Context block on the row the freeze targets", async () => {
+    const { t, sent, settle } = await launch();
+    const xhr = new g.XMLHttpRequest();
+    xhr.open("GET", "https://api.example.com/v1/orders");
+    xhr.send();
+    settle();
+    await tick();
+    await t.flush();
+
+    // The block rides *every* row, not just a custom_event: an http.request must carry the
+    // same 39-key shape, with its own http.* / span keys on top and nothing missing under.
+    const keys = Object.keys(sent.find((e) => e.eventName === "http.request")!.attributes!);
+    for (const k of NATIVE_PRESENT) expect(keys).toContain(k);
+    for (const k of NATIVE_OMITTED) expect(keys).not.toContain(k);
   });
 
   it("keeps the departing view.id when a route change lands mid-request", async () => {

@@ -73,6 +73,7 @@ src/
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
 │   │                        idempotent, and one listener per instance — see below
+│   ├── viewport.ts        ← §3.3 pure math: the four viewport keys, shared by both builds
 │   ├── frameAggregate.ts  ← §5.1 pure math: p95, the measured target_fps, dropped_count
 │   ├── webVitals.ts       ← §5.3 pure half: the four shared keys + the ten per-vital ones
 │   ├── frameTracker.ts    ← the shared rAF loop; the window resets at every view boundary
@@ -279,9 +280,10 @@ view *in place* — `view.id` never moves — so a deferred row shows the upgrad
 a row carrying `"Home"` against the id now named `"Checkout"` would disagree with itself, which is
 exactly what §3.1's lookup rule exists to prevent. **The freeze is on the id and the timestamp.**
 
-`ViewManager.nameOf(id)` reads the live view, then a **16-entry ring of retired names**. A span
-outliving 16 view boundaries degrades to `"unknown"` — which is what a never-named view reports
-anyway, and §4.5.2's 30 s settle cap has already given up on that request.
+`ViewManager.nameOf(id)` reads the live view, then a bounded ring of retired names
+(`MAX_RETIRED_VIEW_NAMES`, 16). A span outliving 16 view boundaries degrades to `"unknown"` —
+which is what a never-named view reports anyway. ⚠ The bound is a leak guard, **not** a claim
+that no request lives that long: §4.5.2's 30 s cap is `view.loading_time`'s, and an XHR has none.
 
 ### ID formats
 
@@ -1496,8 +1498,9 @@ above rather than defects.
 - **`device.cpu_abi` and `device.low_ram` are absent on web** (§3.3's `N`). A browser exposes
   neither, and `navigator.deviceMemory` is Chromium-only — the same browser-detection-wearing-a-
   memory-label defect §5.2 deleted `performance.memory` for.
-- **The viewport keys are CSS/dp x pixel-ratio on both builds**, so they mean physical pixels and
-  are comparable across web and native. ⚠ Web reads `window.innerWidth/innerHeight` — the
+- **The viewport keys are CSS/dp x pixel-ratio on both builds**, shaped once in
+  `adapters/viewport.ts` so one column cannot come to mean physical pixels on one build and
+  logical units on the other. They are comparable across web and native. ⚠ Web reads `window.innerWidth/innerHeight` — the
   *viewport*, not `screen.width` — so a desktop browser's value moves when the user resizes the
   window mid-session. That is the quantity CLS and LCP actually scale with.
 - **`device.orientation` is derived from width vs height, not from `screen.orientation`.** A square
@@ -1515,9 +1518,16 @@ above rather than defects.
   `user.id`, an ephemeral `device.id` or a drop booked carries more of the 39, which is what
   "omitted until there is one" means. No test asserts a row can carry **all** 39 at once — several
   are mutually exclusive by platform.
-- **`ViewManager.nameOf()` keeps 16 retired names.** A span that outlives 16 view boundaries
-  reports `"unknown"` rather than its view's real name. Bounded on purpose — an unbounded map is a
-  leak on a long session — and the settle cap (30 s) has already abandoned any request that old.
+- **`ViewManager.nameOf()` keeps 16 retired names**, so a span outliving 16 view boundaries
+  reports `view.name: "unknown"` against a live, correct `view.id`. Bounded on purpose — an
+  unbounded map is a leak on a long session. ⚠ The bound is **not** justified by §4.5.2's 30 s
+  cap: that one is `view.loading_time`'s, and an `http.request` has no cap at all, so a genuinely
+  long request across 16 route changes does hit this. Rare enough to leave; the id still joins.
+- **`device.cpu_abi` and `device.low_ram` can be omitted on native**, which §3.3 types never-null.
+  They are read through `supportedAbis?.()` / `isLowRamDevice?.()` because
+  `react-native-device-info` is an **optional** peer dep and an older one lacks both methods — and
+  since #108 an `undefined` is omitted rather than shipped. Crashing a shipped app over a missing
+  capability read is the worse failure; flag it if the backend needs the guarantee.
 - **A deferred row's `view.name` follows a rung upgrade** (§3.1's log-time lookup), so
   `ui.interaction`'s pre-#108 behaviour of replaying the snapshotted name is gone. The row is still
   pinned to the view it happened in by `view.id`; only the *name* moved, and it moved to the one

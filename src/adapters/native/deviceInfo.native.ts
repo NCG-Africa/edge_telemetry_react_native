@@ -3,6 +3,7 @@ import { Dimensions, PixelRatio, Platform } from "react-native";
 import DeviceInfoLib from "react-native-device-info";
 import { Telemetry } from "../../core/telemetry";
 import { DeviceInfo } from "../../core/telemetry";
+import { viewportKeys } from "../viewport";
 
 export class DeviceInfoTrackerNative {
     // private telemetry: Telemetry;
@@ -47,8 +48,11 @@ export class DeviceInfoTrackerNative {
         const lowRam = await DeviceInfoLib.isLowRamDevice?.();
 
         // Read on every collect(), not cached: a device rotates mid-session, and §3.1 puts
-        // `device.orientation` and device state on the log-time side of the freeze.
+        // `device.orientation` and device state on the log-time side of the freeze. The
+        // *shaping* is shared with web (`adapters/viewport.ts`) so one column cannot come to
+        // mean physical pixels on one build and dp on the other.
         const { width, height } = Dimensions.get("window");
+        const viewport = viewportKeys(width, height, PixelRatio.get());
 
         const info: DeviceInfo = {
             app: {
@@ -76,10 +80,7 @@ export class DeviceInfoTrackerNative {
                 ios_system_name: iosSystemName,
 
                 // Viewport — both builds, never null (§3.3)
-                screen_density: PixelRatio.get(),
-                screen_width_px: Math.round(width * PixelRatio.get()),
-                screen_height_px: Math.round(height * PixelRatio.get()),
-                orientation: width > height ? "landscape" : "portrait",
+                ...viewport,
             },
         };
 

@@ -14,6 +14,8 @@ import { stringifyOrDrop } from "./utils/json";
 import { version as PKG_VERSION } from "../../package.json";
 
 export type { BeforeSend } from "./beforeSend";
+import type { Orientation } from "../adapters/viewport";
+export type { Orientation };
 
 // v3 wire contract constants
 // §3.3 / §12's item 10 — `react-native-{Platform.OS}`, joining Flutter's `flutter-{os}` shape.
@@ -281,7 +283,7 @@ export interface DeviceInfo {
         screen_density?: number;
         screen_width_px?: number;
         screen_height_px?: number;
-        orientation?: string;
+        orientation?: Orientation;
     };
 }
 

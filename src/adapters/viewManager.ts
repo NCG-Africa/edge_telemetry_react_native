@@ -28,6 +28,13 @@ const RANK: Record<ViewNameSource, number> = { none: 0, url: 1, route: 2, explic
 export const UNKNOWN_VIEW_NAME = "unknown";
 
 /**
+ * How many retired views `nameOf()` can still name (§3.1). Bounded because an unbounded
+ * map is a leak on a long session; 16 because a span outliving that many boundaries is a
+ * request §4.5.2's 30 s settle cap has already given up on.
+ */
+export const MAX_RETIRED_VIEW_NAMES = 16;
+
+/**
  * All ViewManager needs of core. Structural, so the manager stays unit-testable alone.
  * `trace` is optional for that reason and for that reason only — every real `Telemetry`
  * has one, and a view with no trace source simply carries no §6 keys.
@@ -104,9 +111,9 @@ export class ViewManager {
      * `http.request` that outlives a route change reports the departing view's *current*
      * best name rather than a stale copy taken at send.
      *
-     * ponytail: a 16-entry ring of retired names, not a full history. A span outliving 16
-     * view boundaries is a request the settle cap (30 s) already gave up on; it degrades to
-     * `"unknown"`, which is what a never-named view reports anyway.
+     * ponytail: a bounded ring of retired names, not a full history. A span outliving
+     * `MAX_RETIRED_VIEW_NAMES` boundaries is a request the settle cap (30 s) already gave up
+     * on; it degrades to `"unknown"`, which is what a never-named view reports anyway.
      */
     nameOf(id: string): string {
         if (id === this.view.id) return this.view.name;
@@ -269,8 +276,10 @@ export class ViewManager {
         const prev = this.view;
         const now = Date.now();
         this.retiredNames.set(prev.id, prev.name);
-        if (this.retiredNames.size > 16) {
-            this.retiredNames.delete(this.retiredNames.keys().next().value as string);
+        if (this.retiredNames.size > MAX_RETIRED_VIEW_NAMES) {
+            // Map iteration is insertion-ordered, so the first key is the oldest retired view.
+            const oldest = this.retiredNames.keys().next();
+            if (!oldest.done) this.retiredNames.delete(oldest.value);
         }
         this.view = {
             id: mintViewId(),
