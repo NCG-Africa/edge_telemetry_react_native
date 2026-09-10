@@ -38,6 +38,9 @@ export type DropReason = "queue_full" | "store_full" | "rejected";
  * ponytail: O(n) scan per eviction, n <= 500. Track the first non-crash index if a
  * profile ever shows this on a hot path.
  */
+/** An event's `event.sequence`, or -1 before `enqueue()` has stamped one. */
+const seqOf = (e: TelemetryEvent): number => e.attributes?.['event.sequence'] ?? -1;
+
 export function evictIndex(events: TelemetryEvent[]): number {
     const i = events.findIndex(e => e.eventName !== "app.crash");
     return i === -1 ? 0 : i;
@@ -315,6 +318,9 @@ export class Telemetry {
     // `event.sequence`'s gaps are what actually covers that.
     private eventsDropped = 0;
     private dropReason?: DropReason;
+    // Highest `event.sequence` the crash path has already written to the offline store, so a
+    // second crash persists only the rows the first one did not. -1 means "nothing yet".
+    private crashPersistedThrough = -1;
 
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
@@ -602,6 +608,7 @@ export class Telemetry {
         this.sessionStart = Date.now();
         this.sessionSequence = 0;
         this.eventSequence = 0;   // the ordinal is per session, and this is a new one
+        this.crashPersistedThrough = -1;   // the watermark is an event.sequence, so it resets with it
         this.sessionEventCount = 0;
         this.errorCount = 0;
         // Re-rolled at the *configured* rate, not the retired session's — the previous
@@ -867,6 +874,12 @@ export class Telemetry {
      * default `captureConsole`) and the process usually lives on. A successful send therefore
      * leaves a duplicate on disk to replay next launch — which is what `event.sequence` and
      * the backend's `(session_id, event_sequence)` dedup exist for (§2.4).
+     *
+     * *One* duplicate. Each row is written at most once by this path, watermarked on
+     * `event.sequence`: `captureConsole` is on by default, so a chatty app crash-flushes
+     * often, and re-persisting the whole queue each time would fill the store with copies of
+     * its own backlog and book `store_full` drops that are not loss — corrupting the very
+     * counter this change adds.
      */
     private async flushCrash() {
         if (!this.sender || this.queue.length === 0) return;
@@ -876,23 +889,32 @@ export class Telemetry {
         const isCrash = (e: TelemetryEvent) => e.eventName === 'app.crash';
         this.queue = [...this.queue.filter(isCrash), ...this.queue.filter(e => !isCrash(e))];
 
-        if (this.sender.onFailure) {
+        const pending = this.queue.filter(e => seqOf(e) > this.crashPersistedThrough);
+        if (pending.length > 0 && this.sender.onFailure) {
             try {
-                this.recordDrop("store_full", (await this.sender.onFailure([...this.queue])) || 0);
+                this.recordDrop("store_full", await this.sender.onFailure(pending));
+                // Advanced only on a write that returned: a throw leaves the watermark where
+                // it was, so the next crash retries these rows rather than abandoning them.
+                this.crashPersistedThrough = Math.max(this.crashPersistedThrough, ...pending.map(seqOf));
             } catch (err) {
                 debug.warn("Telemetry: crash-path persist failed:", err);
             }
         }
 
-        // Sent directly, not through flush(): the queue is already on disk, and flush()'s
-        // failure path would persist this batch a second time.
-        const batch = this.queue.slice(0, this.batchSize);
+        // Spliced *before* the send, not after: both the interval and the batch-full trigger
+        // fire flush() unawaited, so a concurrent flush() splices this same front — and a
+        // post-send splice would then delete rows this batch never carried, silently and
+        // without booking them. Sent directly rather than through flush() because the rows
+        // are already on disk and flush()'s failure path would persist them a second time.
+        const batch = this.queue.splice(0, this.batchSize);
         try {
             await this.sender.send(batch);
-            this.queue.splice(0, batch.length);
-            this.sessionSequence++;
-            await this.persistSession();
+            await this.ackBatch();
         } catch (err) {
+            // Requeue only what the store does not already hold — the rest is safe on disk
+            // and requeueing it would send it twice for no gain.
+            const unsaved = batch.filter(e => seqOf(e) > this.crashPersistedThrough);
+            if (unsaved.length > 0) this.queue.unshift(...unsaved);
             debug.warn("Telemetry: crash-path send failed:", err);
         }
     }
@@ -1048,9 +1070,12 @@ export class Telemetry {
         }
     }
 
-    /** Book dropped rows against the monotonic counter and the reason that shipped last. */
-    private recordDrop(reason: DropReason, count = 1) {
-        if (count <= 0) return;
+    /**
+     * Book dropped rows against the monotonic counter and the reason that shipped last.
+     * Takes `Sender.onFailure`'s return shape as-is — a sender with no cap returns nothing.
+     */
+    private recordDrop(reason: DropReason, count: number | void = 1) {
+        if (!count || count <= 0) return;
         this.eventsDropped += count;
         this.dropReason = reason;
     }
@@ -1096,14 +1121,11 @@ export class Telemetry {
 
         try {
             await this.sender.send(toSend);
-            this.sessionSequence++;   // acknowledged (2xx) batch — order a session's batches (#29)
-            // Persist it too: a resumed session that restarts at 0 would emit duplicate
-            // (session.id, session.sequence) pairs and stop ordering anything (#92).
-            await this.persistSession();
+            await this.ackBatch();
         } catch (lastError) {
             if (this.sender.onFailure) {
                 try {
-                    this.recordDrop("store_full", (await this.sender.onFailure(toSend)) || 0);
+                    this.recordDrop("store_full", await this.sender.onFailure(toSend));
                 } catch (persistErr) {
                     // If persistence fails, requeue to avoid data loss
                     this.queue.unshift(...toSend);
@@ -1116,6 +1138,16 @@ export class Telemetry {
             debug.error("Telemetry flush failed:", lastError);
             throw lastError;
         }
+    }
+
+    /**
+     * Book an acknowledged (2xx) batch. `session.sequence` orders a session's batches (#29),
+     * and it is persisted because a resumed session restarting at 0 would emit duplicate
+     * (session.id, session.sequence) pairs and stop ordering anything (#92).
+     */
+    private async ackBatch() {
+        this.sessionSequence++;
+        await this.persistSession();
     }
 
     getQueue() {

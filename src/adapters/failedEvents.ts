@@ -62,7 +62,7 @@ export function encodeFailed(
     let total = sizes.reduce((a, b) => a + b, 0) + Math.max(kept.length - 1, 0) + 2;
     while (total > STORE_MAX_BYTES && kept.length > 0) {
         const i = evictIndex(kept);
-        total -= sizes[i] + 1;
+        total -= sizes[i] + (kept.length > 1 ? 1 : 0);   // no separating comma to reclaim on the last row
         sizes.splice(i, 1);
         kept.splice(i, 1);
         dropped++;

@@ -230,6 +230,28 @@ describe("the crash path (§2 / §9.4)", () => {
     expect(r.persisted[0].map(e => e.eventName)).toContain("custom_event");
   });
 
+  it("persists each row once across repeated crashes — captureConsole makes this the common case", async () => {
+    silenceConsole();
+    const r = recordingSender();
+    const t = createTelemetry({
+      apiKey: "edge_k", endpoint: "https://x/telemetry",
+      // Nothing sends, so the queue only grows: what the store is handed is purely the
+      // crash path's doing.
+      sender: { send: async () => { throw new Error("offline"); }, onFailure: r.sender.onFailure },
+      batchSize: 50, flushIntervalMs: 0,
+    });
+
+    await t.log("custom_event", { n: 1 });
+    await t.log("app.crash", { "crash.message": "one" });
+    await t.log("custom_event", { n: 2 });
+    await t.log("app.crash", { "crash.message": "two" });
+
+    // Re-persisting the whole queue each time would fill the store with copies of its own
+    // backlog and book store_full drops that are not loss.
+    const written = r.persisted.flat().map(seq);
+    expect(new Set(written).size).toBe(written.length);
+  });
+
   it("still sends the crash when the persist fails — the send is not gated on the store", async () => {
     silenceConsole();
     const r = recordingSender();

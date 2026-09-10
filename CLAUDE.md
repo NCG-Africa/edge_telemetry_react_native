@@ -274,11 +274,17 @@ It is persisted with the session record for the same reason `session.sequence` i
 restarts at 0 forges duplicate `(session.id, event.sequence)` pairs, which is the exact key the
 dedup index is built on.
 
-**On `app.crash`** the queue is persisted whole and **one** batch is sent, crashes reordered to
-the front. Not a drain — a dying process gets one round trip. The queue is *left intact*, because
+**On `app.crash`** the queue is persisted and **one** batch is sent, crashes reordered to the
+front. Not a drain — a dying process gets one round trip. The queue is *left intact*, because
 most `app.crash` rows are non-fatal (a caught error, a `console.error` under the default
-`captureConsole`) and the process usually lives on; a successful send therefore leaves a
+`captureConsole`) and the process usually lives on; a successful send therefore leaves *one*
 duplicate on disk, and `event.sequence` is what makes that free.
+
+*One*, because the persist is watermarked on `event.sequence` (`crashPersistedThrough`): a
+chatty app crash-flushes often, and re-persisting the whole queue each time would fill the store
+with copies of its own backlog and book `store_full` drops that are not loss. The batch is
+spliced out **before** the send, not after — both the interval and the batch-full trigger fire
+`flush()` unawaited, so a post-send splice could delete rows the batch never carried.
 
 ⚠ **The web/native asymmetry here is real and is not fixed.** Web's `Store` is synchronous
 `localStorage`, so the persist has landed when the next line runs and the loss window *closes*.
