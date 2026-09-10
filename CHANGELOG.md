@@ -158,7 +158,7 @@ once.
 
 1. Add `apiKey` (starting with `edge_`) to `createTelemetry`.
 2. Set `endpoint` to the **full** collector URL, e.g.
-   `https://collector.example.com/collector/telemetry` — it is used verbatim as the POST URL.
+   `https://collector.example.com/telemetry` — it is used verbatim as the POST URL.
 3. Drop any consumer code that read the standalone `device_info`/`network_info` events; that
    data now rides on every event's `attributes`.
 4. If you called `log()` with custom names, they now arrive as `custom_event` with your name

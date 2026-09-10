@@ -73,7 +73,7 @@ import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk";
 
 const telemetry = createTelemetry({
   apiKey: "edge_...",                 // required; must start with "edge_"
-  endpoint: "https://collector.example.com/collector/telemetry",
+  endpoint: "https://collector.example.com/telemetry",
   batchSize: 20,
   flushIntervalMs: 10000,
 });
@@ -128,6 +128,7 @@ Native-only on `TelemetryNative`: `attachNavigation(ref)`, `trackRoute(from, to)
 POST <endpoint>
 Content-Type: application/json
 X-API-Key: edge_...
+Authorization: Bearer edge_...      # same credential, always both — see below
 
 {
   "type": "telemetry_batch",
@@ -137,8 +138,14 @@ X-API-Key: edge_...
 }
 ```
 
+Both credential headers are built by `buildHeaders()` in `adapters/batch.ts` and sent on **every**
+POST with the same value: the collector reads `Authorization` under `AUTH_MODE=jwt` and `X-API-Key`
+otherwise, so one build serves the shared and the segmented (bank / on-prem) topologies. Never sniff
+the credential shape to pick one, and never tighten `assertApiKey` to the collector's ≥3-part API-key
+check — that would hard-reject every `edge_<jwt>`. The collector's path is `POST /telemetry`.
+
 Built by `adapters/batch.ts` so both senders are byte-identical. Web uses
-`fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the API-key header.
+`fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the credential headers.
 On failure: retried (3 attempts; native exponential + jitter, web linear), then persisted
 **through the `Store` port** under key `telemetry_failed_events` and replayed on next init.
 Neither sender touches `localStorage` / `AsyncStorage` directly any more — the decode rules

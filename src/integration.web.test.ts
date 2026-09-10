@@ -21,7 +21,7 @@ describe("createTelemetry (web) — public API → wire", () => {
 
     const t = createTelemetry({
       apiKey: "edge_integration",
-      endpoint: "https://x/collector/telemetry",
+      endpoint: "https://x/telemetry",
       sender,
       batchSize: 10,
       flushIntervalMs: 0,
@@ -52,7 +52,7 @@ describe("createTelemetry (web) — public API → wire", () => {
 
     const t = createTelemetry({
       apiKey: "edge_integration",
-      endpoint: "https://x/collector/telemetry",
+      endpoint: "https://x/telemetry",
       sender,
       batchSize: 10,
       flushIntervalMs: 0,
@@ -98,7 +98,7 @@ describe("createTelemetry (web) — Context keys are snake_case on the wire (#88
     const sent: TelemetryEvent[] = [];
     const t = createTelemetry({
       apiKey: "edge_integration",
-      endpoint: "https://x/collector/telemetry",
+      endpoint: "https://x/telemetry",
       sender: { send: async (e: TelemetryEvent[]) => { sent.push(...e); } },
       batchSize: 10,
       flushIntervalMs: 0,

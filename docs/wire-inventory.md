@@ -53,15 +53,19 @@ Transport, identical on both builds except where noted:
 
 | | Native | Web |
 |---|---|---|
-| Method / headers | `POST`, `Content-Type: application/json`, `X-API-Key` | same |
+| Method / headers ⚠→ | `POST`, `Content-Type: application/json`, `X-API-Key` — **plus `Authorization: Bearer <same credential>` since #90** | same |
 | Citation | `nativeSender.ts:21-28` | `webSender.ts:25-33` |
 | `keepalive` | n/a | `true` — `webSender.ts:32` |
 | Retry | 3 attempts, `500 * 2**n + jitter` — `nativeSender.ts:42-47` | 3 attempts, `n * 500` linear — `webSender.ts:43-45` |
 | Offline store | `AsyncStorage`, key `telemetry_failed_events` — `nativeSender.ts:7-12` | `localStorage`, same key — `webSender.ts:6,9-13` |
 | Replay on init | yes — `index.native.ts:51` | **no** — `webSender.ts:67` `replayFailedWeb` is exported but never called from `index.web.ts` |
 
-**`X-API-Key` is omitted entirely when `apiKey` is falsy** (`nativeSender.ts:25`,
-`webSender.ts:29`). The factory's `assertApiKey` guards the documented path
+⚠→ **Since #90 both credential headers ship on every POST**, built once by `buildHeaders()`
+(`batch.ts`) — the collector reads `Authorization` under `AUTH_MODE=jwt` and `X-API-Key`
+otherwise. The `endpoint` default also moved to the collector's real path, `/telemetry`.
+
+**`X-API-Key` is omitted entirely when `apiKey` is falsy** — and so is `Authorization`; the two
+are omitted together (`nativeSender.ts:25`, `webSender.ts:29`). The factory's `assertApiKey` guards the documented path
 (`createTelemetry.web.ts:13-17`), but the `TelemetryWeb`/`TelemetryNative` constructors take
 `apiKey?: string` (`index.web.ts:9`, `index.native.ts:9`), so direct construction ships
 unauthenticated batches.

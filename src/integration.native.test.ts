@@ -43,6 +43,23 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
 
 afterEach(() => vi.restoreAllMocks());
 
+describe("createTelemetry (native) — credential validation", () => {
+  it("accepts a JWT-shaped credential — assertApiKey must not tighten to a segment count (#90)", async () => {
+    silenceConsole();
+    const { createTelemetry } = await import("./createTelemetry.native");
+
+    // `edge_<jwt>` has fewer than three `_`-parts; the collector's API-key check would reject
+    // it, and adopting that check here would make the segmented deployment unreachable.
+    expect(() =>
+      createTelemetry({
+        apiKey: "edge_eyJhbGciOiJSUzI1NiJ9.eyJ0ZW5hbnRfaWQiOiJ0MSJ9.sig",
+        endpoint: "https://x/telemetry",
+        sender: { send: async () => {} },
+      }),
+    ).not.toThrow();
+  });
+});
+
 function silenceConsole() {
   vi.spyOn(console, "log").mockImplementation(() => {});
   vi.spyOn(console, "warn").mockImplementation(() => {});
@@ -54,7 +71,7 @@ async function firstEventAttributes() {
   const sent: TelemetryEvent[] = [];
   const t = createTelemetry({
     apiKey: "edge_integration",
-    endpoint: "https://x/collector/telemetry",
+    endpoint: "https://x/telemetry",
     sender: { send: async (e: TelemetryEvent[]) => { sent.push(...e); } },
     batchSize: 10,
     flushIntervalMs: 0,

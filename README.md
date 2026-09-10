@@ -36,7 +36,7 @@ v3 is a **single clean break** onto the EdgeRum wire contract — no dual-emit, 
 If you're coming from v2, the headlines:
 
 - `createTelemetry({ apiKey, endpoint, ... })` — **`apiKey` is now required** (must start with
-  `edge_`; sent as `X-API-Key`; init throws otherwise).
+  `edge_`; sent as **both** `X-API-Key` and `Authorization: Bearer`; init throws otherwise).
 - The POST body is the `telemetry_batch` envelope; timestamps are ISO-8601; device/network data
   rides as a Context block on **every** event (the standalone `device_info`/`network_info`
   events are gone).
@@ -85,7 +85,7 @@ import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk";
 
 const telemetry = createTelemetry({
   apiKey: "edge_xxxxxxxx",                                  // required; must start with "edge_"
-  endpoint: "https://collector.example.com/collector/telemetry", // full POST URL, used verbatim
+  endpoint: "https://collector.example.com/telemetry", // full POST URL, used verbatim
   batchSize: 20,
   flushIntervalMs: 10000,
 });
@@ -100,7 +100,7 @@ import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk";
 
 const telemetry = createTelemetry({
   apiKey: "edge_xxxxxxxx",
-  endpoint: "https://collector.example.com/collector/telemetry",
+  endpoint: "https://collector.example.com/telemetry",
   batchSize: 20,
   flushIntervalMs: 10000,
 });
@@ -118,7 +118,7 @@ crash/error capture, HTTP interception, frame + memory sampling, app foreground/
 
 ```typescript
 type TelemetryOpts = {
-  apiKey: string;           // REQUIRED — must start with "edge_"; sent as X-API-Key
+  apiKey: string;           // REQUIRED — must start with "edge_"; sent as X-API-Key AND Authorization: Bearer
   endpoint?: string;        // full collector POST URL (used verbatim). Default is a placeholder — always set it
   batchSize?: number;       // events per flush. Core default 2 — set higher (e.g. 20) for production
   flushIntervalMs?: number; // periodic flush. Default 10000; <= 0 disables the timer
@@ -131,7 +131,9 @@ type TelemetryOpts = {
 - **`apiKey`** is validated at `createTelemetry()` — a key not starting with `edge_` throws
   immediately, so misconfiguration fails fast instead of silently dropping data. `tenant_id`
   is never sent; the backend resolves the tenant from the key.
-- **`endpoint`** is the exact URL the SDK POSTs to. Point it at your collector's telemetry path.
+- **`endpoint`** is the exact URL the SDK POSTs to. The collector terminates **`POST /telemetry`** —
+  that is the path to point it at — `/collector/telemetry`, documented here previously, exists in
+  no deployment and 404s.
 
 ---
 
@@ -252,6 +254,7 @@ honestly measure.
 POST <endpoint>
 Content-Type: application/json
 X-API-Key: edge_xxxxxxxx
+Authorization: Bearer edge_xxxxxxxx
 
 {
   "type": "telemetry_batch",
@@ -307,7 +310,11 @@ emits one `user.profile.update` — it never changes the SDK-owned anonymous `us
   `localStorage` on web, key `telemetry_failed_events`) and replayed on next init — telemetry
   survives transient network loss.
 - **Web unload:** the web sender uses `fetch({ keepalive: true })` (not `sendBeacon`, which can't
-  set the required `X-API-Key` header) so in-flight batches survive page unload.
+  set the required credential headers) so in-flight batches survive page unload.
+- **Auth:** every POST carries the credential twice — `X-API-Key` and `Authorization: Bearer`, same
+  value. A shared collector reads the first, a segmented (bank / on-prem) one running `AUTH_MODE=jwt`
+  reads the second; one build works against both, and `apiKey` may be an API key or an `edge_`-prefixed
+  JWT.
 
 ---
 

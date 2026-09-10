@@ -175,7 +175,15 @@ session:
 # 4. Transport
 # ============================================================
 transport:
-  endpoint_path: consumer-supplied full URL via endpoint opt. Default placeholder "https://your.telemetry.endpoint/collect" (webSender.ts:5, nativeSender.ts:6). No fixed path.
+  endpoint_path: consumer-supplied full URL via endpoint opt, used verbatim. Default placeholder "https://your.telemetry.endpoint/telemetry", declared once in batch.ts:27 and imported by both senders — the path matches the collector's POST /telemetry (contract 11.1). The previously documented "/collector/telemetry" exists in no artifact and 404s; corrected in README + default (#90).
+  auth:
+    headers: >
+      EVERY POST carries the credential twice — "X-API-Key: <cred>" AND
+      "Authorization: Bearer <cred>", same value, built once by buildHeaders() so both senders
+      are byte-identical. Both are omitted together when apiKey is absent.
+      evidence adapters/batch.ts:13-23, webSender.ts:45, nativeSender.ts:45
+    why_both: collector credentialFromRequest reads Authorization when AUTH_MODE=jwt and X-API-Key otherwise — exactly one, never both. Sending both makes one build work in the shared and segmented (bank / on-prem) topologies with no mode flag and no credential-shape sniffing (contract 11.1, #90).
+    validation: assertApiKey checks prefix "edge_" + non-empty remainder ONLY, in the factory (createTelemetry.web.ts:20, createTelemetry.native.ts:20). DELIBERATELY not tightened to the collector's >=3-underscore-part API-key check: that would hard-reject every edge_<jwt> and make the segmented deployment unreachable. The real catch is the 401.
   serialization: json. buildBatch() => JSON.stringify({type:"telemetry_batch", timestamp, batch_size, events}). evidence src/adapters/batch.ts:5-12
   compression: none
   batching:
