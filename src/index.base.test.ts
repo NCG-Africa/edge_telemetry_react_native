@@ -11,7 +11,6 @@ function fakeCore() {
     shutdown: vi.fn(),
     trackErrors: vi.fn(),
     setUserId: vi.fn(),
-    generateUserId: vi.fn(() => "user_generated"),
     setUserProfile: vi.fn(),
     setUserDetails: vi.fn(),
     updateUserProfile: vi.fn(),
@@ -74,7 +73,6 @@ describe("TelemetryBase delegation", () => {
     const core = fakeCore();
     const t = new TestTelemetry(core);
 
-    expect(await t.generateUserId()).toBe("user_generated");
     expect(await t.getUserProfile()).toEqual({ fullName: "Ada" });
   });
 });
@@ -82,7 +80,7 @@ describe("TelemetryBase delegation", () => {
 describe("public API parity", () => {
   const shared = [
     "log", "flush", "shutdown", "trackErrors",
-    "setUserId", "generateUserId", "setUserProfile", "setUserDetails",
+    "setUserId", "setUserProfile", "setUserDetails",
     "updateUserProfile", "getUserProfile", "clearUserProfile",
     "setUserName", "setUserContact", "identify",
   ];

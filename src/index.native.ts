@@ -26,6 +26,12 @@ export class TelemetryNative extends TelemetryBase {
 
         debug.log("🌍 Running Native Telemetry");
         this.instancePromise = (async () => {
+            // RN ships no WebCrypto; this already-declared dependency installs
+            // crypto.getRandomValues, which the id path now draws from (#91). It is a
+            // no-op wherever crypto already exists, and irrelevant off-device.
+            try { await import("react-native-get-random-values"); }
+            catch (err) { debug.warn("crypto.getRandomValues polyfill unavailable:", err); }
+
             const { Telemetry } = await import("./core/telemetry");
             const { nativeSender } = await import("./adapters/nativeSender");
 

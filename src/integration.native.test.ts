@@ -123,3 +123,101 @@ describe("createTelemetry (native) — Context keys are snake_case on the wire (
     }
   });
 });
+
+// #91 — native mirror of the web identity block. Same two keys, same two owners; the
+// only difference that matters is that the native Store is asynchronous.
+describe("createTelemetry (native) — identity (#91)", () => {
+  function build(store: any) {
+    const sent: TelemetryEvent[] = [];
+    const make = async () => {
+      const { createTelemetry } = await import("./createTelemetry.native");
+      return createTelemetry({
+        apiKey: "edge_integration",
+        endpoint: "https://x/telemetry",
+        sender: { send: async (e: TelemetryEvent[]) => { sent.push(...e); } },
+        batchSize: 50,
+        flushIntervalMs: 0,
+        captureConsole: false,
+        store,
+      });
+    };
+    const last = () => sent[sent.length - 1].attributes!;
+    return { make, sent, last };
+  }
+
+  async function emit(t: any) {
+    await t.log("custom_event");
+    await t.flush();
+  }
+
+  it("mints a persisted device.id over the async Store and reuses it across restarts", async () => {
+    silenceConsole();
+    const { memoryStore } = await import("./core/memoryStore");
+    const { DEVICE_ID_KEY } = await import("./core/telemetry");
+    const store = memoryStore({ async: true });
+
+    const first = build(store);
+    await emit(await first.make());
+    const id = first.last()["device.id"];
+    expect(id).toMatch(/^device_\d+_[0-9a-f]{16}_android$/);
+    expect(await store.get(DEVICE_ID_KEY)).toEqual({ status: "hit", value: id });
+
+    const second = build(store);
+    await emit(await second.make());
+    expect(second.last()["device.id"]).toBe(id);
+  });
+
+  it("never rotates device.id — not on identify, not on a user-id change, not on clear", async () => {
+    silenceConsole();
+    const { memoryStore } = await import("./core/memoryStore");
+    const { make, last } = build(memoryStore({ async: true }));
+    const t = await make();
+
+    await emit(t);
+    const id = last()["device.id"];
+
+    await t.identify({ name: "Ada" });
+    await emit(t);
+    expect(last()["device.id"]).toBe(id);
+
+    await t.setUserId("cust-88213");
+    await emit(t);
+    expect(last()["device.id"]).toBe(id);
+
+    await t.clearUserProfile();
+    await emit(t);
+    expect(last()["device.id"]).toBe(id);
+  });
+
+  it("omits user.id until the consumer supplies one, truncating it to 255 at source", async () => {
+    silenceConsole();
+    const { memoryStore } = await import("./core/memoryStore");
+    const { make, last } = build(memoryStore({ async: true }));
+    const t = await make();
+
+    await emit(t);
+    expect(Object.keys(last())).not.toContain("user.id");
+
+    await t.setUserId("u".repeat(300));
+    await emit(t);
+    expect(last()["user.id"]).toBe("u".repeat(255));
+
+    await t.clearUserProfile();
+    await emit(t);
+    expect(Object.keys(last())).not.toContain("user.id");
+  });
+
+  it("flags device.id_ephemeral when the Store is unavailable, and omits it otherwise", async () => {
+    silenceConsole();
+    const { memoryStore } = await import("./core/memoryStore");
+
+    const ok = build(memoryStore({ async: true }));
+    await emit(await ok.make());
+    expect(Object.keys(ok.last())).not.toContain("device.id_ephemeral");
+
+    const full = build(memoryStore({ async: true, unavailable: true }));
+    await emit(await full.make());
+    expect(full.last()["device.id_ephemeral"]).toBe(true);
+    expect(full.last()["device.id"]).toMatch(/^device_\d+_[0-9a-f]{16}_android$/);
+  });
+});

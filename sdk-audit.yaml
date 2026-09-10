@@ -83,7 +83,7 @@ events:
       - {field: network.type, type: string, unit: none, always_present: false}            # current type; may be undefined
 
   - name: user.profile.update
-    trigger: identify() call. Emits once after merging host identity into profile; anonymous user.id preserved. evidence src/core/telemetry.ts:381-396
+    trigger: identify() call. Emits once after merging host identity into profile; carries no user.id of its own, so traffic stays anonymous unless setUserId was called (#91). evidence src/core/telemetry.ts:435-460
     payload_fields: []   # profile fields ride via common_attributes (user.* keys)
 
   - name: custom_event
@@ -117,23 +117,24 @@ events:
 
 # ============================================================
 # 2. Common attributes — attached to EVERY event and metric
-# Built in src/core/telemetry.ts collectContext() (lines 527-575). Device info flattened
+# Built in src/core/telemetry.ts collectContext() (lines 582-641). Device info flattened
 # with empty prefix (keys already app.*/device.*), network flattened with "network" prefix.
 # ============================================================
 common_attributes:
   # --- identity / session / sdk (always present) ---
-  - {field: user.id, type: string, unit: none, always_present: true, evidence: telemetry.ts:548}     # may be null; auto-generated "user_{ms}_{16hex}"
-  - {field: session.id, type: string, unit: none, always_present: true, evidence: telemetry.ts:549}
-  - {field: session.start_time, type: string, unit: none, always_present: true, evidence: telemetry.ts:550}   # ISO 8601
-  - {field: session.sequence, type: int, unit: none, always_present: true, evidence: telemetry.ts:551}         # ++ per acknowledged batch
-  - {field: sdk.platform, type: string, unit: none, always_present: true, evidence: telemetry.ts:552}          # constant "react-native" (BOTH web & native)
-  - {field: sdk.version, type: string, unit: none, always_present: true, evidence: telemetry.ts:553}           # package.json version
+  - {field: user.id, type: string, unit: none, always_present: false, evidence: telemetry.ts:614}    # consumer-supplied, truncated to 255; OMITTED on anonymous traffic (#91)
+  - {field: device.id, type: string, unit: none, always_present: true, evidence: telemetry.ts:611}    # SDK-minted "device_{ms}_{16hex}_{ios|android|web}", persisted via Store key telemetry_device_id (#91)
+  - {field: device.id_ephemeral, type: bool, unit: none, always_present: false, evidence: telemetry.ts:612}   # true only when the Store reported unavailable; omitted when false (#91)
+  - {field: session.id, type: string, unit: none, always_present: true, evidence: telemetry.ts:615}
+  - {field: session.start_time, type: string, unit: none, always_present: true, evidence: telemetry.ts:616}   # ISO 8601
+  - {field: session.sequence, type: int, unit: none, always_present: true, evidence: telemetry.ts:617}         # ++ per acknowledged batch
+  - {field: sdk.platform, type: string, unit: none, always_present: true, evidence: telemetry.ts:618}          # constant "react-native" (BOTH web & native)
+  - {field: sdk.version, type: string, unit: none, always_present: true, evidence: telemetry.ts:619}           # package.json version
   # --- device block (from DeviceInfo handler; present when collect() succeeds) ---
   - {field: app.name, type: string, unit: none, always_present: false, evidence: adapters/native/deviceInfo.native.ts:52 / web/deviceInfo.web.ts:16}
   - {field: app.version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:53}
   - {field: app.build_number, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:55}
   - {field: app.package_name, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:56}   # web: window.location.hostname
-  - {field: device.id, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:59}         # native getUniqueId(); web "device_{ms}_{uuidv4}_web"
   - {field: device.platform, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:60}   # "ios"|"android"|"web"
   - {field: device.platform_version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:61}
   - {field: device.model, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:62}      # web: userAgent
@@ -165,11 +166,11 @@ common_attributes:
 # 3. Session logic — src/core/telemetry.ts
 # ============================================================
 session:
-  start_rule: session created in constructor (generateSessionId, telemetry.ts:191); session.started emitted on init via startSessionOnInit (index.native.ts:82, index.web.ts:90)
+  start_rule: session created in constructor (generateSessionId, telemetry.ts:215); session.started emitted on init via startSessionOnInit (index.native.ts:82, index.web.ts:90)
   idle_timeout: 30 min. SESSION_IDLE_MS = 30*60*1000 (telemetry.ts:11); checked in log() — if now-lastActivity > 30min, rotateSession() (finalize old + start new). session.* events don't count as activity. evidence telemetry.ts:479-487
   max_duration: none
   background_behavior: NATIVE ONLY — AppState "background" => finalizeSession() (immediate flush); "active" after "background" => newSession(). Web has no equivalent (visibilitychange only drives app_lifecycle, not session rotation). evidence index.native.ts:88-100
-  id_format: "session_{Date.now()}_{16 hex}" + optional "_{platform}" suffix where platform=ios|android (native only; web has NO suffix). Random via Math.random (NOT crypto). evidence telemetry.ts:277-280, utils/uuid.ts:11-15, index.web.ts:38
+  id_format: "session_{Date.now()}_{16 hex}" + optional "_{platform}" suffix where platform=ios|android (native only; web has NO suffix). Random via crypto.getRandomValues (#91). evidence telemetry.ts:301-304, utils/uuid.ts:12-18, index.web.ts:38
 
 # ============================================================
 # 4. Transport
@@ -217,8 +218,10 @@ privacy:
   ip_handling: no client-side IP collection or transmission found.
   url_sanitization: NONE. http.url is the raw full URL including query string; http.path = URL.pathname (query kept on http.url, not stripped). Web navigation captures window.location.pathname+search (query string retained). evidence httpAttributes.ts:16-31, navigationWeb.web.ts:42
   user_identifiers: >
-    Auto: user.id ("user_{ms}_{16hex}", auto-generated at init, telemetry.ts:192,343-345);
-    session.id; device.id (native persistent getUniqueId(); web ephemeral per-load uuid).
+    Auto: session.id; device.id ("device_{ms}_{16hex}_{ios|android|web}", SDK-minted and
+    persisted through the Store under telemetry_device_id, uninstall-scoped, never rotated —
+    #91). user.id is NOT auto-generated: it is consumer-supplied via setUserId /
+    setUserProfile({userId}), truncated to 255, and omitted from the wire until supplied.
     Opt-in host identity via setUserProfile/setUserDetails/identify: fullName, firstName,
     lastName, email, phone, avatar, customAttributes — all shipped verbatim in attributes.
   pii_risks: >
@@ -244,14 +247,15 @@ api:
       overridable via TelemetryOpts.store. Reads return hit | miss | unavailable — storage
       being refused (incognito, partitioned iframe, ITP eviction, full disk) is a distinct
       non-throwing outcome, never conflated with a key that isn't there; it is the population
-      v4's device.id_ephemeral will report. memoryStore() ships as an in-memory implementation
+      device.id_ephemeral reports (#91). memoryStore() ships as an in-memory implementation
       configurable to either shape, and memoryStore({unavailable:true}) is shared core's fallback
-      when no store is injected. NOT YET READ BY ANYTHING — the seam exists for v4's device.id,
-      session resume, sticky sample rate and capped offline store.
+      when no store is injected. Consumers today: both senders' offline queue, and core's
+      persisted device.id (#91). Still pending: session resume, sticky sample rate, capped
+      offline store.
       evidence core/store.ts, core/memoryStore.ts, adapters/web/store.web.ts,
       adapters/native/store.native.ts, telemetry.ts:169, index.web.ts / index.native.ts
   custom_event_api: "log(event: string, data?: Record<string, any>): Promise<void>"   # index.base.ts:21-24
-  user_id_api: "setUserId(id): Promise<void>; generateUserId(): Promise<string>"      # index.base.ts:45-53
+  user_id_api: "setUserId(id): Promise<void>"      # index.base.ts:45-48. generateUserId() REMOVED in #91 — the SDK no longer mints anonymous user ids.
   other_public_methods:
     - "flush(): Promise<void>"
     - "shutdown(): Promise<void>"                # clears flush timer + final flush
@@ -295,10 +299,8 @@ inconsistencies_and_surprises: >
      the web build reports sdk.platform="react-native" while device.platform="web". Divergent.
   3. Web-vitals names (LCP/FCP/CLS/INP/TTFB/page_load/resource_timing/long_task) are in
      ALLOWED_NAMES but have no producers — dead allowlist entries.
-  4. ID entropy uses Math.random() not crypto (utils/uuid.ts:11-15), acknowledged in a
-     ponytail: comment. session/user ids are 16 hex chars (64-bit).
-  5. session id gets an ios|android suffix on native but user id does NOT (telemetry.ts:277-280 vs
-     343-345); web omits the suffix on both.
+  4. session.id gets an ios|android suffix on native and none on web; device.id is suffixed on
+     both (ios|android|web). Contract §3.3 gives session.id a _web suffix in v4 — not done.
   6. http.request_size = string .length (chars), not byte length (httpAttributes.ts:32) — mislabeled unit for multibyte bodies.
   7. Query strings are never stripped from http.url or web navigation paths — PII/token leak risk.
   8. console.error/warn capture defaults ON (captureConsole=true) — turns every console.error into

@@ -12,6 +12,11 @@ const SDK_PLATFORM = "react-native";   // framework identity; device OS lives in
 const SDK_VERSION = PKG_VERSION;       // sdk.version follows the published package version
 const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min of inactivity (iOS ADR-004)
 
+/** Store key for the self-minted, persisted `device.id` (#91). */
+export const DEVICE_ID_KEY = "telemetry_device_id";
+/** The collector caps `user.id` at 255; truncate at source rather than be rejected (§3.2). */
+const USER_ID_MAX = 255;
+
 // Names the backend routes. Anything else is remapped to `custom_event` with the
 // original name carried as `event.name`. Includes metric names so the metric path
 // (slice: native metrics) isn't remapped.
@@ -96,7 +101,8 @@ export interface DeviceInfo {
         package_name?: string;
     };
     device: {
-        id: string;
+        /** Adapter-owned no more (#91): core self-mints and persists `device.id`. */
+        id?: string;
         platform: string;
         platform_version?: string;
         model?: string;
@@ -132,7 +138,7 @@ type Opts = {
     flushIntervalMs?: number;
     endpoint?: string;
     sessionId?: string;
-    userId?: string | null;
+    userId?: string;
     sdkVersion?: string;
     platform?: string;          // device OS (ios|android|web); forms the device/session id suffix
     deviceInfoHandler?: DeviceInfoHandler;
@@ -176,7 +182,13 @@ export class Telemetry {
 
 
     // session / user state
-    private userId?: string | null = undefined;
+    // Consumer-owned (#91). No anonymous mint: absent until the host app supplies one,
+    // so COUNT(DISTINCT user.id) is known-user reach and not a visitor count.
+    private userId?: string = undefined;
+    // SDK-owned, persisted, uninstall-scoped, never rotates — not on login, not on logout.
+    private deviceId?: string;
+    private deviceIdEphemeral = false;
+    private deviceIdPromise?: Promise<string>;
     private userProfile?: UserProfile = undefined;
     private sessionId: string;
     private sessionStart: number;
@@ -201,7 +213,7 @@ export class Telemetry {
 
         // start a session
         this.sessionId = opts?.sessionId ?? this.generateSessionId();
-        this.userId = opts?.userId ?? this.generateUserId();
+        if (opts?.userId) this.setUserId(opts.userId);
         this.sessionStart = Date.now();
         this.sdkVersion = opts?.sdkVersion ?? SDK_VERSION;
 
@@ -224,7 +236,7 @@ export class Telemetry {
             start: async () => Promise.resolve(),
             collect: async () => Promise.resolve({
                 app: { name: '', version: '' },
-                device: { id: '', platform: '' }
+                device: { platform: '' }
             })
         };
         this.networkInfoHandler = opts?.networkInfoHandler ?? {
@@ -344,16 +356,45 @@ export class Telemetry {
         await this.newSession();
     }
 
+    /** Truncated at source (§3.2): the collector caps at 255 and we must not be the one over. */
     public setUserId(id: string) {
-        this.userId = id;
+        this.userId = id ? id.slice(0, USER_ID_MAX) : undefined;
     }
 
-    public getUserId(): string | undefined | null {
+    public getUserId(): string | undefined {
         return this.userId;
     }
 
-    public generateUserId(): string {
-        return `user_${Date.now()}_${randomHex(16)}`;
+    /**
+     * The SDK-owned `device.id` (§3.2/§3.3): self-minted, written through the `Store`,
+     * uninstall-scoped, stable across process restarts, and never rotated by login,
+     * logout or a profile clear.
+     *
+     * `getUniqueId()` is deliberately not used — it already carries two lifetimes on RN
+     * alone (ANDROID_ID survives reinstall, identifierForVendor does not), so one identity
+     * column would mean two things.
+     *
+     * When the Store reports `unavailable` — incognito, a partitioned iframe, ITP
+     * eviction, a full disk — the id lives for one process only and `device.id_ephemeral`
+     * rides the Context block to say so, because that population is otherwise
+     * indistinguishable from real installs and reads as traffic growth.
+     */
+    public async getDeviceId(platform?: string): Promise<string> {
+        this.deviceIdPromise ??= (async () => {
+            const read = await this.store.get(DEVICE_ID_KEY);
+            if (read.status === "hit") {
+                this.deviceId = read.value;
+                return read.value;
+            }
+            const suffix = platform ? `_${platform}` : "";
+            const id = `device_${Date.now()}_${randomHex(16)}${suffix}`;
+            const write = await this.store.set(DEVICE_ID_KEY, id);
+            // Either end of the round-trip failing means this id never comes back.
+            this.deviceIdEphemeral = read.status === "unavailable" || write.status === "unavailable";
+            this.deviceId = id;
+            return id;
+        })();
+        return this.deviceIdPromise;
     }
 
     // ---------- User Profile Management ----------
@@ -374,12 +415,13 @@ export class Telemetry {
             ...(isNewProfile && { createdAt: now })
         };
 
-        // Update userId if provided in profile
+        // Update userId if provided in profile (truncated at source, §3.2)
         if (profile.userId) {
-            this.userId = profile.userId;
+            this.setUserId(profile.userId);
+            this.userProfile.userId = this.userId;
         } else if (this.userProfile && !this.userProfile.userId) {
-            // Set current userId in profile if not provided
-            this.userProfile.userId = this.userId || undefined;
+            // Mirror the current id into the profile — undefined while still anonymous
+            this.userProfile.userId = this.userId;
         }
 
         debug.log("Telemetry: User profile updated", this.userProfile);
@@ -453,6 +495,7 @@ export class Telemetry {
      */
     public clearUserProfile(): void {
         this.userProfile = undefined;
+        this.userId = undefined;   // consumer-owned (§3.2): cleared here, unlike device.id
         debug.log("Telemetry: User profile cleared");
     }
 
@@ -552,12 +595,23 @@ export class Telemetry {
             debug.warn("Telemetry: failed to fetch network info", err);
         }
 
+        // Mint/read before assembling. The suffix prefers the entry-supplied platform —
+        // device.id is persisted forever, so it must not depend on an adapter call that
+        // can throw on first run — and falls back to the adapter, which is where the web
+        // build's "web" comes from.
+        const deviceId = await this.getDeviceId(this.platform ?? deviceInfo?.device?.platform);
+
         const attributes: Record<string, any> = {
             // deviceInfo already namespaces its own keys (app.*, device.*) — flatten flat
             ...this.flattenWithPrefix('', deviceInfo),
             ...this.flattenWithPrefix('network', networkInfo),
             ...this.flattenWithPrefix('', data || {}),
-            'user.id': this.userId ?? null,
+            // Identity keys land after caller data: `data` may override app./device./network.*
+            // but must never override these (§3.3).
+            'device.id': deviceId,
+            ...(this.deviceIdEphemeral ? { 'device.id_ephemeral': true } : {}),
+            // Omitted entirely on anonymous traffic (§3.2) — no "", no placeholder.
+            ...(this.userId ? { 'user.id': this.userId } : {}),
             'session.id': this.sessionId,
             'session.start_time': new Date(this.sessionStart).toISOString(),
             'session.sequence': this.sessionSequence,
