@@ -49,7 +49,18 @@ describe("offline replay — web (#113)", () => {
 
         await Promise.all([sender.replayFailed!(), sender.replayFailed!()]);
 
+        // Holds by construction on this build, not by a guard: the store is synchronous,
+        // so `takeFailed()` has cleared the key before the first drain yields and the
+        // second reads a miss. Native needs `guardedDrain()` for the same property and
+        // its mirror test fails without it — this one asserts the outcome either way.
         expect(recoveredBatches(fetchMock)).toBe(1);
+    });
+
+    it("exposes exactly one replay path — no standalone twin left to double-call", async () => {
+        // The dead `replayFailedWeb` export is what the entry never called; the fix is
+        // only "one path per build" if nothing can reach a second one (#113).
+        const mod = await import("./adapters/webSender");
+        expect(Object.keys(mod).filter(k => k.startsWith("replayFailed"))).toEqual([]);
     });
 
     it("re-persists exactly one copy when the replay fails again", async () => {

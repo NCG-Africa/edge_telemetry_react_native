@@ -66,7 +66,8 @@ src/
 │   └── utils/uuid.ts      ← randomHex() — one shared impl, no platform split
 ├── adapters/
 │   ├── batch.ts           ← buildBatch(): the telemetry_batch envelope, shared by both senders
-│   ├── failedEvents.ts    ← offline-queue key + decode/encode, shared by both senders
+│   ├── failedEvents.ts    ← offline-queue key + decode/encode + the one-drain guard
+│   │                        (native's), shared by both senders
 │   ├── appLifecycle.ts    ← AppLifecycleEmitter (edge-triggered foreground/background)
 │   ├── crashCapture.ts    ← §4.7 error surface: error.* keys, app.crash vs app.error
 │   ├── viewManager.ts     ← the View entity: view.id/view.name, the `view` event, the ladder
@@ -201,11 +202,18 @@ are shared in `adapters/failedEvents.ts`, and web's persist stays synchronous on
 Core calls it once, from its constructor; the entries call nothing. There are no standalone
 `replayFailedNative` / `replayFailedWeb` exports any more — native had both wired at once and
 sent every recovered batch **twice**, and web had *neither*, so its queue only ever grew. The
-drain is wrapped in `guardedDrain()`, per sender: `takeFailed()` already clears the key before
-the send is attempted, but two *concurrent* drains both read the payload before either removes
-it, so the second caller is handed the first's in-flight promise instead. A replay that fails
-again re-persists **exactly one copy** — it never goes through `flush()`, so `onFailure()` does
-not also persist it.
+native drain is wrapped in `guardedDrain()`, per sender: `takeFailed()` already clears the key
+before the send is attempted, but two *concurrent* drains both read the payload before either
+removes it, so the second caller is handed the first's in-flight promise instead. A replay that
+fails again re-persists **exactly one copy** — it never goes through `flush()`, so `onFailure()`
+does not also persist it.
+
+⚠ **Web has no `guardedDrain()`, and the `SyncStore` guarantee is why.** `takeFailed()` has
+cleared the key before web's drain first yields, so a second concurrent caller reads a miss and
+returns — the race is unconstructable on that build, and a guard whose bucket is permanently
+empty is eventually read as one that is working. This is the same sync/async asymmetry the
+Store port exists to express, not an oversight; it moves the moment web's store stops being
+synchronous, which the types forbid.
 
 ### Event and Metric
 
@@ -1326,10 +1334,15 @@ above rather than defects.
 - `sdk.drop_reason` has no `rejected` producer: 4xx-drops-the-batch is #113.
 - A re-persist inside `replayFailed()` can evict without booking it — the sender has no core
   instance in reach. §3.7 already calls these counters lossy about their own loss.
-- **The replay guard is per-sender, not per-store.** Two senders built over one `Store` — a
-  consumer constructing a second `Telemetry` by hand — can still race each other's drain. Each
-  entry builds exactly one sender, so the supported path cannot reach it; a store-level lock
-  would be a second mechanism for a case the factory already forbids.
+- **The replay guard is native-only and per-sender.** Web needs none (its store is
+  synchronous — the race cannot be constructed), and on native two senders built over one
+  `Store` — a consumer constructing a second `Telemetry` by hand — can still race each other's
+  drain. Each entry builds exactly one sender, so the supported path cannot reach it; a
+  store-level lock would be a second mechanism for a case the factory already forbids.
+- **`webSender.replayFailed()` rejects where the deleted `replayFailedWeb` swallowed.** Core's
+  constructor `.catch` absorbs it and warns, so nothing changes for a consumer — but a path
+  that was unconditionally quiet now has an error edge, and the two builds report replay
+  failure the same way as a result.
 - **`error.*` keys are Tier C** in `beforeSend` — not on §3.6's Tier A list, so a hook may delete
   or rewrite them. Deliberate: this is where the PII lives.
 - The 2000-char `error.stacktrace` cap is a **tuning knob, not a contractual constant**, and may be

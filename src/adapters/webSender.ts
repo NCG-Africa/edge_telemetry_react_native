@@ -2,7 +2,7 @@ import { debug } from "../core/debug";
 import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { SyncStore } from "../core/store";
 import { webStore } from "./web/store.web";
-import { decodeFailed, encodeFailed, guardedDrain, FAILED_EVENTS_KEY } from "./failedEvents";
+import { decodeFailed, encodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
 import { buildBatch, buildHeaders, DEFAULT_ENDPOINT } from "./batch";
 
 // The offline queue goes through the Store port (#89), and on web it stays SYNCHRONOUS
@@ -86,7 +86,13 @@ export function webSender(
         // Web had no replay hook at all and no caller for its standalone twin, so the
         // queue only ever grew (#113). Same single path as native now: core calls this
         // once per launch from its constructor.
-        replayFailed: guardedDrain(async () => {
+        //
+        // No `guardedDrain()` here, unlike native, and the store's SYNC guarantee is
+        // exactly why: `takeFailed()` has cleared the key before this function first
+        // yields, so a second concurrent caller reads a miss and returns. The race the
+        // guard exists for cannot be constructed on a `SyncStore` — and a guard whose
+        // bucket is permanently empty is eventually read as one that is working.
+        async replayFailed() {
             const stored = takeFailed(store);
             if (stored.length === 0) return;
             debug.log("Replaying failed events, count:", stored.length);
@@ -98,6 +104,6 @@ export function webSender(
                 persistFailed(store, stored);
                 throw err;
             }
-        }),
+        },
     };
 }

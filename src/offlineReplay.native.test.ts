@@ -71,6 +71,33 @@ describe("offline replay — native (#113)", () => {
         expect(recoveredBatches(fetchMock)).toBe(1);
     });
 
+    it("exposes exactly one replay path — no standalone twin left to double-call", async () => {
+        // The standalone `replayFailedNative` is what the entry also called; the fix is
+        // only "one path per build" if nothing can reach a second one (#113).
+        const mod = await import("./adapters/nativeSender");
+        expect(Object.keys(mod).filter(k => k.startsWith("replayFailed"))).toEqual([]);
+    });
+
+    it("re-persists one copy, not two, when racing drains both fail", async () => {
+        // The retry path's half of "exactly one copy": without the guard both drains
+        // read the payload, both fail and both append it back.
+        vi.useFakeTimers();
+        try {
+            vi.spyOn(console, "warn").mockImplementation(() => { });
+            vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("still down"); }));
+            const store = seeded();
+            const sender = nativeSender("https://x/collect", "edge_k", store);
+
+            const settled = Promise.allSettled([sender.replayFailed!(), sender.replayFailed!()]);
+            await vi.runAllTimersAsync();
+            await settled;
+
+            expect(decodeFailed(await store.get(FAILED_EVENTS_KEY))).toHaveLength(1);
+        } finally {
+            vi.useRealTimers();
+        }
+    });
+
     it("re-persists exactly one copy when the replay fails again", async () => {
         vi.useFakeTimers();
         try {
