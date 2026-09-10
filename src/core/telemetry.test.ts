@@ -127,7 +127,7 @@ describe("v3 wire contract — event shape", () => {
 });
 
 describe("v3 wire contract — Context block identity", () => {
-  it("attaches sdk.platform, sdk.version, session.id, session.start_time (ISO) and user.id to every event", async () => {
+  it("attaches sdk.platform, sdk.version, session.id and session.start_time (ISO) to every event", async () => {
     const sent: TelemetryEvent[] = [];
     const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
 
@@ -147,7 +147,8 @@ describe("v3 wire contract — Context block identity", () => {
     expect(typeof a["sdk.version"]).toBe("string");
     expect(a["sdk.version"]!.length).toBeGreaterThan(0);
     expect(typeof a["session.id"]).toBe("string");
-    expect(typeof a["user.id"]).toBe("string");
+    // user.id is consumer-owned and absent while anonymous (#91)
+    expect(Object.keys(a)).not.toContain("user.id");
     // session.start_time is an ISO string, not a ms number
     expect(a["session.start_time"]).toBe(new Date(a["session.start_time"]).toISOString());
   });
@@ -249,14 +250,11 @@ describe("v3 wire contract — event-name allowlist", () => {
 });
 
 describe("v3 wire contract — id formats", () => {
-  it("session.id is session_{ms}_{16hex}_{os}; user.id is user_{ms}_{16hex} with no suffix", () => {
+  it("session.id is session_{ms}_{16hex}_{os}; no user.id is minted (#91)", () => {
     const t = new Telemetry({ flushIntervalMs: 0, platform: "ios" } as any);
 
     expect(t.getSessionId()).toMatch(/^session_\d+_[0-9a-f]{16}_ios$/);
-    expect(t.generateUserId()).toMatch(/^user_\d+_[0-9a-f]{16}$/);
-
-    // distinct user ids across calls
-    expect(t.generateUserId()).not.toBe(t.generateUserId());
+    expect(t.getUserId()).toBeUndefined();
   });
 
   it("omits the OS suffix when the device platform is unknown (still contract-valid)", () => {
@@ -545,7 +543,7 @@ describe("v3 session lifecycle — session.sequence", () => {
 });
 
 describe("v3 identify() — user.profile.update", () => {
-  it("emits one user.profile.update and attaches identity to later events without changing user.id", async () => {
+  it("emits one user.profile.update and attaches identity to later events without minting a user.id", async () => {
     const sent: TelemetryEvent[] = [];
     const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
     const t = new Telemetry({
@@ -562,13 +560,13 @@ describe("v3 identify() — user.profile.update", () => {
     expect(sent.filter((e) => e.eventName === "user.profile.update")).toHaveLength(1);
 
     const customs = sent.filter((e) => e.eventName === "custom_event");
-    const anonId = customs[0].attributes!["user.id"];
+    expect(Object.keys(customs[0].attributes!)).not.toContain("user.id");
     const after = customs[customs.length - 1].attributes!;
     expect(after["user.name"]).toBe("Ada");
     expect(after["user.email"]).toBe("ada@x.io");
     expect(after["user.phone"]).toBe("123");
-    // the SDK-owned anonymous id is preserved across identify()
-    expect(after["user.id"]).toBe(anonId);
+    // identify() carries no id, so the traffic stays anonymous (#91)
+    expect(Object.keys(after)).not.toContain("user.id");
   });
 });
 

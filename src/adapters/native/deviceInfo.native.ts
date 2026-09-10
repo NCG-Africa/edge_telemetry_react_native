@@ -1,7 +1,6 @@
 // adapters/native/deviceInfoNative.native.ts
 import { Platform } from "react-native";
 import DeviceInfoLib from "react-native-device-info";
-import { v4 as uuidv4 } from "uuid";
 import { Telemetry } from "../../core/telemetry";
 import { DeviceInfo } from "../../core/telemetry";
 
@@ -15,15 +14,10 @@ export class DeviceInfoTrackerNative {
     constructor() {
     }
 
+    // device.id is NOT collected here (#91): it is self-minted and persisted by core.
+    // getUniqueId() carries two lifetimes on RN alone — ANDROID_ID survives reinstall,
+    // identifierForVendor does not — so one identity column would mean two things.
     async collect(): Promise<DeviceInfo> {
-        // 🔹 Device ID
-        let uniqueId = "";
-        try {
-            uniqueId = await DeviceInfoLib.getUniqueId();
-        } catch {
-            uniqueId = `device_${Date.now()}_${uuidv4()}_${Platform.OS}`;
-        }
-
         // 🔹 App metadata
         const appName = (await DeviceInfoLib.getApplicationName()) || "UnknownApp";
         const appVersion = (await DeviceInfoLib.getVersion()) || "0.0.0";
@@ -56,7 +50,6 @@ export class DeviceInfoTrackerNative {
                 package_name: packageName,
             },
             device: {
-                id: uniqueId,
                 platform: Platform.OS,
                 platform_version: systemVersion,
                 model,

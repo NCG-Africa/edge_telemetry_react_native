@@ -57,7 +57,9 @@ src/
 │   ├── webSender.ts / nativeSender.ts
 │   ├── web/               ← *.web.ts capture adapters (+ store.web.ts over localStorage)
 │   └── native/            ← *.native.ts capture adapters (+ store.native.ts over AsyncStorage)
-└── shims/react-native-web-shim.ts
+└── shims/
+    ├── react-native-web-shim.ts
+    └── modules.d.ts       ← ambient decls for untyped side-effect deps
 ```
 
 **Two kinds of shared code.** Platform-agnostic *logic* (envelope building, transition
@@ -108,7 +110,7 @@ Methods (both classes, all return Promises):
 ```ts
 log(event, data?) / flush() / shutdown()
 identify({name?, email?, phone?, avatar?, customAttributes?})   // emits user.profile.update
-setUserId / generateUserId / setUserProfile / setUserDetails / updateUserProfile
+setUserId / setUserProfile / setUserDetails / updateUserProfile
 getUserProfile / clearUserProfile / setUserName / setUserContact
 trackErrors({captureConsole?}) / getDeviceInfo() / getNetworkInfo()
 ```
@@ -173,25 +175,52 @@ block.
 are no standalone `device_info` / `network_info` events in v3.
 
 ```
-user.id, session.id, session.start_time (ISO), session.sequence
+session.id, session.start_time (ISO), session.sequence
+user.id                — only when the consumer supplied one; omitted on anonymous traffic
+device.id              — SDK-minted, persisted (+ device.id_ephemeral: true when storage failed)
 sdk.platform ("react-native"), sdk.version (package.json version)
 app.*        name, version, build_number, package_name
-device.*     id, platform, platform_version, model, manufacturer, brand (+ OS-specific extras)
+device.*     platform, platform_version, model, manufacturer, brand (+ OS-specific extras)
 network.*    type, is_connected
 user.*       name/fullName/email/phone/avatar/custom.* — only when a profile is set
 ```
 
-Caller `data` is flattened dot-notation on top. Keep attribute values primitive.
+Caller `data` is flattened dot-notation on top — so it can override any `app.*`, `device.*` or
+`network.*` key, but **not** the identity keys, which are assembled after it. Keep attribute
+values primitive.
 
 ### ID formats
 
 ```
 session.id : session_{ms}_{16 hex}_{ios|android}   // suffix native only; web omits it
-user.id    : user_{ms}_{16 hex}                    // never suffixed
-device.id  : native getUniqueId(); web device_{ms}_{uuidv4}_web
+device.id  : device_{ms}_{16 hex}_{ios|android|web}
+user.id    : whatever the consumer passes, truncated to 255 — never minted here
 ```
 
-Entropy is `Math.random()`, not crypto — deliberate, marked with a `ponytail:` comment.
+Entropy is `crypto.getRandomValues` (#91). RN has no WebCrypto, so the native entry
+side-effect-imports `react-native-get-random-values` (already a dependency) before the first
+id is minted; it is a no-op wherever `crypto` already exists. There is **no `Math.random()`
+fallback** — `randomHex` throws with a reinstall instruction instead, because a weak id that
+persists forever is worse than refusing to mint one.
+
+The suffix comes from the entry's `platform` opt, never from the device-info adapter: the id is
+persisted forever and `collect()` can throw on first run. `session.id` keeps the narrower
+ios|android rule (§3.3 gives it `_web` in v4, not now) — that rule lives in
+`generateSessionId()`, so the two ids can diverge without either drifting by accident.
+
+**`device.id` is SDK-owned, `user.id` is consumer-owned** — contract §3.2, and the split is the
+whole point. `device.id` is self-minted (never `getUniqueId()`, which carries two lifetimes on
+RN alone), written through the `Store` under `telemetry_device_id`, uninstall-scoped, and it
+**never rotates** — not on `identify()`, not on a user-id change, not on `clearUserProfile()`.
+`user.id` is absent until the host app calls `setUserId` / `setUserProfile({userId})`; there is
+no anonymous mint, no `""` and no placeholder — `setUserId("")` clears it rather than shipping
+an empty string, and `clearUserProfile()` clears it too (§3.2) while leaving `device.id` alone — so `COUNT(DISTINCT device.id)` is anonymous
+reach, `COUNT(DISTINCT user.id)` is known-user reach and `GROUP BY device.id` stitches the two.
+
+When the `Store` reports `unavailable` on either the read or the write, the id lives for one
+process only and **`device.id_ephemeral: true`** rides the Context block (omitted otherwise).
+Without it that never-returning population inflates `COUNT(DISTINCT device.id)` and reads as
+traffic growth.
 
 ### The Store port
 
@@ -300,6 +329,8 @@ coordination.
 - No top-level `location` in the envelope, though the contract allows one.
 - `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`
   constructors still accept it as optional.
+- `session.id` still omits the `_web` suffix on the web build; contract §3.3 gives it one in
+  v4. `device.id` is already suffixed on all three platforms.
 - Crash capture is JS-level only — no native signal/ANR/hang capture.
 - `index.base.ts` `trackErrors()` imports the **native** crash handler in shared code; the
   web build resolves it at runtime and rejects.

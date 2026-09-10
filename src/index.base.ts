@@ -47,11 +47,6 @@ export abstract class TelemetryBase {
         inst.setUserId(id);
     }
 
-    async generateUserId() {
-        const inst = await this.instancePromise;
-        return inst.generateUserId();
-    }
-
     async setUserProfile(profile: ProfileInput) {
         const inst = await this.instancePromise;
         inst.setUserProfile(profile);
@@ -87,7 +82,8 @@ export abstract class TelemetryBase {
         inst.setUserContact(email, phone);
     }
 
-    // EdgeRum-style identify(): emits user.profile.update, preserves the anonymous user.id (#31)
+    // EdgeRum-style identify(): emits user.profile.update. It never touches `user.id`,
+    // which is consumer-owned and absent until setUserId/setUserProfile supplies one (#91).
     async identify(profile: { name?: string; email?: string; phone?: string; avatar?: string; customAttributes?: Record<string, any> }) {
         const inst = await this.instancePromise;
         return inst.identify(profile);

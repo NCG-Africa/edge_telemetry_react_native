@@ -1,5 +1,4 @@
 // adapters/web/deviceInfoWeb.web.ts
-import { v4 as uuidv4 } from "uuid";
 import { DeviceInfo, Telemetry } from "../../core/telemetry";
 
 export class DeviceInfoTrackerWeb {
@@ -8,6 +7,7 @@ export class DeviceInfoTrackerWeb {
 
     constructor() {
     }
+    // device.id is NOT collected here (#91): core self-mints and persists it via the Store.
     async collect(): Promise<DeviceInfo> {
         const ua = navigator.userAgent;
         const platform = navigator.platform;
@@ -20,7 +20,6 @@ export class DeviceInfoTrackerWeb {
                 package_name: window.location.hostname,
             },
             device: {
-                id: `device_${Date.now()}_${uuidv4()}_web`,
                 platform: "web",
                 platform_version: navigator.appVersion,
                 model: ua,

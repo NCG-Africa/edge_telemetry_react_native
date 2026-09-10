@@ -108,23 +108,28 @@ key**. `log("x", {"device.model": "spoof"})` ships.
 
 | Key | Type | Null? | Cardinality | Source |
 |---|---|---|---|---|
-| `user.id` | string \| **null** | `null` only if a caller sets `setUserId(null)`-equivalent; otherwise generated | **per app launch — see §8.2** | `telemetry.ts:548`, minted `343-345`, assigned `192` |
+| `user.id` | string ≤255 | **omitted** while anonymous (#91 — §8.2 resolved) | per known user | `telemetry.ts:614`, set `355-357` |
+| `device.id` | string | never | per install (#91 — §8.3 resolved) | `telemetry.ts:611`, minted `376-393` |
+| `device.id_ephemeral` | bool | **omitted when false** | 1 (`true`) | `telemetry.ts:612` |
 | `session.id` | string | never | per session | `telemetry.ts:549`, minted `277-280` |
 | `session.start_time` | ISO 8601 string | never | per session | `telemetry.ts:550` |
 | `session.sequence` | int | never | 0..n, small | `telemetry.ts:551`, incremented only on a 2xx batch `642` |
 | `sdk.platform` | string, const `"react-native"` | never | **1 — on both builds** | `telemetry.ts:552`, const `9` |
 | `sdk.version` | string, from `package.json` | never | per release | `telemetry.ts:553`, const `10` |
 
-ID formats (`telemetry.ts:278-279`, `344`):
+ID formats (`telemetry.ts:301-304`, `385-386`):
 
 ```
 session.id  session_{ms}_{16 hex}[_{ios|android}]   suffix native only; web omits it
-user.id     user_{ms}_{16 hex}                      never suffixed
+device.id   device_{ms}_{16 hex}_{ios|android|web}  suffixed on all three
+user.id     consumer-supplied, truncated to 255     never minted by the SDK
 ```
 
-The suffix comes from `platform`, passed only by the native entry (`index.native.ts:45`);
-the web entry deliberately omits it (`index.web.ts:38-39`). Entropy is `Math.random()` via
-`randomHex` (`core/utils/uuid.ts`), not crypto — deliberate.
+The session suffix comes from `platform`, passed only by the native entry
+(`index.native.ts:50`); the web entry deliberately omits it (`index.web.ts:38-39`). `device.id`
+falls back to the adapter's `device.platform`, which is where web's `_web` comes from. Entropy
+is `crypto.getRandomValues` via `randomHex` (`core/utils/uuid.ts`), polyfilled on RN by
+`react-native-get-random-values` (#91).
 
 ### 3.2 `app.*` and `device.*` — from the `DeviceInfo` interface
 
@@ -137,7 +142,6 @@ names**, not string literals, which is why Appendix B has to read the interface.
 | `app.version` | string | `getVersion()` — `native.ts:29,54` | `process.env.APP_VERSION \|\| "1.0.0"` — `web.ts:18` ⚠️ §8.4 | never | per release |
 | `app.buildNumber` ⚠→`app.build_number` (3.1.0) | string | `getBuildNumber()` — `native.ts:30,55` | `process.env.BUILD_NUMBER` — `web.ts:19` | **absent when undefined** | per build |
 | `app.packageName` ⚠→`app.package_name` (3.1.0) | string | `getBundleId()` — `native.ts:31,56` | `window.location.hostname` — `web.ts:20` | never | low |
-| `device.id` | string | `getUniqueId()`, stable per install — `native.ts:22,59` | **regenerated per event** — `web.ts:23` ⚠️ §8.3 | never | native: per install · web: **per event** |
 | `device.platform` | string | `Platform.OS` → `ios`\|`android` — `native.ts:60` | const `"web"` — `web.ts:24` | never | 3 |
 | `device.platformVersion` ⚠→`device.platform_version` (3.1.0) | string | `getSystemVersion()` — `native.ts:37,61` | `navigator.appVersion` — `web.ts:25` | never | native: dozens · web: hundreds |
 | `device.model` | string | `getModel()` — `native.ts:36,62` | **full user-agent string** — `web.ts:26` | never | native: hundreds · web: **thousands** |
@@ -531,7 +535,11 @@ throws `TypeError`, which is swallowed by the fire-and-forget `.catch` in the co
 **the web build has never emitted a `navigation` event.** One-word fix, but it means the
 contract's web navigation story is a greenfield decision, not a compatibility constraint.
 
-### 8.2 `user.id` is per app launch, not per user — `telemetry.ts:192`
+### 8.2 `user.id` is per app launch, not per user — `telemetry.ts:192` — **RESOLVED (#91)**
+
+> Fixed: the anonymous mint is gone. `user.id` is consumer-supplied, truncated to 255, and
+> omitted from the wire until the host app sets one. The finding below records the v3 state
+> that made §3.2 of the contract necessary.
 
 `this.userId = opts?.userId ?? this.generateUserId()` runs in the constructor, and nothing
 ever reads a persisted value back — the SDK writes to `AsyncStorage`/`localStorage` only for
@@ -541,7 +549,11 @@ app launches. Web: cardinality = **page loads**. Any "unique users" number compu
 `user.id` today is a session count. The contract must say whether v4 persists it, because
 that decision changes the column's meaning retroactively.
 
-### 8.3 Web `device.id` is regenerated on every event — `deviceInfo.web.ts:23`
+### 8.3 Web `device.id` is regenerated on every event — `deviceInfo.web.ts:23` — **RESOLVED (#91)**
+
+> Fixed: neither adapter mints `device.id` any more. Core self-mints it once, persists it
+> through the `Store` under `telemetry_device_id`, and never rotates it. The finding below
+> records the v3 state.
 
 `` id: `device_${Date.now()}_${uuidv4()}_web` `` sits inside `collect()`, and `collect()` is
 called from `collectContext()` on **every** event and metric (`telemetry.ts:532`). Native's
@@ -984,8 +996,9 @@ at all.
   handler in shared code and "the web build resolves it at runtime and rejects". It does not:
   `TelemetryWeb.trackErrors` (`index.web.ts:83-88`) **overrides** the base method, so
   `index.base.ts:36-41` is unreachable from the web entry. It is dead code, not a live bug.
-- Neither records that `user.id` is per-launch (§8.2) or that web `device.id` is per-event
-  (§8.3) — the two facts that most change how the backend should index this data.
+- Neither recorded that `user.id` was per-launch (§8.2) or that web `device.id` was per-event
+  (§8.3) — the two facts that most change how the backend should index this data. Both are
+  fixed in #91 and `CLAUDE.md` now documents the owner split.
 - Both present `attachNavigation` and `screenStart` as peer entry points. They are not:
   `attachNavigation` alone yields no `screen.duration` and no `interaction.screen` (§8.7).
 - Neither records that a fatal crash is never sent (§8.8) — the defect that most undermines

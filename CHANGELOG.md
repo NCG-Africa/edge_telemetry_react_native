@@ -6,6 +6,52 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
 ### Added
 
+- **Identity: `device.id` is ours, `user.id` is yours** (#91, wire contract §3.2/§3.3). One
+  column used to hold both `user_1749…_a3f9…` and `cust-88213`, so no query could separate a
+  visitor from a customer. Now:
+
+  `device.id` is **self-minted by the SDK** — `device_{ms}_{16hex}_{ios|android|web}` — written
+  through the `Store` under `telemetry_device_id`, uninstall-scoped, and it **never rotates**:
+  not on `identify()`, not on a user-id change, not on `clearUserProfile()`. It is no longer
+  `getUniqueId()`, which already carries two lifetimes on RN alone (ANDROID_ID survives
+  reinstall, `identifierForVendor` does not) and would make one identity column mean two
+  things. Neither device-info adapter mints an id any more.
+
+  `user.id` is **consumer-supplied**, truncated to 255 chars at source, and **omitted from the
+  wire entirely** on anonymous traffic — no `""`, no placeholder. So
+  `COUNT(DISTINCT device.id)` is anonymous reach, `COUNT(DISTINCT user.id)` is known-user
+  reach, and because `device.id` is stable across the login transition,
+  `GROUP BY device.id` stitches an anonymous session to the account it eventually signs into.
+
+  **`device.id_ephemeral: true`** rides the Context block when the `Store` reported
+  `unavailable` on either the read or the write — incognito, a partitioned iframe, Safari ITP
+  eviction, a full disk — and is omitted when false. It is not derivable query-side: an
+  ephemeral id appears once and never returns, indistinguishable from a real device installed
+  and uninstalled the same day, and without the flag that population inflates device counts
+  and reads as traffic growth.
+
+  Id entropy moves from `Math.random()` to **`crypto.getRandomValues`**. A persisted
+  `device.id` collision is *permanent* where a session collision was transient — two handsets
+  merge into one device row and one rate-limit bucket, forever. RN has no WebCrypto, so the
+  native entry side-effect-imports `react-native-get-random-values`, already a declared
+  dependency that was never imported; it is a no-op wherever `crypto` already exists. There is
+  no `Math.random()` fallback — `randomHex` throws with a reinstall instruction, because
+  silently minting a weak id for a value that persists forever is worse than refusing.
+
+  `clearUserProfile()` now clears `user.id` alongside the profile (contract §3.2), and
+  `setUserId("")` clears it rather than shipping an empty string. `device.id` is untouched by
+  both.
+
+### Removed
+
+- **`generateUserId()`** is gone from `TelemetryBase` and the core (#91). The SDK no longer
+  mints anonymous user ids at all, so an accessor for the mint has nothing to return. Set the
+  id you own with `setUserId(id)` or `setUserProfile({ userId })`.
+- **`uuid`** (and `@types/uuid`) dropped from dependencies (#91) — the two device-info
+  adapters were its only consumers and neither mints an id any more.
+
+### Added
+
 - **The `Store` port** (#89) — a narrow `get` / `set` / `remove` interface over persisted
   state, declared in shared core (`src/core/store.ts`) with no React Native import. v4 moves
   `device.id`, session resume, the sticky sample rate and the capped offline store into

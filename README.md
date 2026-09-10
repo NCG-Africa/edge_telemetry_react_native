@@ -156,14 +156,14 @@ shutdown(): Promise<void>                                        // clear the fl
 ### Identity
 
 ```typescript
-identify(profile: {                     // EdgeRum-style — emits user.profile.update,
-  name?: string; email?: string;        // attaches identity to subsequent events, and
-  phone?: string; avatar?: string;      // PRESERVES the anonymous user.id
+identify(profile: {                     // EdgeRum-style — emits user.profile.update and
+  name?: string; email?: string;        // attaches identity to subsequent events. It carries
+  phone?: string; avatar?: string;      // no id, so traffic stays anonymous until setUserId.
   customAttributes?: Record<string, any>;
 }): Promise<void>
 
-setUserId(id: string): Promise<void>
-generateUserId(): Promise<string>
+setUserId(id: string): Promise<void>    // consumer-owned user.id; truncated to 255 chars.
+                                        // setUserId("") clears it — no empty string ships.
 setUserProfile(profile): Promise<void>
 setUserDetails(details): Promise<void>          // fullName/firstName/lastName/email/phone/avatar/customAttributes
 updateUserProfile(updates): Promise<void>
@@ -278,7 +278,7 @@ type TelemetryEvent = {
 ```
 
 Every record carries the flattened **Context block** in `attributes`: `app.*`, `device.*`,
-`network.*`, `session.*`, `user.id`, and `sdk.*` (`sdk.platform = "react-native"`,
+`network.*`, `session.*`, `device.id`, `user.id` (when set), and `sdk.*` (`sdk.platform = "react-native"`,
 `sdk.version`). This makes each record self-describing and joinable without correlating against
 separate context events.
 
@@ -286,19 +286,30 @@ separate context events.
 
 ## Identity & IDs
 
-IDs use 16 hex chars of entropy; device/session are suffixed with the device OS, user is not:
+SDK-minted ids use 16 hex chars of `crypto.getRandomValues` entropy and are suffixed with the
+device OS:
 
 ```
-device_{ms}_{16hex}_{ios|android}
+device_{ms}_{16hex}_{ios|android|web}
 session_{ms}_{16hex}_{ios|android}
-user_{ms}_{16hex}
 ```
 
-Conform to `^(session|device|user)_\d+_[0-9a-f]{16}(_(ios|android))?$`. The **web build** omits
-the OS suffix (`device.platform = "web"` still rides as an attribute).
+The **web build** omits the OS suffix on `session.id` (`device.platform = "web"` still rides as
+an attribute).
+
+**`device.id` is ours; `user.id` is yours.** `device.id` is minted once, persisted through the
+`Store` and never rotated — not by `identify()`, not by a user-id change, not by
+`clearUserProfile()` — so it is a stable anonymous-reach key that survives the login
+transition. `user.id` is whatever you pass to `setUserId()` (truncated to 255 chars) and is
+**omitted from the wire entirely** until you pass one; the SDK never mints an anonymous
+stand-in. `clearUserProfile()` clears it — and leaves `device.id` untouched.
+
+If storage is unavailable — incognito, a partitioned iframe, Safari ITP eviction, a full disk —
+`device.id` lives for one process only and `device.id_ephemeral: true` rides the Context block
+so that population can be excluded from device counts. The key is omitted when false.
 
 `identify()` attaches host-app identity (`user.name`/`email`/`phone`) to subsequent events and
-emits one `user.profile.update` — it never changes the SDK-owned anonymous `user.id`.
+emits one `user.profile.update` — it carries no id of its own.
 
 ---
 

@@ -46,8 +46,9 @@ export class TelemetryWeb extends TelemetryBase {
                 batchSize: opts?.batchSize,
                 flushIntervalMs: opts?.flushIntervalMs,
                 endpoint: opts?.endpoint,
-                // no id suffix on web: the contract suffix is ios|android only.
-                // device.platform="web" still rides as an attribute from the adapter.
+                // device.id is suffixed `_web`; session.id is not — §3.3 gives session.id a
+                // `_web` suffix only in v4. generateSessionId() holds that rule.
+                platform: "web",
                 deviceInfoHandler: deviceInfoTrackerWeb,
                 networkInfoHandler: networkInfoTrackerWeb,
                 store,
