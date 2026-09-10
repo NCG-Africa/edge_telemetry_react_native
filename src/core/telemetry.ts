@@ -115,7 +115,7 @@ const USER_ID_MAX = 255;
 // original name carried as `event.name`. Includes metric names so the metric path
 // (slice: native metrics) isn't remapped.
 const ALLOWED_NAMES = new Set<string>([
-    "session.started", "session.finalized", "app_lifecycle", "page_load", "navigation",
+    "session.started", "session.finalized", "app_lifecycle", "navigation",
     "screen.duration", "http.request", "network_change",
     "user.profile.update", "custom_event", "app.crash", "view",
     // ⚠ `app.error` needs backend allowlist sign-off before it ships (#100, §4.7).
@@ -126,8 +126,15 @@ const ALLOWED_NAMES = new Set<string>([
     // ⚠ `app.start` needs backend allowlist sign-off before it ships (#98, §4.3/§6.2) — an
     // unlisted eventName is dropped on ingest. It is listed here, so it is being emitted.
     "app.start",
-    "resource_timing", "frame_render_time", "memory_usage", "long_task",
+    "frame_render_time", "memory_usage",
     "LCP", "FCP", "CLS", "INP", "TTFB",
+    // ⚠ `page_load`, `resource_timing` and `long_task` are **retired, not deferred**
+    // (§10.2, #109) — as `user.interaction` was in #102, four in total for a net-zero v4.
+    // Do not add them back: `page_load`'s job is done three ways over (`view` +
+    // `view.loading_time` + the vitals), `resource_timing` would blow the 500-event queue on
+    // one asset-heavy view for a namespace with no column, and `long_task`'s only APIs are
+    // Chromium-only while `frame_render_time` detects jank on every runtime. A name off this
+    // list is rewritten to `custom_event`, so all four are unreachable, not merely unused.
 ]);
 
 /**
