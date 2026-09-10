@@ -54,11 +54,13 @@ export class TelemetryWeb extends TelemetryBase {
                 store,
             });
 
+            // Resume or start the session before the instance is visible (#92). On web the
+            // Store is localStorage, so a hard reload, a bfcache restore and a second tab
+            // all resume the same session.
+            await telemetry.resumeOrStartSession();
+
             return telemetry;
         })();
-
-        // session.started on init (#29). Background/foreground via AppState is native-only.
-        this.startSessionOnInit().catch(err => debug.warn("Web startSession failed:", err));
 
         this.trackErrors({ captureConsole: opts?.captureConsole }).catch(err => {
             debug.warn("Web trackErrors failed:", err);
@@ -98,11 +100,6 @@ export class TelemetryWeb extends TelemetryBase {
         const inst = await this.instancePromise;
         const crashHandler = new CrashHandler(inst);
         return inst.trackErrors(crashHandler, options);
-    }
-
-    private async startSessionOnInit() {
-        const inst = await this.instancePromise;
-        await inst.startSession();
     }
 
     async trackFrameDrops() {

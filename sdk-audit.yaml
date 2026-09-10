@@ -18,15 +18,25 @@ registry: npm            # @nathanclaire/edge-telemetry-sdk, publishConfig.acces
 # ============================================================
 events:
   - name: session.started
-    trigger: SDK init (startSessionOnInit), new session after foreground-from-background, and idle rotation. evidence src/core/telemetry.ts:304-307 (startSession); index.native.ts:82-85, index.web.ts:90-93
-    payload_fields: []   # only the common_attributes block; no event-specific keys
+    trigger: >
+      SDK init when no durable session is resumable, and either boundary rotation (30-min idle,
+      4-hour cap). A RESUMED session does not re-emit it (§4.1), so COUNT(session.started) still
+      equals session count. evidence src/core/telemetry.ts:435-441 (startSession), 367-373
+      (resumeOrStartSession); index.native.ts:77, index.web.ts:60
+    payload_fields:
+      - {field: session.reason, type: string, unit: none, always_present: true}   # launch|idle|max_duration (#92)
 
   - name: session.finalized
-    trigger: app backgrounded (native AppState) or 30-min idle rotation; also fired before newSession. evidence src/core/telemetry.ts:310-317; index.native.ts:88-100
+    trigger: >
+      Boundary rotation only — 30-min idle or the 4-hour cap, detected either in log() or lazily at
+      the next init. NO LONGER fired on native background (#92). duration_ms/event_count stay on the
+      wire though the backend derives both (§4.2): the event survives as the carrier for
+      session.reason and sdk.error_count. evidence src/core/telemetry.ts:450-457, 471-474
     payload_fields:
-      - {field: session.duration_ms, type: int, unit: ms, always_present: true}
+      - {field: session.duration_ms, type: int, unit: ms, always_present: true}   # stamped from lastActivity, never now
       - {field: session.event_count, type: int, unit: none, always_present: true}
       - {field: sdk.error_count, type: int, unit: none, always_present: true}
+      - {field: session.reason, type: string, unit: none, always_present: true}   # idle|max_duration (#92)
 
   - name: app_lifecycle
     trigger: foreground/background transition — native RN AppState, web document visibilitychange. Only on a state CHANGE. evidence src/adapters/appLifecycle.ts:16-23
@@ -166,10 +176,26 @@ common_attributes:
 # 3. Session logic — src/core/telemetry.ts
 # ============================================================
 session:
-  start_rule: session created in constructor (generateSessionId, telemetry.ts:215); session.started emitted on init via startSessionOnInit (index.native.ts:82, index.web.ts:90)
-  idle_timeout: 30 min. SESSION_IDLE_MS = 30*60*1000 (telemetry.ts:11); checked in log() — if now-lastActivity > 30min, rotateSession() (finalize old + start new). session.* events don't count as activity. evidence telemetry.ts:479-487
-  max_duration: none
-  background_behavior: NATIVE ONLY — AppState "background" => finalizeSession() (immediate flush); "active" after "background" => newSession(). Web has no equivalent (visibilitychange only drives app_lifecycle, not session rotation). evidence index.native.ts:88-100
+  start_rule: >
+    Both entries await resumeOrStartSession() INSIDE instancePromise (index.native.ts:77,
+    index.web.ts:60), so session.started can never land behind the host app's first event.
+    It reads telemetry_session through the Store: a record inside the idle window is adopted
+    silently (no session.started); a missing/corrupt/unavailable read starts a fresh session with
+    session.reason=launch; an expired record is adopted, finalized under its OWN id and
+    start_time, then rotated. evidence telemetry.ts:367-403
+  persistence: >
+    telemetry_session = {id, start, lastActivity, sequence, eventCount, errorCount}, written on every
+    non-session event and on every acknowledged batch (so a resumed session does not restart
+    session.sequence at 0). Process death, tab close, hard reload and bfcache restore all resume.
+    On web the Store is localStorage, so the session is browser-wide and shared across tabs —
+    intended (§4.2). evidence telemetry.ts:422-432, 658, 826
+  idle_timeout: 30 min. SESSION_IDLE_MS = 30*60*1000 (telemetry.ts:13); checked in log() via expiryReason() — if now-lastActivity > 30min, rotateSession("idle"). session.* events and metrics don't count as activity. evidence telemetry.ts:409-414, 649-659
+  max_duration: 4 h. SESSION_MAX_MS = 4*60*60*1000 (telemetry.ts:16); same lazy check, rotateSession("max_duration"). Idle is tested first — a long session that also went quiet ended because the user left. evidence telemetry.ts:409-414
+  background_behavior: >
+    NEITHER build rotates on a lifecycle transition (§4.2) — the native background=>finalizeSession /
+    foreground=>newSession pair was DELETED in #92, reaching parity by deletion rather than by adding
+    one to web. Backgrounding still forces a flush() on native, because the queue only lives in memory
+    and the process is then most likely to be killed. evidence index.native.ts:103-119
   id_format: "session_{Date.now()}_{16 hex}" + optional "_{platform}" suffix where platform=ios|android (native only; web has NO suffix). Random via crypto.getRandomValues (#91). evidence telemetry.ts:301-304, utils/uuid.ts:12-18, index.web.ts:38
 
 # ============================================================
@@ -250,8 +276,8 @@ api:
       device.id_ephemeral reports (#91). memoryStore() ships as an in-memory implementation
       configurable to either shape, and memoryStore({unavailable:true}) is shared core's fallback
       when no store is injected. Consumers today: both senders' offline queue, and core's
-      persisted device.id (#91). Still pending: session resume, sticky sample rate, capped
-      offline store.
+      persisted device.id (#91) and the resumable session record (#92). Still pending: sticky
+      sample rate, capped offline store.
       evidence core/store.ts, core/memoryStore.ts, adapters/web/store.web.ts,
       adapters/native/store.native.ts, telemetry.ts:169, index.web.ts / index.native.ts
   custom_event_api: "log(event: string, data?: Record<string, any>): Promise<void>"   # index.base.ts:21-24
@@ -271,7 +297,7 @@ api:
 # 7. Feature checklist
 # ============================================================
 features:
-  session-tracking: {status: done, evidence: telemetry.ts:301-333 + index.native.ts:88-100, notes: "start/finalize/rotate; 30-min idle; background rotation native-only"}
+  session-tracking: {status: done, evidence: "telemetry.ts:367-474 + index.native.ts:77, index.web.ts:60", notes: "resume through the Store across process death; 30-min idle + 4-hour cap; session.reason on started/finalized; no lifecycle rotation on either build (#92)"}
   view-tracking: {status: done, evidence: screenTiming.ts + navigationTracker.ts, notes: "navigation (route + screenStart) and screen.duration events"}
   error-capture: {status: done, evidence: crashCapture.ts + crashHandler.web.ts/crashHandlerNative.native.ts, notes: "JS errors, unhandled rejections, console.error/warn -> app.crash"}
   crash-capture: {status: partial, evidence: crashHandlerNative.native.ts:15-25, notes: "JS-level only (ErrorUtils/window.onerror). No native iOS/Android signal/ANR crash capture. crash.fatal only on native ErrorUtils path"}

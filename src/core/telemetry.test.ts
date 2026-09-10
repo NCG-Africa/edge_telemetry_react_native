@@ -433,7 +433,7 @@ describe("v3 session lifecycle — started / finalized", () => {
 
     await t.log("custom_event");
     await t.log("app.crash", { "crash.cause": "Error" });
-    await t.finalizeSession();   // no explicit flush() — finalize flushes immediately
+    await t.finalizeSession("idle");   // no explicit flush() — finalize flushes immediately
 
     const fin = sent.find((e) => e.eventName === "session.finalized")!;
     expect(fin).toBeDefined();
