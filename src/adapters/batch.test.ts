@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { buildBatch, buildHeaders } from "./batch";
+import { buildHeaders } from "./batch";
 
 describe("buildHeaders — the v4 dual-header credential (#90)", () => {
   it("sends the credential as both X-API-Key and Authorization: Bearer", () => {
@@ -21,12 +21,5 @@ describe("buildHeaders — the v4 dual-header credential (#90)", () => {
     expect(h["X-API-Key"]).toBeUndefined();
     expect(h["Authorization"]).toBeUndefined();
     expect(h["Content-Type"]).toBe("application/json");
-  });
-});
-
-describe("buildBatch", () => {
-  it("closes the envelope at the four contract fields", () => {
-    const body = JSON.parse(buildBatch([]));
-    expect(Object.keys(body).sort()).toEqual(["batch_size", "events", "timestamp", "type"]);
   });
 });

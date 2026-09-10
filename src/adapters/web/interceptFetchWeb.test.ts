@@ -54,7 +54,7 @@ describe("NetworkTrackerWeb — http.request (v3)", () => {
   });
 
   it("does not self-capture the SDK's own collector POST", async () => {
-    const endpoint = "https://collector.example.com/collector/telemetry";
+    const endpoint = "https://collector.example.com/telemetry";
     g.window = { fetch: vi.fn(async () => res(200)) };
     const { telemetry, calls } = fakeTelemetry(endpoint);
 

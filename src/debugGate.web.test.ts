@@ -21,7 +21,7 @@ describe("debug gate — public API (web)", () => {
 
     const t = createTelemetry({
       apiKey: "edge_test",
-      endpoint: "https://x/collector/telemetry",
+      endpoint: "https://x/telemetry",
       sender,
       batchSize: 10,
       flushIntervalMs: 0,
@@ -40,7 +40,7 @@ describe("debug gate — public API (web)", () => {
 
     const t = createTelemetry({
       apiKey: "edge_test",
-      endpoint: "https://x/collector/telemetry",
+      endpoint: "https://x/telemetry",
       sender,
       batchSize: 10,
       flushIntervalMs: 0,

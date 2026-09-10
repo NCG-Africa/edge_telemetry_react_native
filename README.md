@@ -132,8 +132,8 @@ type TelemetryOpts = {
   immediately, so misconfiguration fails fast instead of silently dropping data. `tenant_id`
   is never sent; the backend resolves the tenant from the key.
 - **`endpoint`** is the exact URL the SDK POSTs to. The collector terminates **`POST /telemetry`** —
-  that is the path to point it at. (This README previously documented `/collector/telemetry`, which
-  exists in no deployment; copying it 404s on every batch.)
+  that is the path to point it at — `/collector/telemetry`, documented here previously, exists in
+  no deployment and 404s.
 
 ---
 

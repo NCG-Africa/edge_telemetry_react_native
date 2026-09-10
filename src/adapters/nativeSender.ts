@@ -3,10 +3,7 @@ import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { Store } from "../core/store";
 import { nativeStore } from "./native/store.native";
 import { decodeFailed, encodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
-import { buildBatch, buildHeaders } from "./batch";
-
-// Placeholder host, real path: the collector terminates POST /telemetry (contract §11.1).
-const DEFAULT_ENDPOINT = "https://your.telemetry.endpoint/telemetry";
+import { buildBatch, buildHeaders, DEFAULT_ENDPOINT } from "./batch";
 
 // The offline queue goes through the Store port (#89). Unlike web, these await: on the
 // native build a write is not guaranteed to have landed when the app is killed, so the

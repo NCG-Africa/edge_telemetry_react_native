@@ -11,7 +11,7 @@ describe("createTelemetry (web)", () => {
     vi.spyOn(console, "log").mockImplementation(() => {});
     vi.spyOn(console, "warn").mockImplementation(() => {});
 
-    const t = createTelemetry({ apiKey: "edge_abc", endpoint: "https://x/collector/telemetry" });
+    const t = createTelemetry({ apiKey: "edge_abc", endpoint: "https://x/telemetry" });
     expect(t).toBeInstanceOf(TelemetryWeb);
   });
 

@@ -145,7 +145,7 @@ the credential shape to pick one, and never tighten `assertApiKey` to the collec
 check — that would hard-reject every `edge_<jwt>`. The collector's path is `POST /telemetry`.
 
 Built by `adapters/batch.ts` so both senders are byte-identical. Web uses
-`fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the API-key header.
+`fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the credential headers.
 On failure: retried (3 attempts; native exponential + jitter, web linear), then persisted
 **through the `Store` port** under key `telemetry_failed_events` and replayed on next init.
 Neither sender touches `localStorage` / `AsyncStorage` directly any more — the decode rules

@@ -11,14 +11,17 @@ export function buildBatch(events: TelemetryEvent[]): string {
     });
 }
 
-// v4 auth (#90, contract §11.1). `apiKey` is *the credential*, not necessarily an API key:
-// the collector's credentialFromRequest reads Authorization under AUTH_MODE=jwt and
-// X-API-Key otherwise — exactly one, never both. Sending both, always, with the same
-// value makes one build work in the shared and segmented (bank / on-prem) topologies with
-// no mode flag and no shape sniffing. Do not sniff the credential shape to pick a header.
-export function buildHeaders(apiKey: string | undefined): Record<string, string> {
+// Auth (#90, contract §11.1). The collector's credentialFromRequest reads Authorization under
+// AUTH_MODE=jwt and X-API-Key otherwise — exactly one, never both. Sending both, always, with
+// the same value makes one build work in the shared and the segmented (bank / on-prem)
+// topologies with no mode flag. Do not sniff the credential's shape to pick a header.
+export function buildHeaders(credential: string | undefined): Record<string, string> {
     return {
         "Content-Type": "application/json",
-        ...(apiKey ? { "X-API-Key": apiKey, "Authorization": `Bearer ${apiKey}` } : {}),
+        ...(credential ? { "X-API-Key": credential, "Authorization": `Bearer ${credential}` } : {}),
     };
 }
+
+// Placeholder host — always pass a real `endpoint`. The path is the collector's real one:
+// it terminates POST /telemetry (contract §11.1). Shared so the two senders cannot drift.
+export const DEFAULT_ENDPOINT = "https://your.telemetry.endpoint/telemetry";

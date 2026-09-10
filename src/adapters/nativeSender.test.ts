@@ -28,7 +28,7 @@ describe("nativeSender — v3 transport envelope (Seam 2)", () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }) as any);
     vi.stubGlobal("fetch", fetchMock);
 
-    const endpoint = "https://collector.example.com/collector/telemetry";
+    const endpoint = "https://collector.example.com/telemetry";
     const sender = nativeSender(endpoint, "edge_test_key");
 
     await sender.send([event("navigation"), event("http.request")]);

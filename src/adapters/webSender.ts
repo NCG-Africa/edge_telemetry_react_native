@@ -3,10 +3,7 @@ import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { SyncStore } from "../core/store";
 import { webStore } from "./web/store.web";
 import { decodeFailed, encodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
-import { buildBatch, buildHeaders } from "./batch";
-
-// Placeholder host, real path: the collector terminates POST /telemetry (contract §11.1).
-const DEFAULT_ENDPOINT = "https://your.telemetry.endpoint/telemetry";
+import { buildBatch, buildHeaders, DEFAULT_ENDPOINT } from "./batch";
 
 // The offline queue goes through the Store port (#89), and on web it stays SYNCHRONOUS
 // on purpose. onFailure() runs on the unload path; a synchronous set() has landed before
@@ -35,7 +32,7 @@ function takeFailed(store: SyncStore): TelemetryEvent[] {
 
 // Try sending a batch with retries + backoff.
 // v3 uses fetch({ keepalive: true }) rather than navigator.sendBeacon: the beacon
-// API cannot set the required X-API-Key header. keepalive preserves the
+// API cannot set the required credential headers. keepalive preserves the
 // survives-page-unload property we relied on sendBeacon for.
 async function sendWithRetry(endpoint: string, apiKey: string | undefined, events: TelemetryEvent[], retryCount: number = 3) {
     let attempts = 0;
