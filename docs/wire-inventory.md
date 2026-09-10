@@ -1,5 +1,15 @@
 # RN SDK Wire Inventory — every key sent today, web vs native
 
+> ⚠ **SUPERSEDED IN PART BY 3.1.0.** This document is pinned to **v3.0.1** and is accurate
+> for that pin. **Seven Context keys were respelled in 3.1.0**
+> ([#88](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/88)):
+> `app.buildNumber`→`app.build_number`, `app.packageName`→`app.package_name`,
+> `device.platformVersion`→`device.platform_version`, `device.androidSdk`→`device.android_sdk`,
+> `device.androidRelease`→`device.android_release`, `device.iosSystemName`→`device.ios_system_name`,
+> `network.isConnected`→`network.is_connected`. Key **counts are unaffected** — this is a
+> spelling change, not a set change. Affected rows below are marked `⚠→`. **Do not read the
+> camelCase spellings below as current.**
+
 **Scope:** `@nathanclaire/edge-telemetry-sdk` **v3.0.1**, tree at `9b7bf83`.
 Resolves [#49](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/49) under
 map [#48](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/48).
@@ -121,20 +131,20 @@ names**, not string literals, which is why Appendix B has to read the interface.
 |---|---|---|---|---|---|
 | `app.name` | string | `getApplicationName()` — `deviceInfo.native.ts:28,53` | `document.title \|\| "WebApp"` — `deviceInfo.web.ts:17` | never | low |
 | `app.version` | string | `getVersion()` — `native.ts:29,54` | `process.env.APP_VERSION \|\| "1.0.0"` — `web.ts:18` ⚠️ §8.4 | never | per release |
-| `app.buildNumber` | string | `getBuildNumber()` — `native.ts:30,55` | `process.env.BUILD_NUMBER` — `web.ts:19` | **absent when undefined** | per build |
-| `app.packageName` | string | `getBundleId()` — `native.ts:31,56` | `window.location.hostname` — `web.ts:20` | never | low |
+| `app.buildNumber` ⚠→`app.build_number` (3.1.0) | string | `getBuildNumber()` — `native.ts:30,55` | `process.env.BUILD_NUMBER` — `web.ts:19` | **absent when undefined** | per build |
+| `app.packageName` ⚠→`app.package_name` (3.1.0) | string | `getBundleId()` — `native.ts:31,56` | `window.location.hostname` — `web.ts:20` | never | low |
 | `device.id` | string | `getUniqueId()`, stable per install — `native.ts:22,59` | **regenerated per event** — `web.ts:23` ⚠️ §8.3 | never | native: per install · web: **per event** |
 | `device.platform` | string | `Platform.OS` → `ios`\|`android` — `native.ts:60` | const `"web"` — `web.ts:24` | never | 3 |
-| `device.platformVersion` | string | `getSystemVersion()` — `native.ts:37,61` | `navigator.appVersion` — `web.ts:25` | never | native: dozens · web: hundreds |
+| `device.platformVersion` ⚠→`device.platform_version` (3.1.0) | string | `getSystemVersion()` — `native.ts:37,61` | `navigator.appVersion` — `web.ts:25` | never | native: dozens · web: hundreds |
 | `device.model` | string | `getModel()` — `native.ts:36,62` | **full user-agent string** — `web.ts:26` | never | native: hundreds · web: **thousands** |
 | `device.manufacturer` | string | `getManufacturer()` — `native.ts:35,63` | const `"browser"` — `web.ts:27` | never | native: dozens · web: 1 |
 | `device.brand` | string | `getBrand()` — `native.ts:34,64` | `navigator.vendor \|\| "unknown"` — `web.ts:28` | never | native: dozens · web: ~4 |
-| `device.androidSdk` | string | API level, Android only — `native.ts:42,67` | **always absent** — `web.ts:32` | absent off-Android | ~15 |
-| `device.androidRelease` | string | Android only — `native.ts:68` | absent — `web.ts:33` | absent off-Android | ~15 |
+| `device.androidSdk` ⚠→`device.android_sdk` (3.1.0) | string | API level, Android only — `native.ts:42,67` | **always absent** — `web.ts:32` | absent off-Android | ~15 |
+| `device.androidRelease` ⚠→`device.android_release` (3.1.0) | string | Android only — `native.ts:68` | absent — `web.ts:33` | absent off-Android | ~15 |
 | `device.fingerprint` | string | Android only — `native.ts:43,69` | absent — `web.ts:34` | absent off-Android | **low — one value per model+build**, see §8.12 |
 | `device.hardware` | string | Android only — `native.ts:44,70` | absent — `web.ts:35` | absent off-Android | dozens |
 | `device.product` | string | Android only — `native.ts:45,71` | absent — `web.ts:36` | absent off-Android | hundreds |
-| `device.iosSystemName` | string | iOS only — `native.ts:48,74` | absent — `web.ts:38` | absent off-iOS | 1 |
+| `device.iosSystemName` ⚠→`device.ios_system_name` (3.1.0) | string | iOS only — `native.ts:48,74` | absent — `web.ts:38` | absent off-iOS | 1 |
 | `device.iosDeviceName` | string | iOS only — `native.ts:49,75` | absent — `web.ts:39` | absent off-iOS | **near-unique — user-named device, PII** |
 
 `undefined` values are stripped by `JSON.stringify`, so the seven Android/iOS keys are
@@ -158,7 +168,7 @@ Declared `telemetry.ts:51-54`; flattened under the `network` prefix at `telemetr
 | Key | Type | Native source | Web source | Null? | Cardinality |
 |---|---|---|---|---|---|
 | `network.type` | string | `NetInfo.fetch().type` — `networkInfo.native.ts:16-18` | `conn.type \|\| "unknown"` — `networkInfo.web.ts:12`, fallback `"unknown"` `21` | never | native: ~7 · web: **effectively 1, see §8.5** |
-| `network.isConnected` | boolean | `netState.isConnected ?? undefined` — `native.ts:19` | `navigator.onLine` — `web.ts:13`, `22` | **absent when undefined** on native | 2 |
+| `network.isConnected` ⚠→`network.is_connected` (3.1.0) | boolean | `netState.isConnected ?? undefined` — `native.ts:19` | `navigator.onLine` — `web.ts:13`, `22` | **absent when undefined** on native | 2 |
 
 `WebExtraNetworkInfo` (`telemetry.ts:56-61`) declares `downlink` and `effectiveType`, but the
 web collector's assignments are commented out (`networkInfo.web.ts:14-15`) — **`network.downlink`
@@ -464,9 +474,9 @@ Both need an explicit rule in the contract.
 `LCP`, `FCP`, `CLS`, `INP`, `TTFB` (`telemetry.ts:20-21`). Nothing in `src/` calls `log()` or
 `logMetric()` with any of them, so they contribute zero keys.
 
-**Populated only on Android (5):** `device.androidSdk`, `device.androidRelease`,
+**Populated only on Android (5):** `device.androidSdk` ⚠→`device.android_sdk`, `device.androidRelease` ⚠→`device.android_release`,
 `device.fingerprint`, `device.hardware`, `device.product`.
-**Populated only on iOS (2):** `device.iosSystemName`, `device.iosDeviceName`.
+**Populated only on iOS (2):** `device.iosSystemName` ⚠→`device.ios_system_name`, `device.iosDeviceName`.
 On web all seven are explicit `undefined` (`deviceInfo.web.ts:31-39`) and so never reach the wire.
 
 ## 7. What web actually emits today
@@ -990,18 +1000,18 @@ host-defined namespace, not a fixed key.
 
 | Namespace | n | Keys |
 |---|---|---|
-| `device.*` | 13 | `androidRelease` `androidSdk` `brand` `fingerprint` `hardware` `id` `iosDeviceName` `iosSystemName` `manufacturer` `model` `platform` `platformVersion` `product` |
+| `device.*` | 13 | `androidRelease`⚠ `androidSdk`⚠ `brand` `fingerprint` `hardware` `id` `iosDeviceName` `iosSystemName`⚠ `manufacturer` `model` `platform` `platformVersion`⚠ `product` |
 | `user.*` | 10 | `avatar` `createdAt` `email` `firstName` `fullName` `id` `lastName` `name` `phone` `updatedAt` |
 | `http.*` | 9 | `duration_ms` `host` `method` `path` `request_size` `response_size` `status_code` `success` `url` |
 | `session.*` | 5 | `duration_ms` `event_count` `id` `sequence` `start_time` |
 | `crash.*` | 5 | `breadcrumbs` `cause` **N** `fatal` `message` `stacktrace` |
 | `frame.*` | 5 | `dropped_count` `max_ms` `p95_ms` `source` `target_hz` |
 | `memory.*` | 5 | `pressure_level` `source` `type` `unit` `usage_mb` |
-| `app.*` | 4 | `buildNumber` `name` `packageName` `version` |
+| `app.*` | 4 | `buildNumber`⚠ `name` `packageName`⚠ `version` |
 | `navigation.*` | 4 | **N** `from_screen` **N** `method` **N** `route_type` **N** `to_screen` |
 | `sdk.*` | 3 | `error_count` `platform` `version` |
 | `screen.*` | 3 | **N** `duration_ms` **N** `exit_method` **N** `name` |
-| `network.*` | 3 | `isConnected` **N** `previous_type` `type` |
+| `network.*` | 3 | `isConnected`⚠ **N** `previous_type` `type` |
 | `interaction.*` | 2 | **N** `screen` **N** `type` |
 | `app_lifecycle.*` | 1 | `state` |
 | `event.*` | 1 | `name` |

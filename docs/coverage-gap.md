@@ -1,5 +1,15 @@
 # Coverage gap — how many RN keys the processor actually reads
 
+> ⚠ **SUPERSEDED IN PART BY 3.1.0.** This document is pinned to **v3.0.1** and is accurate
+> for that pin. **Seven Context keys were respelled in 3.1.0**
+> ([#88](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/88)):
+> `app.buildNumber`→`app.build_number`, `app.packageName`→`app.package_name`,
+> `device.platformVersion`→`device.platform_version`, `device.androidSdk`→`device.android_sdk`,
+> `device.androidRelease`→`device.android_release`, `device.iosSystemName`→`device.ios_system_name`,
+> `network.isConnected`→`network.is_connected`. Key **counts are unaffected** — this is a
+> spelling change, not a set change. Affected rows below are marked `⚠→`. **Do not read the
+> camelCase spellings below as current.**
+
 **Answer: 30 of 73 reach a column, and 26 reach a column the product reads. The other 43 land
 in the `attributes` JSONB bag, which is durable, containment-indexed, and queried by nothing.**
 
@@ -176,14 +186,14 @@ where the dashboards already look.
 |---|---:|---|---|
 | `user.*` (profile) | 9 | `avatar` `createdAt` `email` `firstName` `fullName` `lastName` `name` `phone` `updatedAt` | **columns exist, no dispatch case** (§4e) |
 | `crash.*` | 5 | `breadcrumbs` `cause` `fatal` `message` `stacktrace` | **table exists, RN's names are dotted and the extractor's are not** (§4c) |
-| `device.*` | 5 | `androidRelease` `androidSdk` `iosDeviceName` `iosSystemName` `platformVersion` | 3 casing near-misses (§4a); 2 iOS keys have no column |
+| `device.*` | 5 | `androidRelease`⚠ `androidSdk`⚠ `iosDeviceName` `iosSystemName`⚠ `platformVersion`⚠ | 3 casing near-misses (§4a) — **⚠ all fixed in 3.1.0**; 2 iOS keys have no column |
 | `frame.*` | 5 | `dropped_count` `max_ms` `p95_ms` `source` `target_hz` | 7 `frame_*` columns exist, **still zero overlap** (§4b) |
 | `http.*` | 4 | `host` `path` `request_size` `response_size` | `request_size`/`response_size` were **deliberately removed** from the insert — the live table has no such columns |
 | `memory.*` | 3 | `pressure_level` `unit` `usage_mb` | `unit` is a near-miss on `metric.unit`; the other two are on a path RN never sends (§4d) |
 | `sdk.*` | 3 | `error_count` `platform` `version` | ✗ no column anywhere — and `sdk.version` is the whole v4 deprecation story's only discriminator |
-| `app.*` | 2 | `buildNumber` `packageName` | casing near-misses (§4a) — `packageName` is still corrupting `rum_apps` (§5) |
+| `app.*` | 2 | `buildNumber`⚠ `packageName`⚠ | casing near-misses (§4a) — `packageName` was corrupting `rum_apps` (§5); **⚠ both fixed in 3.1.0** |
 | `interaction.*` | 2 | `screen` `type` | `rum_ui_interactions` exists with seven `ui_*` columns; RN's event name and key namespace both miss (§4c) |
-| `network.*` | 2 | `isConnected` `previous_type` | only `network.type` reads |
+| `network.*` | 2 | `isConnected`⚠ `previous_type` | only `network.type` reads; **⚠ `isConnected` respelled in 3.1.0** |
 | `app_lifecycle.*` | 1 | `state` | ✗ no column anywhere |
 | `event.*` | 1 | `name` | ✗ no column anywhere — the `custom_event` payload |
 | `session.*` | 1 | `sequence` | ✗ no column (#59's dedup key) |
@@ -198,7 +208,7 @@ or on dispatch, not on schema.
 
 ## 4. Near-misses — where a column exists and the key still misses it
 
-**(a) Five casing-only misses — unchanged since `b9bf1b5`.** The processor is snake_case; RN's
+**(a) Five casing-only misses — unchanged since `b9bf1b5`.** ⚠ **All five are FIXED in 3.1.0 (#88), along with `device.iosSystemName` and `network.isConnected`; the columns in the right-hand column start filling from that release.** The processor is snake_case; RN's
 Context block is flattened off the camelCase `DeviceInfo` interface (`telemetry.ts:601-618`).
 
 | RN sends | Allowlist wants | Column, sitting empty |
@@ -263,7 +273,7 @@ this near-miss is scheduled rather than open.
 
 ## 5. Consequences worse than a bag-only key
 
-**Every RN app still collapses into one row.** `0001_init.up.sql:13` creates
+**Every RN app still collapses into one row.** ⚠ **Fixed in 3.1.0 (#88) — forward-only: the poisoned empty-string row and its tenant attribution survive, so every `rum_apps` series steps at that release boundary.** `0001_init.up.sql:13` creates
 `ix_rum_apps_package_name` (unique on `package_name` alone — analytics `000` has no such
 index, the processor's additive DDL supplies it), and `repository.go:52` upserts
 `ON CONFLICT (package_name) DO UPDATE SET package_name = EXCLUDED.package_name`. RN sends

@@ -2029,6 +2029,8 @@ version of this that works.**
 
 ### 12.1 Ships in `3.1.0`, ahead of v4 (3)
 
+✅ **SHIPPED in 3.1.0** ([#88](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/88)). All three rows below are one change described three ways, and it is done. The two companion documents ([`wire-inventory.md`](./wire-inventory.md), [`coverage-gap.md`](./coverage-gap.md)) stay pinned to v3.0.1 and carry a supersession banner for these seven keys.
+
 | # | Change | Effect |
 |---|---|---|
 | 1 | Seven camelCase Context keys respelled | any bag query on the old spellings returns zero rows; **five columns start filling**; ⚠ every `rum_apps` series **steps** at this boundary (§9.3) |
