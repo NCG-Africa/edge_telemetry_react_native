@@ -562,8 +562,8 @@ describe("v3 session lifecycle — session.sequence", () => {
   });
 });
 
-describe("v3 identify() — user.profile.update", () => {
-  it("emits one user.profile.update and attaches identity to later events without minting a user.id", async () => {
+describe("identify() — user.profile.update carries the PII, nothing else does (§4.10)", () => {
+  it("emits one profile update, and the PII is on that event alone", async () => {
     const sent: TelemetryEvent[] = [];
     const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
     const t = new Telemetry({
@@ -577,15 +577,18 @@ describe("v3 identify() — user.profile.update", () => {
     await t.flush();
 
     // exactly one profile-update event
-    expect(sent.filter((e) => e.eventName === "user.profile.update")).toHaveLength(1);
+    const profiles = sent.filter((e) => e.eventName === "user.profile.update");
+    expect(profiles).toHaveLength(1);
+    expect(profiles[0].attributes!["user.name"]).toBe("Ada");
+    expect(profiles[0].attributes!["user.email"]).toBe("ada@x.io");
+    expect(profiles[0].attributes!["user.phone"]).toBe("123");
 
     const customs = sent.filter((e) => e.eventName === "custom_event");
-    expect(Object.keys(customs[0].attributes!)).not.toContain("user.id");
     const after = customs[customs.length - 1].attributes!;
-    expect(after["user.name"]).toBe("Ada");
-    expect(after["user.email"]).toBe("ada@x.io");
-    expect(after["user.phone"]).toBe("123");
-    // identify() carries no id, so the traffic stays anonymous (#91)
+    for (const key of ["user.name", "user.email", "user.phone"]) {
+      expect(Object.keys(after)).not.toContain(key);
+    }
+    // identify() carried no userId, so the traffic stays anonymous (#91, §3.2)
     expect(Object.keys(after)).not.toContain("user.id");
   });
 });

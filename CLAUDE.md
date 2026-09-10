@@ -137,7 +137,7 @@ Methods (both classes, all return Promises):
 
 ```ts
 log(event, data?) / flush() / shutdown()
-identify({name?, email?, phone?, avatar?, customAttributes?})   // emits user.profile.update
+identify({userId?, name?, email?, phone?, avatar?, customAttributes?})  // emits user.profile.update
 setUserId / setUserProfile / setUserDetails / updateUserProfile
 getUserProfile / clearUserProfile / setUserName / setUserContact
 trackErrors({captureConsole?}) / getDeviceInfo() / getNetworkInfo()
@@ -227,7 +227,6 @@ app.*        name, version, build_number, package_name
 app.build_id           consumer-supplied symbolication join key; omitted when unset, never "" (§4.8)
 device.*     platform, platform_version, model, manufacturer, brand (+ OS-specific extras)
 network.*    type, is_connected
-user.*       name/fullName/email/phone/avatar/custom.* — only when a profile is set
 ```
 
 Caller `data` is flattened dot-notation on top — so it can override any `app.*`, `device.*` or
@@ -910,6 +909,61 @@ five: `ms` for four, **`score` for CLS**.
 **`TelemetryNative` emits none, ever**, and exposes no method to. Native's load-performance
 analogue is `app.start` (§4.3).
 
+### `user.profile.update` — the one event that carries the PII
+
+`core/userProfile.ts` (§4.10, #107). `user.name` / `user.email` / `user.phone` /
+`user.custom.*` appear on **`user.profile.update` and on no other event**. They were on the
+Context block of every row, so a 10,000-event session put 10,000 copies of an email address on
+the wire and at rest to populate a per-user upsert table that needs it **once**. Copies per
+session go N → 1, and it is self-healing: the profile is in-memory, so `identify()` re-fires
+every launch.
+
+`user.id` stays on the Context block — it is the join key, not the payload, and it is **present
+on this event by construction** because `identify()` gained an optional `userId`. The one call
+that sends a profile should set the key that profile attaches to; a profile with no `user.id`
+has nothing to upsert on under §3.2's consumer-supplied identity. Omitting it leaves `user.id`
+exactly as it was — ⚠ **`identify()` still never mints one.**
+
+| Key | Cap | Rule |
+|---|---|---|
+| `user.name` | 255 | from `fullName`; omitted when empty |
+| `user.email` | 255 | |
+| `user.phone` | **50** | `rum_users.phone` is `VARCHAR(50)`; the mismatch loses the whole profile behind a 2xx |
+| `user.custom.*` | ≤**64 keys**, key ≤64 chars, value ≤255 | consumer keys pass through **verbatim, casing included** — the SDK imposes no normalization here |
+| `user.custom_dropped` | — | int, **omitted until there is a drop** |
+
+**One bag rule retires three defects at once.** A non-primitive value is `JSON.stringify`'d and
+then truncated; a value that cannot be stringified is **dropped**. That closes `flattenWithPrefix`'s
+missing depth guard — a cyclic `customAttributes` value recursed to a **`RangeError` inside the
+SDK**, crashing the host app's render tree on a bad `identify()` — raw arrays violating the
+primitive-values rule, and nested objects recursing into the bag.
+
+⚠ **Truncation is not a drop; a key-length overflow is.** A >255-char value ships truncated and
+books nothing. A >64-char key is **dropped**, because truncating it would be the normalization
+§4.10 forbids, and two long keys sharing a prefix would silently collide. Key-count overflow past
+64 is dropped in iteration order.
+
+**Overflow is dropped, counted and warned — never a throw.** The warning is `isDev()`-gated and
+said **once per process**: it is the third of the Conventions' three console carve-outs, and it
+exists for the same reason as the other two — a consumer with a bad `identify()` payload is
+exactly the consumer who has not set `debug: true`.
+
+**`flattenWithPrefix` also gained a depth cap of 8**, so the *general* `log(name, data)` path
+cannot blow the stack either. Nothing on this wire nests past `deviceInfo`'s two levels, so 8 is
+unreachable for a real payload and a cycle stops there.
+
+**Six public profile fields are `@deprecated` but live**, for removal in v5 — `fullName`,
+`firstName`, `lastName`, `avatar`, `createdAt`, `updatedAt`. Their wire keys are gone outright
+(§3.4): `user.fullName` duplicated `user.name`; `firstName`/`lastName`/`avatar` had no column and
+no reader anywhere, and `identify()` could never set the first two; `createdAt`/`updatedAt` were
+byte-identical every session for any one-`identify()` app, since the profile is in-memory only.
+`fullName` stays functional — it is still what `user.name` is built from.
+
+⚠ **`identify()` merges only what the call supplied.** `setUserProfile` merges by spread, so
+passing `email: undefined` through would wipe an email a prior `setUserContact()` set. The event
+is built from the **live profile**, not from the call's arguments, so a preceding
+`setUserName()` / `setUserContact()` ships on it.
+
 ### The Store port
 
 Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
@@ -1114,9 +1168,10 @@ ingest.
   `core/debug.ts`, off unless `debug: true`. **One carve-out, and it is closed**: a *config
   wiring* diagnostic the consumer must see while building may write directly, gated on
   `isDev()` from the same file and said **once per process** — §6.4's malformed-allowlist
-  report and §4.8's `Error.stackTraceLimit` advisory are the only two, because `debug: true`
-  is exactly what a consumer with a wiring mistake has not set. Anything that fires more than
-  once, or on a path a shipped app takes, goes through `debug()`.
+  report, §4.8's `Error.stackTraceLimit` advisory and §4.10's `user.custom.*` overflow warning
+  are the only three, because `debug: true` is exactly what a consumer with a wiring mistake
+  has not set. Anything that fires more than once, or on a path a shipped app takes, goes
+  through `debug()`.
 - A `Sender` implements `send()`, optionally `onFailure()` + `replayFailed()`. JSON only, via
   `buildBatch()`. No compression, no Protobuf.
 - Non-trivial logic leaves one runnable check behind — a small `*.test.ts` next to the file.
@@ -1143,6 +1198,25 @@ Real and current, maintained by hand as behaviour changes. Flag before "fixing" 
 need backend coordination, and several are deliberate trade-offs with the reasoning recorded
 above rather than defects.
 
+- **The profile-setting methods no longer reach the wire on their own.** `setUserProfile`,
+  `setUserDetails`, `updateUserProfile`, `setUserName` and `setUserContact` record state; only
+  `identify()` emits `user.profile.update`. A consumer who used `setUserProfile()` and never
+  called `identify()` shipped PII on every event in v3 and ships none now. That is §4.10's
+  point, but it is a behaviour change those consumers will read as data loss — they need one
+  `identify()` call.
+- **`user.custom_dropped` counts keys, not causes.** A cyclic value, an over-long key and the
+  65th key all book `1` with nothing on the row telling them apart. The dev warning names the
+  bounds; splitting the counter three ways would spend three columns on a debugging aid.
+- **The `user.custom.*` overflow warning is the third console carve-out** — dev-only, once per
+  process, outside the `debug()` gate, for the same reason as the other two.
+- **`flattenWithPrefix`'s depth cap stringifies at depth 8 and is uncapped in length**, unlike
+  `user.custom.*`'s 255. The general `log()` path has never had a length cap and the collector
+  truncates at 10,000 runes, so adding one here would be a new rule for an unreachable case —
+  nothing on this wire nests past `deviceInfo`'s two levels.
+- **`identify()` still never mints a `user.id`.** `identify({ userId })` sets one, but an
+  `identify()` without it leaves anonymous traffic anonymous — so a profile can land with no
+  `user.id` to upsert on. §4.10 calls the key "always present on this event by construction";
+  that construction is the consumer passing `userId`, and the SDK will not invent one (§3.2).
 - **`memory_usage` is RSS, so it is not comparable to a v3 chart across the cutover.** v3
   reported the JS heap under the same `memory_usage` name; a panel spanning the change
   compares two different quantities. `memory.type` (`heap` → `rss`) is what tells them apart.
