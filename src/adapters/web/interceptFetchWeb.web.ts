@@ -37,6 +37,12 @@ export class NetworkTrackerWeb {
                 init?: RequestInit
             ): Promise<Response> => {
                 const start = Date.now();
+                const url = typeof input === "string" ? input : input.toString();
+                const isCollector = isCollectorUrl(url, telemetry.getEndpoint?.());
+                // Bound to the view live at *send*, not at completion (§4.5.2). The collector's
+                // own POST is excluded from settle for the same reason it is excluded from
+                // `http.request`: the SDK must not hold a view open with its own traffic.
+                const settled = isCollector ? undefined : telemetry.views.requestStarted(start);
                 let response: Response | null = null;
                 let error: any = null;
 
@@ -48,10 +54,10 @@ export class NetworkTrackerWeb {
                     throw err;
                 } finally {
                     const end = Date.now();
-                    const url = typeof input === "string" ? input : input.toString();
+                    settled?.(end);
 
                     // Invariant: an http.request never describes the SDK's own collector POST.
-                    if (!isCollectorUrl(url, telemetry.getEndpoint?.())) {
+                    if (!isCollector) {
                         telemetry.log("http.request", buildHttpAttributes({
                             url,
                             method: init?.method ?? "GET",   // fetch's own default, a real observation

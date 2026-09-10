@@ -75,6 +75,22 @@ export class TelemetryWeb extends TelemetryBase {
             // Never rethrown into instancePromise: finalizeSession() flushes, flush() rethrows on a
             // dead collector, and a rejected instancePromise would brick every public method for the
             // life of the process. Hydration has already run; only the emission is lost.
+            // §4.5.2's `initial_load` seed: the launch view stays busy until the platform's
+            // runtime-ready marker. The *module* is awaited with everything else, so the seed
+            // is armed before `instancePromise` resolves; the *marker* is not, because on web
+            // it arrives with the load event and blocking init on it would delay every host
+            // call behind the page's own images.
+            // The module is awaited so the seed is armed before `instancePromise` resolves,
+            // but never rethrown into it: a failed chunk load must not brick every public
+            // method for the life of the process. A missing reader just releases the gate.
+            const { runtimeReadyAt } = await import("./adapters/web/runtimeReady.web")
+                .catch((err: unknown) => {
+                    debug.warn("Web runtime-ready module unavailable:", err);
+                    return { runtimeReadyAt: async () => undefined };
+                });
+            const { seedRuntimeReady } = await import("./adapters/seedRuntimeReady");
+            seedRuntimeReady(telemetry.views, runtimeReadyAt, "Web");
+
             await telemetry.resumeOrStartSession()
                 .catch(err => debug.warn("Web session resume failed:", err));
 
