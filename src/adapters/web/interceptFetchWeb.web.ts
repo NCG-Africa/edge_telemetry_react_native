@@ -43,6 +43,9 @@ export class NetworkTrackerWeb {
                 // own POST is excluded from settle for the same reason it is excluded from
                 // `http.request`: the SDK must not hold a view open with its own traffic.
                 const settled = isCollector ? undefined : telemetry.views.requestStarted(start);
+                // §6.3's Tier 1, captured at send for the same reason: the root live *now*
+                // is the parent, and a root minted here is this request's own (§6.2).
+                const span = isCollector ? undefined : telemetry.trace.requestSpan(start);
                 let response: Response | null = null;
                 let error: any = null;
 
@@ -58,15 +61,18 @@ export class NetworkTrackerWeb {
 
                     // Invariant: an http.request never describes the SDK's own collector POST.
                     if (!isCollector) {
-                        telemetry.log("http.request", buildHttpAttributes({
-                            url,
-                            method: init?.method ?? "GET",   // fetch's own default, a real observation
-                            statusCode: response?.status ?? 0,
-                            durationMs: end - start,
-                            error,
-                            requestBody: init?.body,
-                            responseSize: contentLengthSize(response?.headers.get("content-length")),
-                        }));
+                        telemetry.log("http.request", {
+                            ...buildHttpAttributes({
+                                url,
+                                method: init?.method ?? "GET",   // fetch's own default, a real observation
+                                statusCode: response?.status ?? 0,
+                                durationMs: end - start,
+                                error,
+                                requestBody: init?.body,
+                                responseSize: contentLengthSize(response?.headers.get("content-length")),
+                            }),
+                            ...span?.(end),
+                        });
                     }
                 }
             };

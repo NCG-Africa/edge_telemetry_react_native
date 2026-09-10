@@ -93,9 +93,10 @@ describe("native transport hardening (#94)", () => {
     const r = recordingSender();
     const t = await makeTelemetry(r.sender, { batchSize: 2 });
 
-    await t.log("navigation", { n: 1 });
+    await t.flush();                       // drain session.started + app.start
     await Promise.resolve(); await Promise.resolve();
     r.batches.length = 0;
+    r.persisted.length = 0;
 
     await t.log("custom_event", { n: 2 });
     await t.log("app.crash", { "crash.message": "boom" });

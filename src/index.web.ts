@@ -57,6 +57,10 @@ export class TelemetryWeb extends TelemetryBase {
                 // device.id is suffixed `_web`; session.id is not — §3.3 gives session.id a
                 // `_web` suffix only in v4. generateSessionId() holds that rule.
                 platform: "web",
+                // §6.2: web's launch root reports true navigation start, which is *better*
+                // than Android's fork-time-free approximation — and is why native's and
+                // web's launch envelopes must not be compared as the same interval.
+                traceLaunchStart: typeof performance !== "undefined" ? performance.timeOrigin : undefined,
                 deviceInfoHandler: deviceInfoTrackerWeb,
                 networkInfoHandler: networkInfoTrackerWeb,
                 store,

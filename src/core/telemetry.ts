@@ -2,6 +2,7 @@ import { debug } from "./debug";
 import { NavigationTracker } from "../adapters/navigationTracker";
 import { ScreenTimingTracker } from "../adapters/screenTiming";
 import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
+import { TraceManager } from "../adapters/traceManager";
 import { BreadcrumbBuffer } from "./breadcrumbs";
 import { randomHex } from "./utils/uuid";
 import type { Store } from "./store";
@@ -95,9 +96,25 @@ const ALLOWED_NAMES = new Set<string>([
     "session.started", "session.finalized", "app_lifecycle", "page_load", "navigation",
     "screen.duration", "http.request", "user.interaction", "network_change",
     "user.profile.update", "custom_event", "app.crash", "view",
+    // ⚠ `app.start` needs backend allowlist sign-off before it ships (#98, §4.3/§6.2) — an
+    // unlisted eventName is dropped on ingest. It is listed here, so it is being emitted.
+    "app.start",
     "resource_timing", "frame_render_time", "memory_usage", "long_task",
     "LCP", "FCP", "CLS", "INP", "TTFB",
 ]);
+
+/**
+ * §6.3's Tier 2 — annotation-only: `trace.id`, `rum.action.id` and `trace.root_type`, no
+ * span. Stamped here because these rows have no earlier capture point; Tier 1 rows
+ * (`app.start`, `view`, `http.request`) carry keys captured at launch / view entry / send
+ * and hand them in as `data`, and everything else is Tier 3 — **trace-free, all metrics
+ * included**. A windowed aggregate belongs to no single action, and a `rum.action.id` on
+ * one would invite a `GROUP BY` over a number that was never attributable.
+ *
+ * `app.error` joins this set with #100; `ui.interaction` joins Tier 1 with #102/#103, which
+ * is also what gives `user.interaction` a root to mint — until then it is trace-free.
+ */
+const TIER_2_NAMES = new Set<string>(["app.crash", "custom_event"]);
 
 // Events carry `eventName`; metrics carry `metricName` + numeric `value` (v3 §"Event vs Metric").
 // Kept as one loose shape (not a strict union) so callers can read `.eventName` without narrowing;
@@ -218,6 +235,10 @@ type Opts = {
     userId?: string;
     sdkVersion?: string;
     platform?: string;          // device OS (ios|android|web); forms the device/session id suffix
+    // What `app.start` reports as `span.start_time` (§6.2). Web passes
+    // `performance.timeOrigin`; native leaves it defaulted to `initialize()`. Neither is a
+    // fork time, and the two are not comparable — see TraceManager.
+    traceLaunchStart?: number;
     deviceInfoHandler?: DeviceInfoHandler;
     networkInfoHandler?: NetworkInfoHandler;
     store?: Store;              // persisted state port (#89); defaulted per build by the entry
@@ -269,6 +290,10 @@ export class Telemetry {
     // of the four exit boundaries, and the name ladder. Public because the route, lifecycle
     // and interaction adapters all feed it.
     public readonly views: ViewManager;
+    // Trace and span core (§6, #98): the live-root carrier, the three roots this ticket
+    // mints and the tier key builders. Public for the same reason `views` is — the
+    // interceptors, the lifecycle adapter and ViewManager all read it, synchronously.
+    public readonly trace: TraceManager;
     private readonly deprecatedScreenFeeds: boolean;
     // last-known screen; best-effort context for user.interaction taps (#33)
     public currentScreen?: string;
@@ -333,6 +358,9 @@ export class Telemetry {
     // Highest `event.sequence` the crash path has already written to the offline store, so a
     // second crash persists only the rows the first one did not. -1 means "nothing yet".
     private crashPersistedThrough = -1;
+    // `app.start` is once per *process* (§6.2), and web re-enters resumeOrStartSession() on a
+    // bfcache restore — which resumes a process rather than starting one.
+    private appStartEmitted = false;
 
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
@@ -372,6 +400,10 @@ export class Telemetry {
         this.navigationTracker = new NavigationTracker(this);
         this.screens = new ScreenTimingTracker(this);
         this.deprecatedScreenFeeds = opts?.deprecatedScreenFeeds ?? true;
+        // Before the ViewManager, not after: the launch root is minted in this constructor so
+        // the initial view can parent to it. A view that minted its own root instead would
+        // make a web hard load report `trace.root_type = navigation` (§6.2).
+        this.trace = new TraceManager(opts?.traceLaunchStart);
         // The initial view opens here, at SDK init — so no row can ever precede a view (§4.5).
         this.views = new ViewManager(this);
 
@@ -488,6 +520,14 @@ export class Telemetry {
      * (§4.1), or `COUNT(session.started)` stops equalling session count.
      */
     public async resumeOrStartSession() {
+        await this.hydrateAndAnnounce();
+        // Once per process and on every path — a resume emits no `session.started` at all
+        // (§4.1), so `session.reason: "launch"` undercounts launches and `app.start` is the
+        // compensator (§4.3). It is also the launch root's own row (§6.2).
+        await this.emitAppStart();
+    }
+
+    private async hydrateAndAnnounce() {
         const decision = await this.hydrateSession();
         if (decision.kind === "resumed") return;
         // Expired: hydration adopted the old id/start so the finalize ships under them.
@@ -500,6 +540,18 @@ export class Telemetry {
         if (this.lastActivity === undefined) { await this.startSession("launch"); return; }
         const reason = this.expiryReason(Date.now());
         if (reason) await this.rotateSession(reason);
+    }
+
+    /**
+     * `app.start` (§4.3/§6.2): once per process, a **root** of `trace.root_type = launch`,
+     * carrying the launch root minted in the constructor. Idempotent because the web build
+     * re-runs `resumeOrStartSession()` on a bfcache restore, which is a resumed process and
+     * not a new one.
+     */
+    private async emitAppStart() {
+        if (this.appStartEmitted) return;
+        this.appStartEmitted = true;
+        await this.log("app.start", this.trace.launchRootAttributes());
     }
 
     /**
@@ -630,6 +682,16 @@ export class Telemetry {
         // session may have been resumed from a record written under an older config.
         this.sampleRate = this.configuredSampleRate;
         this.sampled = this.rollSample();
+        // `trace.id` never spans a `session.id` (§6.6, invariant 2) — dropped before the
+        // successor view mints, so that view starts a fresh `navigation` root rather than
+        // extending an action from the retired session.
+        //
+        // Before `app.start` has shipped, dropping is not enough: it reports the launch root
+        // at any age, so its root row would land in the new session while the initial `view`
+        // it fathered landed in the old one. That is the expired-record cold launch — §4.3's
+        // most common path — so the launch root is re-minted instead of merely cleared.
+        if (this.appStartEmitted) this.trace.clear();
+        else this.trace.restartLaunchRoot();
         // After the new session.id is in place and before the first row of it is emitted:
         // `view.id` never spans a `session.id` (§4.5). rotateSession() has already emitted
         // the departing view's `view` event under the *old* id.
@@ -848,6 +910,11 @@ export class Telemetry {
 
             const attributes = await this.collectContext(data);
             if (!isAllowed) attributes['event.name'] = name;
+
+            // §6.3's Tier 2. Tier 1's keys were captured earlier — at launch, at view entry,
+            // at request send — and arrived through `data`; Tier 3 gets nothing at all.
+            // Assigned after `collectContext`, so a caller's `data` cannot forge them.
+            if (TIER_2_NAMES.has(eventName)) Object.assign(attributes, this.trace.annotate());
 
             // app.crash carries the trail of prior actions; other events extend the trail.
             if (eventName === 'app.crash') {

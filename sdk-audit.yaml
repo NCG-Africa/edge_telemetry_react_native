@@ -38,6 +38,25 @@ events:
       - {field: sdk.error_count, type: int, unit: none, always_present: true}
       - {field: session.reason, type: string, unit: none, always_present: true}   # idle|max_duration (#92)
 
+  - name: app.start
+    trigger: >
+      Once per PROCESS, at the end of resumeOrStartSession() — on every path, including a resumed
+      session, which is why it is §4.3's compensator for `session.reason: "launch"` undercounting
+      launches. ⚠ NEEDS BACKEND ALLOWLIST SIGN-OFF before it ships: an unlisted eventName is
+      dropped on ingest, and it is already in ALLOWED_NAMES, so it is being emitted.
+      It is also §6.2's launch root, minted in the Telemetry constructor (before ViewManager, so
+      the initial view parents to it and a web hard load is never `navigation`).
+      evidence src/core/telemetry.ts emitAppStart(); src/adapters/traceManager.ts:78-80
+      (launchRootAttributes), :168-177 (spanKeys)
+    payload_fields:
+      # §6 Tier 1, and the whole payload: `app.start` carries no keys of its own.
+      - {field: trace.id, type: string, unit: none, always_present: true}                  # 32 lowercase hex, W3C
+      - {field: span.id, type: string, unit: none, always_present: true}                   # 16 lowercase hex
+      - {field: rum.action.id, type: string, unit: none, always_present: true}             # == span.id: this IS the root
+      - {field: trace.root_type, type: string, unit: none, always_present: true}           # always "launch"
+      - {field: span.start_time, type: string, unit: none, always_present: true}           # ISO 8601; performance.timeOrigin on web, initialize() on native — NOT the same interval
+      # parent.span.id is ABSENT (a root) and span.duration_ms is ABSENT (roots derive theirs).
+
   - name: app_lifecycle
     trigger: foreground/background transition — native RN AppState, web document visibilitychange. Only on a state CHANGE. evidence src/adapters/appLifecycle.ts:16-23
     payload_fields:
@@ -89,6 +108,17 @@ events:
       - {field: view.time_spent, type: int, unit: ms, always_present: true}                # FOREGROUND-only dwell: the clock pauses on background
       - {field: view.error_count, type: int, unit: none, always_present: true}             # app.crash only — a closed enumeration. NOT failed requests, NOT console.warn
       - {field: view.action_count, type: int, unit: none, always_present: true}            # user.interaction rows sharing the view.id
+      # §6 Tier 1, captured at view ENTRY (#98): a `view` row parents to the root that OPENED the
+      # screen, not the one live when the user left it. A POINT SPAN — see span.duration_ms.
+      - {field: trace.id, type: string, unit: none, always_present: true}
+      - {field: span.id, type: string, unit: none, always_present: true}
+      - {field: parent.span.id, type: string, unit: none, always_present: false}          # OMITTED when the view minted its own `navigation` root
+      - {field: rum.action.id, type: string, unit: none, always_present: true}
+      - {field: trace.root_type, type: string, unit: none, always_present: true}
+      - {field: span.start_time, type: string, unit: none, always_present: true}          # view ENTRY; the wire `timestamp` is the EXIT
+      # ⚠ span.duration_ms is NEVER present on `view`, not even as a child (contract 6.3). View
+      # dwell is view.time_spent; a span width here would stretch every tap-that-navigates
+      # envelope across the whole time the user sat on the screen.
       - {field: view.request_count, type: int, unit: none, always_present: true}           # requests STARTED in the view (#97, contract 4.5.2), failures included; collector POST excluded. Booked by the interceptors at SEND, not by log() at completion — a response landing after a route change belongs to the view it started in
 
   # Both interceptors also open a §4.5.2 settle hold at send time (viewManager.requestStarted),
@@ -110,6 +140,15 @@ events:
       - {field: http.host, type: string, unit: none, always_present: false}               # keeps the port; omitted only on a NATIVE relative URL — web resolves against location.href (httpAttributes.ts:64-75)
       - {field: http.request_size, type: int, unit: bytes, always_present: false}         # true UTF-8 bytes (also URLSearchParams); ArrayBuffer/TypedArray byteLength; Blob size. Omitted for FormData/streams/no body AND for a measured 0 — contract 4.4 says "never 0", unlike response_size
       - {field: http.response_size, type: int, unit: bytes, always_present: false}        # from content-length; omitted when the header is absent, but a real 0 ships
+      # §6 Tier 1, captured at SEND (#98) — the root live then is the parent, and a request with
+      # no live root mints a `request` root. The collector's own POST carries none of these.
+      - {field: trace.id, type: string, unit: none, always_present: true}                 # 32 lowercase hex, W3C
+      - {field: span.id, type: string, unit: none, always_present: true}                  # 16 lowercase hex
+      - {field: parent.span.id, type: string, unit: none, always_present: false}          # OMITTED on a root
+      - {field: rum.action.id, type: string, unit: none, always_present: true}            # == span.id on a root, == parent.span.id on a child
+      - {field: trace.root_type, type: string, unit: none, always_present: true}          # launch|interaction|navigation|request, denormalized onto children
+      - {field: span.start_time, type: string, unit: none, always_present: true}          # ISO 8601, the SEND time
+      - {field: span.duration_ms, type: int, unit: ms, always_present: false}             # CHILDREN ONLY — a root's is derived server-side
     removed_fields:
       - {field: http.url, removed_in: "#95", why: "the identifier lives in the path, so query-stripping did not address the threat — contract 9.1"}
       - {field: http.path, removed_in: "#95", why: "raw values vs http.route's templates; not a rename a COALESCE can paper over"}
@@ -122,6 +161,13 @@ events:
       - {field: crash.stacktrace, type: string, unit: none, always_present: true}         # may be null; absent for console captures
       - {field: crash.fatal, type: bool, unit: none, always_present: false}               # only for native ErrorUtils path (isFatal)
       - {field: crash.breadcrumbs, type: string, unit: none, always_present: true}        # JSON-stringified array of last 20 {name,timestamp}; evidence telemetry.ts:497-498, breadcrumbs.ts
+      # §6 Tier 2 — annotation-only (#98): joins a trace without occupying a span. NO span.id, no
+      # parent, no duration, no start_time. All three are ABSENT when no root is live: Tier 2
+      # never mints. Stamped in log() from the live carrier, which the crash handler reaches
+      # synchronously — JS is single-threaded, so Android's process-global lastRoot has no referent.
+      - {field: trace.id, type: string, unit: none, always_present: false}
+      - {field: rum.action.id, type: string, unit: none, always_present: false}
+      - {field: trace.root_type, type: string, unit: none, always_present: false}
 
   - name: user.interaction
     trigger: native tap, best-effort — consumer must spread telemetry.interactionProps() onto app root <View>. NOT auto-wired; web has NO interaction capture. evidence src/adapters/interaction.ts:14-31; index.native.ts:168-172
@@ -144,6 +190,11 @@ events:
     payload_fields:
       - {field: event.name, type: string, unit: none, always_present: true}               # original caller-supplied name
       # plus arbitrary caller data flattened dot-notation into attributes
+      # §6 Tier 2, same discipline as app.crash. ⚠ custom_event's inclusion is the ONE place RN
+      # goes past Android — flagged as an invention, not borrowed precedent (contract 6.3).
+      - {field: trace.id, type: string, unit: none, always_present: false}
+      - {field: rum.action.id, type: string, unit: none, always_present: false}
+      - {field: trace.root_type, type: string, unit: none, always_present: false}
 
   - name: frame_render_time   # METRIC (type:"metric")
     trigger: aggregated once per 10s window from requestAnimationFrame deltas (web+native). value = p95 frame time (ms). evidence src/adapters/frameAggregate.ts:17-34; native frameDropsNative.native.ts:20-41; web frameDropsWeb.web.ts:20-40
@@ -167,6 +218,17 @@ events:
 
 # Allowlisted but NEVER emitted (no producer found in src): page_load, resource_timing,
 # long_task, LCP, FCP, CLS, INP, TTFB. evidence telemetry.ts:19-21 (ALLOWED_NAMES only).
+
+# §6 Tier 3 — TRACE-FREE, stated so nobody asks later (#98): ALL METRICS (frame_render_time,
+# memory_usage, and the five vitals when they land), plus app_lifecycle, network_change,
+# session.started, session.finalized, user.profile.update and the deprecated navigation /
+# screen.duration feeds. Not one trace key on any of them. The metrics exclusion is the one worth
+# arguing: a windowed aggregate belongs to no single action, and a rum.action.id on a p95 would
+# invite a GROUP BY over a number that was never attributable — and the join would LOOK valid.
+# `user.interaction` is also trace-free TODAY: §6.2's `interaction` root arrives with #102/#103.
+# Expiry is 2 s idle / 10 s cap — internal constants in adapters/traceManager.ts, deliberately NOT
+# TelemetryOpts surface. A span's START extends the root; a view's EXIT does not. A backwards
+# clock is clamped to expired. Background and session rotation both CLEAR the carrier.
 
 # ============================================================
 # 2. Common attributes — attached to EVERY event and metric
@@ -501,6 +563,40 @@ inconsistencies_and_surprises: >
       one and COUNT(session.started) over-counts that population. There is no session.id_ephemeral
       on the contract to mark it — but the same store failed the device.id round-trip, so those
       events already carry device.id_ephemeral: true. Filter on that.
+  22. #98: `app.start` needs backend allowlist sign-off. It is in ALLOWED_NAMES and is being
+      emitted; an unlisted eventName is dropped on ingest.
+  23. #98: contract 6.7 words the carrier as a MODULE-LEVEL variable. It is implemented as a field
+      on a Telemetry-owned TraceManager instead. The substance holds — a plain field read
+      synchronously inside the patch, no request tag, no thread-local — and a module singleton
+      would let one Telemetry inherit another's live root inside one process, which is the hazard
+      that actually exists on a single-threaded runtime. ViewManager is owned the same way.
+  24. #98: `trace.root_type = interaction` has NO producer. §6.2's interaction root arrives with
+      #102/#103, so `user.interaction` is trace-free today and taps do not start an action.
+  25. #98: a NAVIGATION root's `view` row arrives AFTER its own children — fetches during a view
+      ship in earlier batches than the `view` event closing it. On RN root-after-child is the
+      NORMAL case, not the offline one. Do not assume root-before-child arrival.
+  26. #98: web's launch span starts at performance.timeOrigin and native's at SDK initialize().
+      Neither is a fork time, and the two are NOT the same interval — do not compare native and
+      web launch envelopes.
+  27. #98: `view.id` is still resolved at LOG time, not frozen at span start, so an http.request
+      completing after a route change carries the ARRIVING view's view.id while its span keys
+      belong to the view it started in. That predates #98 (see 12) and the freeze arrives with
+      the span/trace work in §6 — but the two now disagree on the same row.
+  28. #98: an XHR `send()` that throws synchronously never reaches loadend, so a `request` root it
+      minted lives out its 2 s idle window with no row describing it. Rare; the fix is a discard
+      sibling on the finisher if the orphan ratio ever justifies one.
+  29b. #98: `app.start.js_ready_ms` (contract 4.3) is NOT built — the event ships with only its
+      Tier 1 trace keys. The marker is known only when the platform publishes it, and on web
+      that is the `load` event, long after `app.start`. Shipping it means either delaying
+      `app.start` — and with it the launch root the initial view parents to — or shipping a key
+      that is near-always absent on web. Needs a ruling.
+  29c. #98: on an expired-record cold launch the rotation RE-MINTS the launch root (rather than
+      just clearing the carrier) so trace.id cannot span a session.id. Cost: the retired trace
+      keeps one child — the initial `view` row under the old session — and no root row. Same
+      condition process death already produces; the alternative broke contract 6.6 invariant 2.
+  29. #98: header injection is NOT here. `traceHostAllowlist`, the `traceparent` header and
+      `traceparent.outcome`'s seven values are #99 — so ids are stamped locally and nothing
+      crosses the wire to a third party yet.
 
 ci_cd:
   what_exists: >
@@ -517,3 +613,7 @@ open_questions:
   - Are the web-vitals allowlist entries a planned workstream or leftover scaffolding?
   - Backend contract: does the collector expect a top-level `location` in the telemetry_batch envelope? It is not sent.
   - RESOLVED (#94): the offline store now caps at 500 events / 1 MB with app.crash evicted last.
+  - Backend: allowlist `app.start` (#98). Until then the event is emitted and dropped on ingest.
+  - Backend: contract 6.5's §0.3 — RN's position on a malformed inbound `traceparent` is a SKIP
+    (`skipped_consumer_set`), while the live `trace_injection` enum encodes the opposite verb
+    (`injected_inbound_malformed`). Needs a ruling before #99 authors that column.

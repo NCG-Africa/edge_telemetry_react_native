@@ -148,14 +148,14 @@ describe("#93 beforeSend — dropped is not failed", () => {
     let drop = true;
     const { t, sent } = launch({ beforeSend: (e) => (drop ? null : e) });
 
-    await t.log("custom_event");     // dropped, along with session.started before it
+    await t.log("custom_event");     // dropped, along with session.started and app.start
     drop = false;
     await t.log("navigation");
     await t.flush();
 
     expect(sent.map((e) => e.eventName)).toEqual(["navigation"]);
     const a = attrsOf(sent, "navigation")[0];
-    expect(a["sdk.hook_dropped"]).toBe(2);   // session.started + custom_event
+    expect(a["sdk.hook_dropped"]).toBe(3);   // session.started + app.start + custom_event
     expect(a["sdk.hook_failed"]).toBe(0);
   });
 
@@ -176,7 +176,7 @@ describe("#93 beforeSend — dropped is not failed", () => {
     // The original is never sent — it carries the exact field the hook existed to remove.
     expect(sent.map((e) => e.eventName)).toEqual(["navigation"]);
     const a = attrsOf(sent, "navigation")[0];
-    expect(a["sdk.hook_failed"]).toBe(2);
+    expect(a["sdk.hook_failed"]).toBe(3);   // session.started + app.start + custom_event
     expect(a["sdk.hook_dropped"]).toBe(0);
   });
 });
@@ -257,7 +257,8 @@ describe("#93 sessionSampleRate — sticky, and silent when it says no", () => {
     const third = launch({ store, sessionSampleRate: 0.5 });
     await third.t.log("custom_event");
     await third.t.flush();
-    expect(third.names()).toEqual(["session.started", "custom_event"]);
+    // `app.start` is once per *process*, so each relaunch emits its own (§6.2).
+    expect(third.names()).toEqual(["session.started", "app.start", "custom_event"]);
     // session.finalized belonged to the sampled-out session and correctly never shipped.
     expect(third.names()).not.toContain("session.finalized");
   });

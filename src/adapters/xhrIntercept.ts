@@ -1,5 +1,6 @@
 import { Telemetry } from "../core/telemetry";
 import { buildHttpAttributes, contentLengthSize, isCollectorUrl } from "./httpAttributes";
+import type { TraceAttributes } from "./traceManager";
 
 // Double-patching is the exact defect #95 exists to kill: two patches mean two `loadend`
 // listeners and two `http.request` events per call. `trackNetworkRequests()` is public and the
@@ -18,6 +19,12 @@ interface PendingRequest {
      * it started in and does not hold the arriving one open.
      */
     settled?: (endedAt?: number) => void;
+    /**
+     * §6.3's Tier 1 keys, captured at `send()` so the parent is the root live *then* and
+     * `span.start_time` is the send. Called at `loadend` to stamp `span.duration_ms` off
+     * the same pair of timestamps `http.duration_ms` uses.
+     */
+    span?: (endedAt: number) => TraceAttributes;
 }
 
 interface PatchedXhr extends XMLHttpRequest {
@@ -62,6 +69,10 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
         // held open by the SDK's own traffic (§4.5.2).
         if (!isCollectorUrl(req.url, telemetry.getEndpoint?.())) {
             req.settled = telemetry.views.requestStarted(req.start);
+            // Mints a `request` root when nothing is live, and extends the live one otherwise
+            // (§6.2). Same gate as settle: the SDK's own POST neither holds a view open nor
+            // starts an action.
+            req.span = telemetry.trace.requestSpan(req.start);
         }
 
         // One listener per *instance*, not per send: an XHR may be legally reused, and adding
@@ -76,15 +87,19 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
                 // Invariant: an http.request never describes the SDK's own collector POST.
                 if (isCollectorUrl(done.url, telemetry.getEndpoint?.())) return;
 
-                telemetry.log("http.request", buildHttpAttributes({
-                    url: done.url,
-                    method: done.method,
-                    statusCode: this.status,
-                    durationMs: Date.now() - done.start,
-                    error: this.status === 0 ? "Network error" : null,
-                    requestBody: done.body,
-                    responseSize: contentLengthSize(this.getResponseHeader?.("content-length")),
-                }));
+                const end = Date.now();
+                telemetry.log("http.request", {
+                    ...buildHttpAttributes({
+                        url: done.url,
+                        method: done.method,
+                        statusCode: this.status,
+                        durationMs: end - done.start,
+                        error: this.status === 0 ? "Network error" : null,
+                        requestBody: done.body,
+                        responseSize: contentLengthSize(this.getResponseHeader?.("content-length")),
+                    }),
+                    ...done.span?.(end),
+                });
             });
         }
 
