@@ -57,6 +57,8 @@ src/
 │   ├── debug.ts           ← debug() gate; all SDK-internal logging goes through this
 │   ├── store.ts           ← Store port: get/set/remove over persisted state, no RN import
 │   ├── memoryStore.ts     ← in-memory Store, configurable sync or async
+│   ├── userProfile.ts     ← §4.10 profile attributes: the caps, the bounded user.custom.* bag
+│   ├── utils/json.ts      ← stringifyOrDrop(): JSON.stringify that drops instead of throwing
 │   └── utils/uuid.ts      ← randomHex() — one shared impl, no platform split
 ├── adapters/
 │   ├── batch.ts           ← buildBatch(): the telemetry_batch envelope, shared by both senders
@@ -952,6 +954,15 @@ exactly the consumer who has not set `debug: true`.
 cannot blow the stack either. Nothing on this wire nests past `deviceInfo`'s two levels, so 8 is
 unreachable for a real payload and a cycle stops there.
 
+⚠ **An array on the caller-`data` path now ships as a JSON string, and the depth cap alone was
+not enough.** The flattener never recursed into arrays, so a cycle reached *through* one —
+`log("x", { wrapped: [{ inner: cyclic }] })` — never met the depth counter at all. Passed
+through raw it threw in the sender's `JSON.stringify`, where `flush()`'s catch **swallowed it
+and lost the whole batch, silently, with no counter and no log**. Arrays and depth-capped
+objects therefore take the same `stringifyOrDrop` path the bag does. That also settles the
+primitive-values rule on this path: the collector renders a raw array through `fmt.Sprint` as Go
+map syntax anyway, so JSON is strictly the better of the two shapes.
+
 **Six public profile fields are `@deprecated` but live**, for removal in v5 — `fullName`,
 `firstName`, `lastName`, `avatar`, `createdAt`, `updatedAt`. Their wire keys are gone outright
 (§3.4): `user.fullName` duplicated `user.name`; `firstName`/`lastName`/`avatar` had no column and
@@ -1165,13 +1176,16 @@ ingest.
   **peer deps** (`device-info` optional). Web adapters must not import them.
 - Guard native-only globals (`ErrorUtils`, `AppState`) before use.
 - **No bare `console.log`.** All SDK-internal logging goes through `debug()` in
-  `core/debug.ts`, off unless `debug: true`. **One carve-out, and it is closed**: a *config
-  wiring* diagnostic the consumer must see while building may write directly, gated on
-  `isDev()` from the same file and said **once per process** — §6.4's malformed-allowlist
-  report, §4.8's `Error.stackTraceLimit` advisory and §4.10's `user.custom.*` overflow warning
-  are the only three, because `debug: true` is exactly what a consumer with a wiring mistake
-  has not set. Anything that fires more than once, or on a path a shipped app takes, goes
-  through `debug()`.
+  `core/debug.ts`, off unless `debug: true`. **One carve-out, and it is closed**: a diagnostic
+  reporting *the consumer's own mistake* — a malformed config, an unset runtime knob, a payload
+  the SDK had to drop — may write directly, provided it is gated on `isDev()` from the same file
+  and said **once per process**. §6.4's malformed-allowlist report, §4.8's
+  `Error.stackTraceLimit` advisory and §4.10's `user.custom.*` overflow warning are the only
+  three, because `debug: true` is exactly what a consumer with a mistake has not set. ⚠ The
+  third one fires from `identify()` — a path a shipped app takes — which the earlier
+  *config-wiring-only* wording did not cover; `isDev()` is what keeps it off a shipped app's
+  console, and that gate, not the call site, is the actual rule. Anything that can fire more
+  than once per process goes through `debug()`.
 - A `Sender` implements `send()`, optionally `onFailure()` + `replayFailed()`. JSON only, via
   `buildBatch()`. No compression, no Protobuf.
 - Non-trivial logic leaves one runnable check behind — a small `*.test.ts` next to the file.
@@ -1209,10 +1223,19 @@ above rather than defects.
   bounds; splitting the counter three ways would spend three columns on a debugging aid.
 - **The `user.custom.*` overflow warning is the third console carve-out** — dev-only, once per
   process, outside the `debug()` gate, for the same reason as the other two.
+- **Arrays on the caller-`data` path changed shape**: `log("x", { tags: ["a","b"] })` shipped a
+  raw array in v3 and ships `'["a","b"]'` now. The collector `fmt.Sprint`s a raw array into Go
+  map syntax, so this is a better wire shape, but it *is* a value change on an existing key for
+  any consumer already passing arrays. Not what #107 asked for — it is the only way to close the
+  silent batch loss a cycle inside an array caused.
 - **`flattenWithPrefix`'s depth cap stringifies at depth 8 and is uncapped in length**, unlike
   `user.custom.*`'s 255. The general `log()` path has never had a length cap and the collector
   truncates at 10,000 runes, so adding one here would be a new rule for an unreachable case —
   nothing on this wire nests past `deviceInfo`'s two levels.
+- **`identify({ userId: "" })` ships the profile unkeyed.** It routes through `setUserId`, which
+  clears on `""` (§3.2) rather than shipping an empty string, so the profile event carries no
+  `user.id` at all — the same outcome as omitting `userId`, and the same hazard as the bullet
+  below. Consistent with `setUserId` by design; flag it if §4.10 wants a rejection instead.
 - **`identify()` still never mints a `user.id`.** `identify({ userId })` sets one, but an
   `identify()` without it leaves anonymous traffic anonymous — so a profile can land with no
   `user.id` to upsert on. §4.10 calls the key "always present on this event by construction";

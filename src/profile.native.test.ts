@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { TelemetryEvent } from "./core/telemetry";
-import { resetProfileWarning } from "./core/userProfile";
 
 // Native mirror of profile.web.test.ts (§4.10, #107). Platform APIs are module-stubbed;
 // the assertions are on the wire, not on any manager's private state.
@@ -35,7 +34,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
   default: { getItem: async () => null, setItem: async () => {}, removeItem: async () => {} },
 }));
 
-afterEach(() => { vi.restoreAllMocks(); resetProfileWarning(); });
+afterEach(() => vi.restoreAllMocks());
 
 function silenceConsole() {
   vi.spyOn(console, "log").mockImplementation(() => {});

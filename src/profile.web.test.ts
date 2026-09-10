@@ -1,11 +1,10 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import { createTelemetry } from "./createTelemetry.web";
 import type { TelemetryEvent } from "./core/telemetry";
-import { resetProfileWarning } from "./core/userProfile";
 
 // §4.10, #107 — the wire is the behaviour: drive the public API through an injected
 // Sender and assert on names, keys, values and **absence**.
-afterEach(() => { vi.restoreAllMocks(); resetProfileWarning(); });
+afterEach(() => vi.restoreAllMocks());
 
 function silenceConsole() {
   vi.spyOn(console, "log").mockImplementation(() => {});
@@ -89,6 +88,20 @@ describe("user profile PII → user.profile.update only (§4.10)", () => {
     expect("user.id" in profile.attributes!).toBe(false);
   });
 
+  it('identify({ userId: "" }) clears the id rather than shipping an empty string', async () => {
+    silenceConsole();
+    const { t, sent } = harness();
+
+    await t.setUserId("u-old");
+    await t.identify({ userId: "", name: "Ada" });
+    await t.flush();
+
+    // §3.2: `setUserId("")` clears, and identify() routes through it — so the profile ships
+    // unkeyed rather than keyed to "". The SDK will not mint a stand-in either way.
+    const a = sent.find((e) => e.eventName === "user.profile.update")!.attributes!;
+    expect("user.id" in a).toBe(false);
+  });
+
   it("ships the live profile, so setUserContact() before identify() reaches the wire", async () => {
     silenceConsole();
     const { t, sent } = harness();
@@ -161,5 +174,34 @@ describe("user profile PII → user.profile.update only (§4.10)", () => {
     // the depth guard has to leave the row *sendable*: a real Sender stringifies the batch,
     // so handing the cyclic object through raw would only move the throw downstream.
     expect(() => JSON.stringify(e)).not.toThrow();
+  });
+
+  it("a cycle reached through an array is sendable too — the array branch never recurses", async () => {
+    silenceConsole();
+    const { t, sent } = harness();
+
+    // The hole the depth guard alone cannot see: `flattenWithPrefix` does not descend into
+    // arrays, so this cycle never meets the depth counter. Passed through raw it throws in
+    // the sender's JSON.stringify, where flush() swallows it and the whole batch is lost
+    // silently — data loss with no counter and no log.
+    const cyclic: any = {};
+    cyclic.self = cyclic;
+    await expect(t.log("navigation", { wrapped: [{ inner: cyclic }] })).resolves.not.toThrow();
+    await t.flush();
+
+    const e = sent.find((ev) => ev.eventName === "navigation")!;
+    expect(e).toBeDefined();
+    expect(() => JSON.stringify(e)).not.toThrow();
+  });
+
+  it("a plain array in a log() payload ships as JSON, not as a raw non-primitive", async () => {
+    silenceConsole();
+    const { t, sent } = harness();
+
+    await t.log("navigation", { tags: ["a", "b"] });
+    await t.flush();
+
+    const a = sent.find((ev) => ev.eventName === "navigation")!.attributes!;
+    expect(a.tags).toBe('["a","b"]');
   });
 });

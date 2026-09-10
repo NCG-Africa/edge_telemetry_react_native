@@ -9,7 +9,8 @@ import { randomHex } from "./utils/uuid";
 import type { Store } from "./store";
 import { memoryStore } from "./memoryStore";
 import { applyBeforeSend, type BeforeSend } from "./beforeSend";
-import { buildProfileAttributes, stringifyOrDrop } from "./userProfile";
+import { buildProfileAttributes } from "./userProfile";
+import { stringifyOrDrop } from "./utils/json";
 import { version as PKG_VERSION } from "../../package.json";
 
 export type { BeforeSend } from "./beforeSend";
@@ -22,8 +23,8 @@ const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min of in
 // http.request traffic hold one session open forever; this bounds length, not count.
 const SESSION_MAX_MS = 4 * 60 * 60 * 1000;
 
-// ponytail: a cycle needs *a* bound, not a visited-set. Nothing on this wire nests past
-// deviceInfo's two levels, so 8 is unreachable for real payloads and a cycle stops here.
+// A cycle needs *a* bound, not a visited-set. Nothing on this wire nests past deviceInfo's
+// two levels, so 8 is unreachable for a real payload and a cycle stops here (§4.10).
 const FLATTEN_MAX_DEPTH = 8;
 
 /**
@@ -1267,10 +1268,8 @@ export class Telemetry {
             'sdk.version': this.sdkVersion,
         };
 
-        // §4.10, #107 — the profile keys are NOT here. `user.name` / `.email` / `.phone` /
-        // `user.custom.*` ride `user.profile.update` alone: a 10,000-event session put
-        // 10,000 copies of an email address on the wire and at rest to populate a per-user
-        // upsert table that needs it once. `user.id` above is the join key and stays.
+        // §4.10, #107 — the profile keys are deliberately NOT here; they ride
+        // `user.profile.update` alone. `user.id` above is the join key and stays.
 
         return attributes;
     }
@@ -1379,15 +1378,18 @@ export class Telemetry {
             // §4.10, #107 — the depth guard. Without it a cyclic value recursed until the
             // stack blew, *inside* the SDK, taking the host app's render tree with it. A
             // bad payload is a dropped key, never a RangeError.
-            if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-                if (depth < FLATTEN_MAX_DEPTH) {
-                    Object.assign(result, this.flattenWithPrefix(prefixedKey, value, depth + 1));
-                } else {
-                    // At the cap the object rides as a string, not as itself: a cycle handed
-                    // through raw would only move the throw to `JSON.stringify` in the sender.
-                    const flat = stringifyOrDrop(value);
-                    if (flat !== undefined) result[prefixedKey] = flat;
-                }
+            if (typeof value === 'object' && value !== null && !Array.isArray(value) && depth < FLATTEN_MAX_DEPTH) {
+                Object.assign(result, this.flattenWithPrefix(prefixedKey, value, depth + 1));
+            } else if (typeof value === 'object' && value !== null) {
+                // An array, or an object at the depth cap. Both ride as a JSON string rather
+                // than as themselves — the primitive-values rule, and the only way to close
+                // the hole a cycle *inside an array* leaves: the array branch never recurses,
+                // so the depth guard cannot see it and the throw would land in the sender's
+                // `JSON.stringify`, where `flush()` swallows it and the whole batch is lost
+                // silently. Stringifying is also what the collector's `fmt.Sprint` would do
+                // to a raw array, only in Go map syntax rather than JSON.
+                const flat = stringifyOrDrop(value);
+                if (flat !== undefined) result[prefixedKey] = flat;
             } else {
                 result[prefixedKey] = value;
             }

@@ -43,6 +43,14 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
   through — a cycle passed through raw would only move the throw to `JSON.stringify` in the
   sender.
 
+  ⚠ **Arrays in a `log(name, data)` payload now ship as JSON strings** — `{ tags: ["a","b"] }`
+  ships `'["a","b"]'` where it shipped a raw array before. The depth cap alone could not close
+  the hole: the flattener never recursed into arrays, so a cycle reached *through* one never met
+  the depth counter, threw in the sender's `JSON.stringify`, and `flush()`'s catch **swallowed
+  it and lost the whole batch silently — no counter, no log.** The collector renders a raw array
+  through `fmt.Sprint` as Go map syntax anyway, so JSON is the better of the two shapes, but it
+  is a value change on an existing key for anyone already passing arrays.
+
 ### Added
 
 - **Identity: `device.id` is ours, `user.id` is yours** (#91, wire contract §3.2/§3.3). One

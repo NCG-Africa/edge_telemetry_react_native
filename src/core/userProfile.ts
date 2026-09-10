@@ -11,6 +11,7 @@
 // dropped key, never a throw.
 
 import { isDev } from "./debug";
+import { stringifyOrDrop } from "./utils/json";
 import type { UserProfile } from "./telemetry";
 
 // Backend column widths (§4.10, work-list item 14). `rum_users.phone` is VARCHAR(50).
@@ -23,12 +24,7 @@ export const CUSTOM_VALUE_CAP = 255;
 
 let warnedOnce = false;
 
-/** Test seam only — the dev warning is once *per process* in production. */
-export function resetProfileWarning(): void {
-  warnedOnce = false;
-}
-
-function cap(value: unknown, max: number): string | undefined {
+function capString(value: unknown, max: number): string | undefined {
   if (typeof value !== "string") return undefined;
   const trimmed = value.slice(0, max);
   return trimmed.length ? trimmed : undefined;
@@ -49,19 +45,6 @@ function customValue(value: unknown): string | number | boolean | undefined {
 }
 
 /**
- * `JSON.stringify` that returns `undefined` instead of throwing — a cycle, a `toJSON` that
- * threw, a `BigInt`. Shared with `flattenWithPrefix`'s depth cap: both exist so a bad
- * payload is a dropped key rather than an exception inside the SDK.
- */
-export function stringifyOrDrop(value: unknown): string | undefined {
-  try {
-    return JSON.stringify(value) ?? undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-/**
  * The wire keys for `user.profile.update`. `user.id` is not here — it rides the Context
  * block, where it is present on this event by construction.
  */
@@ -69,9 +52,9 @@ export function buildProfileAttributes(profile: UserProfile | undefined): Record
   const attrs: Record<string, any> = {};
   if (!profile) return attrs;
 
-  const name = cap(profile.fullName, NAME_CAP);
-  const email = cap(profile.email, EMAIL_CAP);
-  const phone = cap(profile.phone, PHONE_CAP);
+  const name = capString(profile.fullName, NAME_CAP);
+  const email = capString(profile.email, EMAIL_CAP);
+  const phone = capString(profile.phone, PHONE_CAP);
   if (name !== undefined) attrs["user.name"] = name;
   if (email !== undefined) attrs["user.email"] = email;
   if (phone !== undefined) attrs["user.phone"] = phone;

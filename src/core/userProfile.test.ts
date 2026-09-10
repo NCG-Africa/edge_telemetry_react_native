@@ -1,7 +1,10 @@
-import { describe, it, expect, vi, afterEach } from "vitest";
-import { buildProfileAttributes, resetProfileWarning } from "./userProfile";
+import { describe, it, expect, vi, afterEach, beforeEach } from "vitest";
+import { buildProfileAttributes } from "./userProfile";
 
-afterEach(() => { vi.restoreAllMocks(); resetProfileWarning(); });
+afterEach(() => vi.restoreAllMocks());
+// The other tests trip the same overflow path; silence them so they cannot be mistaken
+// for the once-per-process assertion below.
+beforeEach(() => { vi.spyOn(console, "warn").mockImplementation(() => {}); });
 
 describe("buildProfileAttributes (§4.10)", () => {
   it("caps name/email at 255 and phone at 50", () => {
@@ -59,13 +62,21 @@ describe("buildProfileAttributes (§4.10)", () => {
     expect(a["user.custom.PlanTier"]).toBe("Gold");
   });
 
-  it("warns once in dev on overflow and never throws", () => {
+  it("warns once in dev on overflow and never throws", async () => {
+    // A fresh module instance: the once-per-process flag is module state, and this is the
+    // only test that reads it. Resetting it through an exported setter would put a
+    // test-only seam in shipped code.
+    vi.resetModules();
+    const fresh = await import("./userProfile");
     const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
     (globalThis as any).__DEV__ = true;
-    const cyclic: any = {}; cyclic.self = cyclic;
-    buildProfileAttributes({ customAttributes: { cyclic } });
-    buildProfileAttributes({ customAttributes: { cyclic } });
-    delete (globalThis as any).__DEV__;
+    try {
+      const cyclic: any = {}; cyclic.self = cyclic;
+      expect(() => fresh.buildProfileAttributes({ customAttributes: { cyclic } })).not.toThrow();
+      fresh.buildProfileAttributes({ customAttributes: { cyclic } });
+    } finally {
+      delete (globalThis as any).__DEV__;
+    }
     expect(warn).toHaveBeenCalledTimes(1);
   });
 });
