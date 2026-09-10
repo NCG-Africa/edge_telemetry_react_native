@@ -9,14 +9,17 @@ import { buildBatch, buildHeaders, DEFAULT_ENDPOINT } from "./batch";
 // on purpose. onFailure() runs on the unload path; a synchronous set() has landed before
 // the function returns, which is what closes the crash-loss window here rather than
 // merely narrowing it. Do not make these helpers async.
-function persistFailed(store: SyncStore, events: TelemetryEvent[]) {
+// Returns how many rows the §9.4 cap evicted, for core's `sdk.events_dropped`.
+function persistFailed(store: SyncStore, events: TelemetryEvent[]): number {
     const existing = decodeFailed(store.get(FAILED_EVENTS_KEY));
-    const written = store.set(FAILED_EVENTS_KEY, encodeFailed(existing, events));
+    const { json, dropped } = encodeFailed(existing, events);
+    const written = store.set(FAILED_EVENTS_KEY, json);
     // Storage refusing (incognito, quota, partitioned iframe) is an outcome, not an error:
     // the batch is already lost, and throwing here would only lose the next one too.
     if (written.status === "unavailable") {
         debug.warn("Telemetry could not persist failed events: storage unavailable");
     }
+    return dropped;
 }
 
 // Read the queue and clear it in one step, so a replay that fails again re-persists
@@ -78,7 +81,7 @@ export function webSender(
             await sendWithRetry(endpoint, apiKey, events, retryCount);
         },
         async onFailure(events: TelemetryEvent[]) {
-            persistFailed(store, events);
+            return persistFailed(store, events);
         },
     };
 }

@@ -12,14 +12,17 @@ import { buildBatch, buildHeaders, DEFAULT_ENDPOINT } from "./batch";
 // They take the `Store` union, not `AsyncStore`. Awaiting a synchronous store is a no-op,
 // so nothing breaks if a consumer injects one — the reverse is what the types must forbid,
 // and webSender below is where that matters.
-async function persistFailed(store: Store, events: TelemetryEvent[]) {
+// Returns how many rows the §9.4 cap evicted, for core's `sdk.events_dropped`.
+async function persistFailed(store: Store, events: TelemetryEvent[]): Promise<number> {
     const existing = decodeFailed(await store.get(FAILED_EVENTS_KEY));
-    const written = await store.set(FAILED_EVENTS_KEY, encodeFailed(existing, events));
+    const { json, dropped } = encodeFailed(existing, events);
+    const written = await store.set(FAILED_EVENTS_KEY, json);
     // Storage refusing (no native module linked, full disk) is an outcome, not an error:
     // the batch is already lost, and throwing here would only lose the next one too.
     if (written.status === "unavailable") {
         debug.warn("Telemetry could not persist failed events: storage unavailable");
     }
+    return dropped;
 }
 
 // Read the queue and clear it in one step, so a replay that fails again re-persists
@@ -83,7 +86,7 @@ export function nativeSender(
             await sendWithRetry(endpoint, apiKey, events);
         },
         async onFailure(events) {
-            await persistFailed(store, events);
+            return persistFailed(store, events);
         },
         async replayFailed() {
             debug.log("Telemetry replayFailedNative launched");

@@ -76,8 +76,8 @@ import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk";
 const telemetry = createTelemetry({
   apiKey: "edge_...",                 // required; must start with "edge_"
   endpoint: "https://collector.example.com/telemetry",
-  batchSize: 20,
-  flushIntervalMs: 10000,
+  batchSize: 50,
+  flushIntervalMs: 30000,
 });
 
 await telemetry.identify({ name: "Ada", email: "ada@x.io" });
@@ -96,8 +96,8 @@ telemetry.attachNavigation(navigationRef);   // native only, React Navigation re
 type TelemetryOpts = {
   apiKey: string;           // REQUIRED, must start with "edge_" — assertApiKey throws otherwise
   endpoint?: string;        // POST target. Default is a PLACEHOLDER — always pass a real one
-  batchSize?: number;       // events per flush. core default 2 (set this — 2 is too low for prod)
-  flushIntervalMs?: number; // default 10000; <=0 disables the interval timer
+  batchSize?: number;       // events per flush. default 50 (Android's, §9.4)
+  flushIntervalMs?: number; // default 30000; <=0 disables the interval timer
   captureConsole?: boolean; // console.error/warn → app.crash. Default ON
   debug?: boolean;          // SDK-internal diagnostics. Default off
   sender?: Sender;          // override the default platform sender
@@ -152,6 +152,8 @@ Built by `adapters/batch.ts` so both senders are byte-identical. Web uses
 `fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the credential headers.
 On failure: retried (3 attempts; native exponential + jitter, web linear), then persisted
 **through the `Store` port** under key `telemetry_failed_events` and replayed on next init.
+`Sender.onFailure()` returns how many rows the store's cap evicted, because the counter it
+feeds (`sdk.events_dropped`) lives on the Context block and only core assembles that.
 Neither sender touches `localStorage` / `AsyncStorage` directly any more — the decode rules
 are shared in `adapters/failedEvents.ts`, and web's persist stays synchronous on purpose.
 
@@ -178,11 +180,14 @@ are no standalone `device_info` / `network_info` events in v3.
 
 ```
 session.id, session.start_time (ISO), session.sequence   — all three survive a relaunch (§4.2)
+event.sequence         — per-session ordinal, stamped AFTER beforeSend; the backend's dedup key
 user.id                — only when the consumer supplied one; omitted on anonymous traffic
 device.id              — SDK-minted, persisted (+ device.id_ephemeral: true when storage failed)
 session.sample_rate    — the rate this session was rolled at; every row of it carries it
 sdk.platform ("react-native"), sdk.version (package.json version)
 sdk.hook_dropped / sdk.hook_failed  — beforeSend counters; separate on purpose
+sdk.events_dropped     — monotonic, process-lifetime; 0 until the first drop
+sdk.drop_reason        — omitted until a drop; queue_full | store_full | rejected
 app.*        name, version, build_number, package_name
 device.*     platform, platform_version, model, manufacturer, brand (+ OS-specific extras)
 network.*    type, is_connected
@@ -253,6 +258,38 @@ awaits. The offline queue in `webSender` / `nativeSender` is the port's first co
 implementation — a production-shaped seam, not a test-only affordance — configurable to either
 build's shape. A direct `new Telemetry()` with no injected store falls back to
 `memoryStore({ unavailable: true })`, so shared core never has to special-case a missing one.
+
+### Caps, `event.sequence` and the crash path
+
+Both queues are capped, **drop-oldest, `app.crash` evicted last** (§9.4). The in-memory queue
+holds 500; the offline store holds 500 events / 1 MB. `evictIndex()` in `core/telemetry.ts` is
+shared by both, so the memory queue and the disk queue can never disagree about what survives.
+Evicting crashes first would make the crash-free rate read *better* the worse the network is —
+that is the whole reason the rule exists. When every row is a crash the oldest crash goes
+anyway; growing past the cap is not the other option.
+
+**`event.sequence`** is stamped in `enqueue()`, **after** `beforeSend` — a hook-dropped row must
+not consume an ordinal, or every scrub would read as real loss to the backend's gap detection.
+It is persisted with the session record for the same reason `session.sequence` is: a resume that
+restarts at 0 forges duplicate `(session.id, event.sequence)` pairs, which is the exact key the
+dedup index is built on.
+
+**On `app.crash`** the queue is persisted and **one** batch is sent, crashes reordered to the
+front. Not a drain — a dying process gets one round trip. The queue is *left intact*, because
+most `app.crash` rows are non-fatal (a caught error, a `console.error` under the default
+`captureConsole`) and the process usually lives on; a successful send therefore leaves *one*
+duplicate on disk, and `event.sequence` is what makes that free.
+
+*One*, because the persist is watermarked on `event.sequence` (`crashPersistedThrough`): a
+chatty app crash-flushes often, and re-persisting the whole queue each time would fill the store
+with copies of its own backlog and book `store_full` drops that are not loss. The batch is
+spliced out **before** the send, not after — both the interval and the batch-full trigger fire
+`flush()` unawaited, so a post-send splice could delete rows the batch never carried.
+
+⚠ **The web/native asymmetry here is real and is not fixed.** Web's `Store` is synchronous
+`localStorage`, so the persist has landed when the next line runs and the loss window *closes*.
+Native's is an AsyncStorage round-trip a SIGKILL can outrun, so it only *narrows*. Awaiting
+harder does not change that.
 
 ### `beforeSend` and `sessionSampleRate`
 
@@ -423,9 +460,14 @@ coordination.
 - No URL sanitisation — `http.url` and web navigation paths keep query strings, so tokens
   and PII in query params ship as-is.
 - `captureConsole` defaults ON, so every `console.error` becomes an `app.crash`.
-- The offline store is **unbounded** — append-only, no cap or eviction. It now goes through
-  the `Store` port, so the cap has somewhere to live, but capping it needs `sdk.events_dropped`
-  and `sdk.drop_reason="store_full"` on the wire — v4, backend sign-off.
+- `flush()` sends **one** batch per call — it does not loop. At 50/30 s a large backlog still
+  drains a batch per interval; the draining `flush()` is contract §12.5 and a separate change.
+- `sdk.drop_reason` has no `rejected` producer: 4xx-drops-the-batch is #113.
+- A re-persist inside `replayFailed()` can evict without booking it — the sender has no core
+  instance in reach. §3.7 already calls these counters lossy about their own loss.
+- `captureConsole` defaults ON *and* `app.crash` now forces a persist-plus-send, so a chatty
+  `console.error` is a storage write and a POST each. #100 (split `app.crash` from `app.error`)
+  is the fix at the source.
 - `http.request_size` is string `.length` (chars), not bytes.
 - No top-level `location` in the envelope, though the contract allows one.
 - `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`

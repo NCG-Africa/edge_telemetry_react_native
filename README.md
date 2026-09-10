@@ -86,8 +86,8 @@ import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk";
 const telemetry = createTelemetry({
   apiKey: "edge_xxxxxxxx",                                  // required; must start with "edge_"
   endpoint: "https://collector.example.com/telemetry", // full POST URL, used verbatim
-  batchSize: 20,
-  flushIntervalMs: 10000,
+  batchSize: 50,
+  flushIntervalMs: 30000,
 });
 
 await telemetry.log("checkout_started", { cart_value: 42 });
@@ -101,8 +101,8 @@ import { createTelemetry } from "@nathanclaire/edge-telemetry-sdk";
 const telemetry = createTelemetry({
   apiKey: "edge_xxxxxxxx",
   endpoint: "https://collector.example.com/telemetry",
-  batchSize: 20,
-  flushIntervalMs: 10000,
+  batchSize: 50,
+  flushIntervalMs: 30000,
 });
 
 await telemetry.log("checkout_started", { cart_value: 42 });
@@ -120,8 +120,8 @@ crash/error capture, HTTP interception, frame + memory sampling, app foreground/
 type TelemetryOpts = {
   apiKey: string;           // REQUIRED — must start with "edge_"; sent as X-API-Key AND Authorization: Bearer
   endpoint?: string;        // full collector POST URL (used verbatim). Default is a placeholder — always set it
-  batchSize?: number;       // events per flush. Core default 2 — set higher (e.g. 20) for production
-  flushIntervalMs?: number; // periodic flush. Default 10000; <= 0 disables the timer
+  batchSize?: number;       // events per flush. Default 50 (matches the Android and iOS SDKs)
+  flushIntervalMs?: number; // periodic flush. Default 30000; <= 0 disables the timer
   captureConsole?: boolean; // funnel console.error/warn into app.crash. Default on (opt-out)
   debug?: boolean;          // SDK-internal console diagnostics. Default false (silent)
   sender?: Sender;          // override the transport (mainly for tests)
@@ -316,6 +316,11 @@ emits one `user.profile.update` — it carries no id of its own.
 ## Reliability
 
 - **Batching:** events queue and flush when `batchSize` is reached or every `flushIntervalMs`.
+- **Caps:** the in-memory queue holds 500 events and the persisted queue 500 events / 1 MB, both
+  drop-oldest with `app.crash` evicted last. Anything dropped is reported on the wire as
+  `sdk.events_dropped` + `sdk.drop_reason`.
+- **Crashes don't wait for the batch:** an `app.crash` persists the queue and sends one batch
+  immediately, with the crash moved to the front of it.
 - **Retry:** failed sends retry with exponential backoff + jitter.
 - **Persisted replay:** after final failure, batches are persisted (AsyncStorage on native,
   `localStorage` on web, key `telemetry_failed_events`) and replayed on next init — telemetry

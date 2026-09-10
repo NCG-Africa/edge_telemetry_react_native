@@ -26,10 +26,14 @@ export type HookOutcome =
  * allowlist removes on purpose.
  */
 const TIER_A_KEYS = new Set([
-    // `session.sequence` is not in the contract's §3.6 list because that list was written
-    // against v4's `event.sequence`, which this SDK does not emit yet. Both are transmission
-    // ordinals with no scrubbing use case, and (session.id, session.sequence) is what orders
-    // a session's batches (#92) — a hook that could delete it would order nothing.
+    // `session.sequence` is not in the contract's §3.6 list, which names only `event.sequence`.
+    // Both are transmission ordinals with no scrubbing use case: (session.id, session.sequence)
+    // orders a session's batches (#92) and (session.id, event.sequence) is the backend's dedup
+    // key (#94, §2.4) — a hook that could delete either would break the thing it keys.
+    //
+    // `event.sequence` is stamped in `enqueue()` *after* this hook runs, so on the way in it is
+    // absent and the re-stamp is a no-op; it is listed because the hook must not be able to
+    // forge one, and because a re-run over an already-stamped event must leave it alone.
     "session.id", "session.start_time", "session.sequence", "event.sequence",
     "device.platform", "trace.id", "span.id", "parent.span.id",
     "rum.action.id", "view.id",

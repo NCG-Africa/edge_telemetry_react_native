@@ -18,6 +18,34 @@ const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min of in
 // http.request traffic hold one session open forever; this bounds length, not count.
 const SESSION_MAX_MS = 4 * 60 * 60 * 1000;
 
+/**
+ * The in-memory queue's cap (§9.4). Drop-oldest, `app.crash` evicted last: a long
+ * offline period on an unbounded queue grows inside the host app's heap, and evicting
+ * crashes first would make the crash-free rate read *better* the worse the network is.
+ */
+const QUEUE_MAX_EVENTS = 500;
+
+/** `sdk.drop_reason` (§11). `rejected` has no producer until 4xx-drops-the-batch lands (#113). */
+export type DropReason = "queue_full" | "store_full" | "rejected";
+
+/**
+ * Which row to evict to get back under a cap: the oldest non-crash, or — when every
+ * row is a crash — the oldest, because growing past the cap is not an option either.
+ *
+ * Shared with the offline store (`adapters/failedEvents.ts`) so the in-memory queue and
+ * the disk queue can never disagree about what survives.
+ *
+ * ponytail: O(n) scan per eviction, n <= 500. Track the first non-crash index if a
+ * profile ever shows this on a hot path.
+ */
+/** An event's `event.sequence`, or -1 before `enqueue()` has stamped one. */
+const seqOf = (e: TelemetryEvent): number => e.attributes?.['event.sequence'] ?? -1;
+
+export function evictIndex(events: TelemetryEvent[]): number {
+    const i = events.findIndex(e => e.eventName !== "app.crash");
+    return i === -1 ? 0 : i;
+}
+
 /** Store key for the self-minted, persisted `device.id` (#91). */
 export const DEVICE_ID_KEY = "telemetry_device_id";
 /** Store key for the resumable session record (#92). */
@@ -37,6 +65,10 @@ type PersistedSession = {
     start: number;
     lastActivity: number;
     sequence: number;
+    // Per-session, per-event ordinal (§2.4). Persisted for the same reason `sequence` is:
+    // a resumed session restarting at 0 emits duplicate (session.id, event.sequence) pairs,
+    // which is exactly the key the backend's dedup index is built on.
+    eventSequence: number;
     eventCount: number;
     errorCount: number;
     // The sticky sample decision and the rate it was rolled at (§3.6). Both travel with
@@ -80,7 +112,13 @@ export type TelemetryEvent = {
 
 export interface Sender {
     send(events: TelemetryEvent[]): Promise<void>;
-    onFailure?(events: TelemetryEvent[]): Promise<void>;
+    /**
+     * Persist a batch that could not be sent. Returns how many rows the offline store's
+     * cap cost, so core can book them as `sdk.drop_reason = "store_full"` (§9.4) — the
+     * counter lives on the Context block, which only core assembles. `void` is still a
+     * valid return: a consumer's own sender is not obliged to have a cap.
+     */
+    onFailure?(events: TelemetryEvent[]): Promise<number | void>;
     replayFailed?(): Promise<void>;
 }
 
@@ -258,6 +296,7 @@ export class Telemetry {
     // session lifecycle (#29)
     private lastActivity?: number;       // last non-session event time; drives 30-min idle rotation
     private sessionSequence = 0;         // increments per acknowledged (2xx) batch
+    private eventSequence = 0;           // event.sequence — per-session ordinal, stamped at enqueue
     private sessionEventCount = 0;       // events this session (journey summary)
     private errorCount = 0;              // app.crash count this session (sdk.error_count)
 
@@ -272,10 +311,24 @@ export class Telemetry {
     private hookDropped = 0;             // sdk.hook_dropped — the hook working
     private hookFailed = 0;              // sdk.hook_failed  — the hook broken
 
+    // Drop accounting (§3.7). Process-lifetime and monotonic — deliberately not reset by a
+    // rotation, so "how much did this install lose" is one subtraction and not a sum.
+    // These are lossy about their own loss by construction: they only arrive if a *later*
+    // event gets through, so the tab that closes and never returns reports nothing.
+    // `event.sequence`'s gaps are what actually covers that.
+    private eventsDropped = 0;
+    private dropReason?: DropReason;
+    // Highest `event.sequence` the crash path has already written to the offline store, so a
+    // second crash persists only the rows the first one did not. -1 means "nothing yet".
+    private crashPersistedThrough = -1;
+
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
-        this.batchSize = opts?.batchSize ?? 2;
-        this.flushIntervalMs = opts?.flushIntervalMs ?? 10000;
+        // Android's numbers, deliberately (§9.4). These SDKs feed shared tables, so a
+        // per-SDK cadence makes cross-platform arrival comparisons quietly wrong. POSTs get
+        // ~25x larger and 3x rarer; the collector clears a 50-event batch ~20x over (§2.3).
+        this.batchSize = opts?.batchSize ?? 50;
+        this.flushIntervalMs = opts?.flushIntervalMs ?? 30000;
         this.endpoint = opts?.endpoint;
         this.platform = opts?.platform;   // set before id generation (suffix source)
         this.store = opts?.store ?? memoryStore({ unavailable: true });
@@ -464,6 +517,7 @@ export class Telemetry {
         this.sessionStart = saved.start;
         this.lastActivity = saved.lastActivity;
         this.sessionSequence = saved.sequence ?? 0;
+        this.eventSequence = saved.eventSequence ?? 0;
         this.sessionEventCount = saved.eventCount ?? 0;
         this.errorCount = saved.errorCount ?? 0;
         // A resume is not a rotation: the decision and the rate it was rolled at are
@@ -510,6 +564,7 @@ export class Telemetry {
             start: this.sessionStart,
             lastActivity: this.lastActivity ?? this.sessionStart,
             sequence: this.sessionSequence,
+            eventSequence: this.eventSequence,
             eventCount: this.sessionEventCount,
             errorCount: this.errorCount,
             sampled: this.sampled,
@@ -552,6 +607,8 @@ export class Telemetry {
         this.sessionId = this.generateSessionId();
         this.sessionStart = Date.now();
         this.sessionSequence = 0;
+        this.eventSequence = 0;   // the ordinal is per session, and this is a new one
+        this.crashPersistedThrough = -1;   // the watermark is an event.sequence, so it resets with it
         this.sessionEventCount = 0;
         this.errorCount = 0;
         // Re-rolled at the *configured* rate, not the retired session's — the previous
@@ -739,6 +796,7 @@ export class Telemetry {
     async log(name: string, data?: Record<string, any>) {
         this.eventCount++;
         let activity = false;
+        let crashed = false;
 
         // Session activity and the two boundaries — 30-min idle and the 4-hour cap (§4.2).
         // Session events don't count as activity (they're emitted *by* the lifecycle), so
@@ -769,6 +827,7 @@ export class Telemetry {
             // app.crash carries the trail of prior actions; other events extend the trail.
             if (eventName === 'app.crash') {
                 attributes['crash.breadcrumbs'] = this.breadcrumbs.toJSON();
+                crashed = true;
             } else {
                 this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
             }
@@ -789,11 +848,75 @@ export class Telemetry {
         // event it describes.
         if (activity) await this.persistSession();
 
-        if (this.queue.length >= this.batchSize) {
+        // A crash is the row the process may not survive to send twice, so it does not wait
+        // for the batch to fill. Awaited, unlike the batch-full flush: `app.crash` is emitted
+        // from a dying process's teardown, and a fire-and-forget send there is a send that
+        // never happens.
+        if (crashed) {
+            await this.flushCrash();
+        } else if (this.queue.length >= this.batchSize) {
             void this.flush();
         }
+    }
 
+    /**
+     * The crash path (§2 / §9.4): persist the whole queue, then send **one** batch reordered
+     * so the crash rides in it. Not a drain — a dying process gets one round trip.
+     *
+     * ⚠ The web/native asymmetry is real and is not fixed here. On web the `Store` is
+     * synchronous `localStorage`, so the persist has *landed* by the time the next line runs
+     * and the loss window closes. On native it is an AsyncStorage round-trip that a SIGKILL
+     * can outrun, so the window only narrows. Awaiting harder does not change that; the
+     * asymmetry is the `Store` port's whole point (`core/store.ts`).
+     *
+     * The persisted copy is a safety copy, not a handoff: the queue is left intact, because
+     * most `app.crash` rows are non-fatal (a caught error, or a `console.error` under the
+     * default `captureConsole`) and the process usually lives on. A successful send therefore
+     * leaves a duplicate on disk to replay next launch — which is what `event.sequence` and
+     * the backend's `(session_id, event_sequence)` dedup exist for (§2.4).
+     *
+     * *One* duplicate. Each row is written at most once by this path, watermarked on
+     * `event.sequence`: `captureConsole` is on by default, so a chatty app crash-flushes
+     * often, and re-persisting the whole queue each time would fill the store with copies of
+     * its own backlog and book `store_full` drops that are not loss — corrupting the very
+     * counter this change adds.
+     */
+    private async flushCrash() {
+        if (!this.sender || this.queue.length === 0) return;
 
+        // Move crashes to the front, relative order intact: at batchSize 50 a crash enqueued
+        // behind 49 older events would otherwise miss the only batch this process gets.
+        const isCrash = (e: TelemetryEvent) => e.eventName === 'app.crash';
+        this.queue = [...this.queue.filter(isCrash), ...this.queue.filter(e => !isCrash(e))];
+
+        const pending = this.queue.filter(e => seqOf(e) > this.crashPersistedThrough);
+        if (pending.length > 0 && this.sender.onFailure) {
+            try {
+                this.recordDrop("store_full", await this.sender.onFailure(pending));
+                // Advanced only on a write that returned: a throw leaves the watermark where
+                // it was, so the next crash retries these rows rather than abandoning them.
+                this.crashPersistedThrough = Math.max(this.crashPersistedThrough, ...pending.map(seqOf));
+            } catch (err) {
+                debug.warn("Telemetry: crash-path persist failed:", err);
+            }
+        }
+
+        // Spliced *before* the send, not after: both the interval and the batch-full trigger
+        // fire flush() unawaited, so a concurrent flush() splices this same front — and a
+        // post-send splice would then delete rows this batch never carried, silently and
+        // without booking them. Sent directly rather than through flush() because the rows
+        // are already on disk and flush()'s failure path would persist them a second time.
+        const batch = this.queue.splice(0, this.batchSize);
+        try {
+            await this.sender.send(batch);
+            await this.ackBatch();
+        } catch (err) {
+            // Requeue only what the store does not already hold — the rest is safe on disk
+            // and requeueing it would send it twice for no gain.
+            const unsaved = batch.filter(e => seqOf(e) > this.crashPersistedThrough);
+            if (unsaved.length > 0) this.queue.unshift(...unsaved);
+            debug.warn("Telemetry: crash-path send failed:", err);
+        }
     }
 
     /**
@@ -838,6 +961,10 @@ export class Telemetry {
             // Extrapolation is arithmetic when the rate is on the row: it survives a
             // consumer retuning mid-quarter, which config-in-a-spreadsheet does not.
             'session.sample_rate': this.sampleRate,
+            // Monotonic and always present; the reason stays omitted until there is one,
+            // so `sdk.drop_reason IS NOT NULL` is a usable filter for "this install lost data".
+            'sdk.events_dropped': this.eventsDropped,
+            ...(this.dropReason ? { 'sdk.drop_reason': this.dropReason } : {}),
             'sdk.hook_dropped': this.hookDropped,
             'sdk.hook_failed': this.hookFailed,
             'sdk.platform': SDK_PLATFORM,
@@ -911,12 +1038,46 @@ export class Telemetry {
      */
     private enqueue(e: TelemetryEvent) {
         if (!this.sampled) return;
-        if (!this.beforeSend) { this.queue.push(e); return; }
 
-        const outcome = applyBeforeSend(e, this.beforeSend);
-        if (outcome.kind === "failed") { this.hookFailed++; return; }
-        if (outcome.kind === "dropped") { this.hookDropped++; return; }
-        this.queue.push(outcome.event);
+        let kept = e;
+        if (this.beforeSend) {
+            const outcome = applyBeforeSend(e, this.beforeSend);
+            if (outcome.kind === "failed") { this.hookFailed++; return; }
+            if (outcome.kind === "dropped") { this.hookDropped++; return; }
+            kept = outcome.event;
+        }
+
+        // After the hook, never before (§2.4): an event the hook drops must not consume an
+        // ordinal, or every scrubbed row would read as a gap — and gaps are precisely how
+        // the backend tells real loss from a replay. Tier A already protects the key, so a
+        // hook cannot forge or delete one once stamped.
+        (kept.attributes ??= {})['event.sequence'] = this.eventSequence++;
+
+        this.queue.push(kept);
+        this.capQueue();
+    }
+
+    /**
+     * Hold the in-memory queue at its cap (§9.4), booking what it costs.
+     *
+     * The count lands on the *next* event's Context block, not this one's — `collectContext()`
+     * has already run by the time we get here. That is §3.7's stated behaviour, not a bug.
+     */
+    private capQueue() {
+        while (this.queue.length > QUEUE_MAX_EVENTS) {
+            this.queue.splice(evictIndex(this.queue), 1);
+            this.recordDrop("queue_full");
+        }
+    }
+
+    /**
+     * Book dropped rows against the monotonic counter and the reason that shipped last.
+     * Takes `Sender.onFailure`'s return shape as-is — a sender with no cap returns nothing.
+     */
+    private recordDrop(reason: DropReason, count: number | void = 1) {
+        if (!count || count <= 0) return;
+        this.eventsDropped += count;
+        this.dropReason = reason;
     }
 
     private flattenWithPrefix(prefix: string, obj: Record<string, any>): Record<string, any> {
@@ -960,14 +1121,11 @@ export class Telemetry {
 
         try {
             await this.sender.send(toSend);
-            this.sessionSequence++;   // acknowledged (2xx) batch — order a session's batches (#29)
-            // Persist it too: a resumed session that restarts at 0 would emit duplicate
-            // (session.id, session.sequence) pairs and stop ordering anything (#92).
-            await this.persistSession();
+            await this.ackBatch();
         } catch (lastError) {
             if (this.sender.onFailure) {
                 try {
-                    await this.sender.onFailure(toSend);
+                    this.recordDrop("store_full", await this.sender.onFailure(toSend));
                 } catch (persistErr) {
                     // If persistence fails, requeue to avoid data loss
                     this.queue.unshift(...toSend);
@@ -980,6 +1138,16 @@ export class Telemetry {
             debug.error("Telemetry flush failed:", lastError);
             throw lastError;
         }
+    }
+
+    /**
+     * Book an acknowledged (2xx) batch. `session.sequence` orders a session's batches (#29),
+     * and it is persisted because a resumed session restarting at 0 would emit duplicate
+     * (session.id, session.sequence) pairs and stop ordering anything (#92).
+     */
+    private async ackBatch() {
+        this.sessionSequence++;
+        await this.persistSession();
     }
 
     getQueue() {
