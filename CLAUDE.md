@@ -49,7 +49,9 @@ src/
 │   ├── failedEvents.ts    ← offline-queue key + decode/encode, shared by both senders
 │   ├── appLifecycle.ts    ← AppLifecycleEmitter (edge-triggered foreground/background)
 │   ├── crashCapture.ts    ← shared crash normalisation → app.crash
-│   ├── httpAttributes.ts  ← shared http.* attribute builder
+│   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
+│   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
+│   │                        idempotent, and one listener per instance — see below
 │   ├── frameAggregate.ts  ← rAF deltas → one frame_render_time metric per 10s window
 │   ├── interaction.ts     ← user.interaction tap emitter
 │   ├── networkChange.ts   ← edge-triggered network_change emitter
@@ -231,6 +233,40 @@ process only and **`device.id_ephemeral: true`** rides the Context block (omitte
 Without it that never-returning population inflates `COUNT(DISTINCT device.id)` and reads as
 traffic growth.
 
+### `http.request` — one chokepoint, no URL
+
+Native patches **`XMLHttpRequest` only**. RN's `global.fetch` *is* XHR underneath, so patching
+both would emit two events per `fetch()` call; the single chokepoint also catches axios, which
+is why an axios app's HTTP dashboard was empty before #95. Web keeps its `fetch` patch **on top
+of** the XHR one, because browser `fetch` is native and not XHR-backed. The XHR half is shared
+(`adapters/xhrIntercept.ts`) so the two builds cannot drift.
+
+**`http.url` and `http.path` are removed outright** (§9.1) — not query-stripped. The identifier
+lives in the *path*, so stripping `?token=…` while shipping `/accounts/GB29-…` raw fixes nothing.
+`http.host` (keeps the port) and `http.route` replace them. §4.4 omits the host on a **native**
+relative URL specifically — a browser resolves `/api/x` against the page, so `splitUrl()` passes
+`location.href` as the base when there is one. That is a capability check, not a platform branch.
+
+`http.route` is normalized **SDK-side only** — nothing raw leaves the device and the processor
+never re-derives. The rule is §4.4.1 verbatim, in `normalizeRoute()`: a segment is a variable if
+it contains a digit or runs 32+ chars, **except** `/^v\d+$/i`, so `/v2/` survives; depth caps at
+6 with a trailing `/…`; `/` stays `/`; no case folding; trailing slash dropped. There is **no
+cardinality guard** — a client-side rolling collapse would make one row mean different things on
+different phones. Accepted residue: `/accounts/savings` survives as itself.
+
+`http.request_size` is **true UTF-8 bytes**, and measures everything measurable *without
+consuming the body*: strings and `URLSearchParams` by byte count, `ArrayBuffer`/`TypedArray` by
+`byteLength`, `Blob` by `size`. `FormData` and streams are **omitted** — draining a consumer's
+request body is a worse bug than a missing key.
+
+⚠ **The two size keys have deliberately opposite null disciplines and must not be unified.**
+`http.request_size` is *"omitted when unmeasurable, **never 0**"*, so a zero-length body ships no
+key at all; `http.response_size` omits an absent `content-length` but **ships a real `0`**. `http.method` is uppercased in the shared builder, **reporting only** — the
+forwarded request is never touched. `http.status_code` is **`0`** on transport failure (DNS, TLS,
+timeout, cancellation) with no invented discriminator, so those stop folding into 5xx.
+
+**Invariant: an `http.request` never contains the collector endpoint.**
+
 ### The Store port
 
 Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
@@ -397,7 +433,7 @@ the original name as `event.name`. Currently emitted:
 | `app_lifecycle` | foreground/background transition |
 | `navigation` | route change or `screenStart()` |
 | `screen.duration` | `screenEnd()` |
-| `http.request` | intercepted fetch (both) + XHR (web) |
+| `http.request` | XHR only on native (fetch *is* XHR there); fetch + XHR on web |
 | `app.crash` | JS error, unhandled rejection, console.error/warn |
 | `user.interaction` | native taps via `interactionProps()` |
 | `network_change` | connectivity type transition |
@@ -457,8 +493,8 @@ coordination.
   the periodic `start()` in the memory adapters is never invoked.
 - `sdk.platform` is the constant `"react-native"` on the web build too, while
   `device.platform` is `"web"`.
-- No URL sanitisation — `http.url` and web navigation paths keep query strings, so tokens
-  and PII in query params ship as-is.
+- Web navigation paths keep their query strings, so tokens and PII in query params ship as-is.
+  (`http.request` itself carries no URL — see the `http.request` section.)
 - `captureConsole` defaults ON, so every `console.error` becomes an `app.crash`.
 - `flush()` sends **one** batch per call — it does not loop. At 50/30 s a large backlog still
   drains a batch per interval; the draining `flush()` is contract §12.5 and a separate change.
@@ -468,7 +504,6 @@ coordination.
 - `captureConsole` defaults ON *and* `app.crash` now forces a persist-plus-send, so a chatty
   `console.error` is a storage write and a POST each. #100 (split `app.crash` from `app.error`)
   is the fix at the source.
-- `http.request_size` is string `.length` (chars), not bytes.
 - No top-level `location` in the envelope, though the contract allows one.
 - `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`
   constructors still accept it as optional.

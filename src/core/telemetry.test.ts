@@ -375,7 +375,7 @@ describe("v3 wire contract — crash.breadcrumbs", () => {
     });
 
     await t.log("navigation", { "navigation.to_screen": "Home" });
-    await t.log("http.request", { "http.url": "/x" });
+    await t.log("http.request", { "http.route": "/x" });
     await t.log("app.crash", { "crash.cause": "Error" });
     await t.flush();
 

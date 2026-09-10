@@ -21,7 +21,7 @@ const event = (): TelemetryEvent => ({
         "app.version": "1.2.3",
         "device.platform": "ios",
         "device.id": "device_1_abc_ios",
-        "http.url": "https://x/y?token=secret",
+        "http.host": "api.example.com",
         "user.email": "ada@x.io",
     },
 });
@@ -42,7 +42,7 @@ describe("applyBeforeSend — Tier A is immutable", () => {
         // (session.id, session.sequence) is what orders a session's batches (#92)
         expect(a["session.sequence"]).toBe(3);
         // Tier C really was deleted — the hook is not being ignored, only bounded.
-        expect(a["http.url"]).toBeUndefined();
+        expect(a["http.host"]).toBeUndefined();
         expect(a["user.email"]).toBeUndefined();
     });
 
@@ -89,10 +89,10 @@ describe("applyBeforeSend — Tier B and C", () => {
     it("leaves Tier C alone, including keys the hook added", () => {
         const out = applyBeforeSend(event(), (e) => ({
             ...e,
-            attributes: { ...e.attributes, "http.url": "https://x/y", "custom.tag": "redacted" },
+            attributes: { ...e.attributes, "http.host": "api.example.com", "custom.tag": "redacted" },
         }));
         const a = (out as any).event.attributes;
-        expect(a["http.url"]).toBe("https://x/y");
+        expect(a["http.host"]).toBe("api.example.com");
         expect(a["custom.tag"]).toBe("redacted");
         expect(a["user.email"]).toBe("ada@x.io");
     });

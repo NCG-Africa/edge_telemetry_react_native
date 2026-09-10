@@ -154,7 +154,7 @@ export class TelemetryNative extends TelemetryBase {
     }
 
     async trackNetworkRequests() {
-        const { NetworkTrackerNative } = await import("./adapters/native/interceptFetchNative.native");
+        const { NetworkTrackerNative } = await import("./adapters/native/interceptHttpNative.native");
         const inst = await this.instancePromise;
         const networkTracker = new NetworkTrackerNative(inst);
         return inst.trackNetworkRequests(networkTracker);
