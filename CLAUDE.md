@@ -197,6 +197,16 @@ feeds (`sdk.events_dropped`) lives on the Context block and only core assembles 
 Neither sender touches `localStorage` / `AsyncStorage` directly any more — the decode rules
 are shared in `adapters/failedEvents.ts`, and web's persist stays synchronous on purpose.
 
+**The queue has exactly one replay path per build, and it is `Sender.replayFailed()`** (#113).
+Core calls it once, from its constructor; the entries call nothing. There are no standalone
+`replayFailedNative` / `replayFailedWeb` exports any more — native had both wired at once and
+sent every recovered batch **twice**, and web had *neither*, so its queue only ever grew. The
+drain is wrapped in `guardedDrain()`, per sender: `takeFailed()` already clears the key before
+the send is attempted, but two *concurrent* drains both read the payload before either removes
+it, so the second caller is handed the first's in-flight promise instead. A replay that fails
+again re-persists **exactly one copy** — it never goes through `flush()`, so `onFailure()` does
+not also persist it.
+
 ### Event and Metric
 
 ```ts
@@ -1316,6 +1326,10 @@ above rather than defects.
 - `sdk.drop_reason` has no `rejected` producer: 4xx-drops-the-batch is #113.
 - A re-persist inside `replayFailed()` can evict without booking it — the sender has no core
   instance in reach. §3.7 already calls these counters lossy about their own loss.
+- **The replay guard is per-sender, not per-store.** Two senders built over one `Store` — a
+  consumer constructing a second `Telemetry` by hand — can still race each other's drain. Each
+  entry builds exactly one sender, so the supported path cannot reach it; a store-level lock
+  would be a second mechanism for a case the factory already forbids.
 - **`error.*` keys are Tier C** in `beforeSend` — not on §3.6's Tier A list, so a hook may delete
   or rewrite them. Deliberate: this is where the PII lives.
 - The 2000-char `error.stacktrace` cap is a **tuning knob, not a contractual constant**, and may be

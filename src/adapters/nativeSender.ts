@@ -2,7 +2,7 @@ import { debug } from "../core/debug";
 import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { Store } from "../core/store";
 import { nativeStore } from "./native/store.native";
-import { decodeFailed, encodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
+import { decodeFailed, encodeFailed, guardedDrain, FAILED_EVENTS_KEY } from "./failedEvents";
 import { buildBatch, buildHeaders, DEFAULT_ENDPOINT } from "./batch";
 
 // The offline queue goes through the Store port (#89). Unlike web, these await: on the
@@ -88,41 +88,21 @@ export function nativeSender(
         async onFailure(events) {
             return persistFailed(store, events);
         },
-        async replayFailed() {
-            debug.log("Telemetry replayFailedNative launched");
+        // The single replay path on this build (#113). Core calls it once per launch from
+        // its constructor; the entry no longer calls a standalone twin, which is what sent
+        // every recovered batch twice.
+        replayFailed: guardedDrain(async () => {
             const stored = await takeFailed(store);
-            if (stored.length > 0) {
-                debug.log("Replaying failed events, count:", stored.length);
-                try {
-                    await sendWithRetry(endpoint, apiKey, stored);
-                } catch (err) {
-                    // If replay fails again, re-store
-                    await persistFailed(store, stored);
-                    throw err;
-                }
+            if (stored.length === 0) return;
+            debug.log("Replaying failed events, count:", stored.length);
+            try {
+                await sendWithRetry(endpoint, apiKey, stored);
+            } catch (err) {
+                // If replay fails again, re-store. Exactly one copy: this path never goes
+                // through core's flush(), so onFailure() does not also persist it.
+                await persistFailed(store, stored);
+                throw err;
             }
-        },
+        }),
     };
 }
-
-// Recover failed events on app start
-export async function replayFailedNative(
-    endpoint: string = DEFAULT_ENDPOINT,
-    apiKey?: string,
-    store: Store = nativeStore(),
-) {
-    debug.log("Telemetry replayFailedNative launched");
-    const stored = await takeFailed(store);
-    if (stored.length > 0) {
-        try {
-            debug.log("Replaying failed events, count:", stored.length);
-            await sendWithRetry(endpoint, apiKey, stored);
-        } catch (err) {
-            // If replay fails again, re-store
-            debug.warn("Telemetry replay failed Native Sender class:", err);
-            await persistFailed(store, stored);
-            throw err;
-        }
-    }
-}
-

@@ -10,7 +10,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
   },
 }));
 
-import { nativeSender, replayFailedNative } from "./nativeSender";
+import { nativeSender } from "./nativeSender";
 import { memoryStore } from "../core/memoryStore";
 import { decodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
 
@@ -109,7 +109,7 @@ describe("nativeSender — the offline queue through the Store port (#89)", () =
       vi.stubGlobal("fetch", failing());
       const store = seeded([event("app.crash")]);
 
-      const replay = replayFailedNative("https://x/collect", "edge_k", store);
+      const replay = nativeSender("https://x/collect", "edge_k", store).replayFailed!();
       const settled = expect(replay).rejects.toThrow();
       await vi.runAllTimersAsync();
       await settled;
@@ -126,7 +126,7 @@ describe("nativeSender — the offline queue through the Store port (#89)", () =
     vi.stubGlobal("fetch", fetchMock);
     const store = memoryStore({ async: true, seed: { [FAILED_EVENTS_KEY]: '[{"type":"eve' } });
 
-    await expect(replayFailedNative("https://x/collect", "edge_k", store)).resolves.toBeUndefined();
+    await expect(nativeSender("https://x/collect", "edge_k", store).replayFailed!()).resolves.toBeUndefined();
     expect(fetchMock).not.toHaveBeenCalled();
     expect(await store.get(FAILED_EVENTS_KEY)).toEqual({ status: "miss" });
   });

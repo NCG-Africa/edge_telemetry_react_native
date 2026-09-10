@@ -2,7 +2,7 @@ import { debug } from "../core/debug";
 import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { SyncStore } from "../core/store";
 import { webStore } from "./web/store.web";
-import { decodeFailed, encodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
+import { decodeFailed, encodeFailed, guardedDrain, FAILED_EVENTS_KEY } from "./failedEvents";
 import { buildBatch, buildHeaders, DEFAULT_ENDPOINT } from "./batch";
 
 // The offline queue goes through the Store port (#89), and on web it stays SYNCHRONOUS
@@ -83,24 +83,21 @@ export function webSender(
         async onFailure(events: TelemetryEvent[]) {
             return persistFailed(store, events);
         },
+        // Web had no replay hook at all and no caller for its standalone twin, so the
+        // queue only ever grew (#113). Same single path as native now: core calls this
+        // once per launch from its constructor.
+        replayFailed: guardedDrain(async () => {
+            const stored = takeFailed(store);
+            if (stored.length === 0) return;
+            debug.log("Replaying failed events, count:", stored.length);
+            try {
+                await sendWithRetry(endpoint, apiKey, stored, retryCount);
+            } catch (err) {
+                // If replay fails again, re-persist. Exactly one copy: this path never
+                // goes through core's flush(), so onFailure() does not also persist it.
+                persistFailed(store, stored);
+                throw err;
+            }
+        }),
     };
 }
-
-// Replay failed events on startup
-export function replayFailedWeb(
-    endpoint: string = DEFAULT_ENDPOINT,
-    apiKey?: string,
-    store: SyncStore = webStore(),
-    retryCount: number = 3,
-) {
-    debug.log("Telemetry replayFailedWeb launched");
-    const stored = takeFailed(store);
-    if (stored.length > 0) {
-        return sendWithRetry(endpoint, apiKey, stored, retryCount).catch(err => {
-            // If replay fails again, re-persist
-            persistFailed(store, stored);
-            debug.warn("Telemetry replay failed:", err);
-        });
-    }
-}
-

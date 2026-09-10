@@ -59,7 +59,6 @@ export class TelemetryNative extends TelemetryBase {
             const { Telemetry } = await import("./core/telemetry");
             const { nativeSender } = await import("./adapters/nativeSender");
 
-            const { replayFailedNative } = await import("./adapters/nativeSender");
             const { nativeStore } = await import("./adapters/native/store.native");
             const { DeviceInfoTrackerNative } = await import("./adapters/native/deviceInfo.native");
             const { NetworkInfoTrackerNative } = await import("./adapters/native/networkInfo.native");
@@ -93,10 +92,9 @@ export class TelemetryNative extends TelemetryBase {
                 buildId: opts?.buildId,
             });
 
-            // 🔄 recover failed events right after init
-            replayFailedNative(opts?.endpoint, opts?.apiKey, store).catch(err => {
-                debug.warn("Native replay failed:", err);
-            });
+            // The offline queue drains through `sender.replayFailed()`, which the core
+            // constructor above already called (#113). A second call here is what sent
+            // every recovered batch twice.
 
             // Resume or start the session before the instance is visible (#92), so
             // session.started can never land behind the host app's first event.
