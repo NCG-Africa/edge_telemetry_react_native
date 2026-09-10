@@ -34,7 +34,13 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
   `device.id` collision is *permanent* where a session collision was transient — two handsets
   merge into one device row and one rate-limit bucket, forever. RN has no WebCrypto, so the
   native entry side-effect-imports `react-native-get-random-values`, already a declared
-  dependency that was never imported; it is a no-op wherever `crypto` already exists.
+  dependency that was never imported; it is a no-op wherever `crypto` already exists. There is
+  no `Math.random()` fallback — `randomHex` throws with a reinstall instruction, because
+  silently minting a weak id for a value that persists forever is worse than refusing.
+
+  `clearUserProfile()` now clears `user.id` alongside the profile (contract §3.2), and
+  `setUserId("")` clears it rather than shipping an empty string. `device.id` is untouched by
+  both.
 
 ### Removed
 

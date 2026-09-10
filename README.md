@@ -162,7 +162,8 @@ identify(profile: {                     // EdgeRum-style — emits user.profile.
   customAttributes?: Record<string, any>;
 }): Promise<void>
 
-setUserId(id: string): Promise<void>    // consumer-owned user.id; truncated to 255 chars
+setUserId(id: string): Promise<void>    // consumer-owned user.id; truncated to 255 chars.
+                                        // setUserId("") clears it — no empty string ships.
 setUserProfile(profile): Promise<void>
 setUserDetails(details): Promise<void>          // fullName/firstName/lastName/email/phone/avatar/customAttributes
 updateUserProfile(updates): Promise<void>
@@ -300,7 +301,8 @@ an attribute).
 `Store` and never rotated — not by `identify()`, not by a user-id change, not by
 `clearUserProfile()` — so it is a stable anonymous-reach key that survives the login
 transition. `user.id` is whatever you pass to `setUserId()` (truncated to 255 chars) and is
-**omitted from the wire entirely** until you pass one; the SDK never mints an anonymous stand-in.
+**omitted from the wire entirely** until you pass one; the SDK never mints an anonymous
+stand-in. `clearUserProfile()` clears it — and leaves `device.id` untouched.
 
 If storage is unavailable — incognito, a partitioned iframe, Safari ITP eviction, a full disk —
 `device.id` lives for one process only and `device.id_ephemeral: true` rides the Context block

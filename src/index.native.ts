@@ -28,7 +28,9 @@ export class TelemetryNative extends TelemetryBase {
         this.instancePromise = (async () => {
             // RN ships no WebCrypto; this already-declared dependency installs
             // crypto.getRandomValues, which the id path now draws from (#91). It is a
-            // no-op wherever crypto already exists, and irrelevant off-device.
+            // no-op wherever crypto already exists, which is why a failure here is only a
+            // warning — off-device (SSR, tests) crypto is already there. If it genuinely
+            // isn't, randomHex() throws with the reinstall instruction.
             try { await import("react-native-get-random-values"); }
             catch (err) { debug.warn("crypto.getRandomValues polyfill unavailable:", err); }
 

@@ -299,8 +299,12 @@ inconsistencies_and_surprises: >
      the web build reports sdk.platform="react-native" while device.platform="web". Divergent.
   3. Web-vitals names (LCP/FCP/CLS/INP/TTFB/page_load/resource_timing/long_task) are in
      ALLOWED_NAMES but have no producers — dead allowlist entries.
-  4. session.id gets an ios|android suffix on native and none on web; device.id is suffixed on
-     both (ios|android|web). Contract §3.3 gives session.id a _web suffix in v4 — not done.
+  4. session.id gets an ios|android suffix on native and none on web (rule lives in
+     generateSessionId, telemetry.ts:301-308); device.id is suffixed on all three from the same
+     `platform` opt. Contract §3.3 gives session.id a _web suffix in v4 — not done.
+  4b. randomHex() THROWS (no Math.random fallback) when crypto.getRandomValues is missing —
+     utils/uuid.ts:12-20. On RN that means react-native-get-random-values failed to load, which
+     the native entry warns about first (index.native.ts:29-34).
   6. http.request_size = string .length (chars), not byte length (httpAttributes.ts:32) — mislabeled unit for multibyte bodies.
   7. Query strings are never stripped from http.url or web navigation paths — PII/token leak risk.
   8. console.error/warn capture defaults ON (captureConsole=true) — turns every console.error into

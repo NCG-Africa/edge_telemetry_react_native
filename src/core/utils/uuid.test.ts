@@ -15,6 +15,15 @@ describe("randomHex", () => {
     spy.mockRestore();
   });
 
+  it("names the cause when crypto is missing, instead of a bare TypeError", () => {
+    vi.stubGlobal("crypto", undefined);
+    try {
+      expect(() => randomHex()).toThrow(/react-native-get-random-values/);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("does not repeat", () => {
     expect(new Set(Array.from({ length: 200 }, () => randomHex())).size).toBe(200);
   });

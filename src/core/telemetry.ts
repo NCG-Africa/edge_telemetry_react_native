@@ -101,8 +101,8 @@ export interface DeviceInfo {
         package_name?: string;
     };
     device: {
-        /** Adapter-owned no more (#91): core self-mints and persists `device.id`. */
-        id?: string;
+        // No `id` here (#91): core self-mints and persists device.id, and stamps it onto the
+        // Context block *after* this block is flattened — an adapter-set id would be dead.
         platform: string;
         platform_version?: string;
         model?: string;
@@ -186,7 +186,6 @@ export class Telemetry {
     // so COUNT(DISTINCT user.id) is known-user reach and not a visitor count.
     private userId?: string = undefined;
     // SDK-owned, persisted, uninstall-scoped, never rotates — not on login, not on logout.
-    private deviceId?: string;
     private deviceIdEphemeral = false;
     private deviceIdPromise?: Promise<string>;
     private userProfile?: UserProfile = undefined;
@@ -300,7 +299,11 @@ export class Telemetry {
 
     private generateSessionId(): string {
         const base = `session_${Date.now()}_${randomHex(16)}`;
-        return this.platform ? `${base}_${this.platform}` : base;
+        // §3.3 suffixes session.id with ios|android only — the web build gains `_web` in v4,
+        // not here. device.id is suffixed on all three, so the rule can't just be `platform`.
+        return this.platform === "ios" || this.platform === "android"
+            ? `${base}_${this.platform}`
+            : base;
     }
 
     public setSessionId(id: string) {
@@ -370,6 +373,9 @@ export class Telemetry {
      * uninstall-scoped, stable across process restarts, and never rotated by login,
      * logout or a profile clear.
      *
+     * The platform suffix is the entry's (ios|android|web), not the device-info adapter's:
+     * this id is persisted forever, so it must not depend on a call that can throw on first run.
+     *
      * `getUniqueId()` is deliberately not used — it already carries two lifetimes on RN
      * alone (ANDROID_ID survives reinstall, identifierForVendor does not), so one identity
      * column would mean two things.
@@ -379,19 +385,15 @@ export class Telemetry {
      * rides the Context block to say so, because that population is otherwise
      * indistinguishable from real installs and reads as traffic growth.
      */
-    public async getDeviceId(platform?: string): Promise<string> {
+    private async getDeviceId(): Promise<string> {
         this.deviceIdPromise ??= (async () => {
             const read = await this.store.get(DEVICE_ID_KEY);
-            if (read.status === "hit") {
-                this.deviceId = read.value;
-                return read.value;
-            }
-            const suffix = platform ? `_${platform}` : "";
+            if (read.status === "hit") return read.value;
+            const suffix = this.platform ? `_${this.platform}` : "";
             const id = `device_${Date.now()}_${randomHex(16)}${suffix}`;
             const write = await this.store.set(DEVICE_ID_KEY, id);
             // Either end of the round-trip failing means this id never comes back.
             this.deviceIdEphemeral = read.status === "unavailable" || write.status === "unavailable";
-            this.deviceId = id;
             return id;
         })();
         return this.deviceIdPromise;
@@ -595,11 +597,9 @@ export class Telemetry {
             debug.warn("Telemetry: failed to fetch network info", err);
         }
 
-        // Mint/read before assembling. The suffix prefers the entry-supplied platform —
-        // device.id is persisted forever, so it must not depend on an adapter call that
-        // can throw on first run — and falls back to the adapter, which is where the web
-        // build's "web" comes from.
-        const deviceId = await this.getDeviceId(this.platform ?? deviceInfo?.device?.platform);
+        // Mint/read before assembling. device.id is persisted forever, so its suffix comes
+        // from the entry-supplied platform and never from collect(), which can throw.
+        const deviceId = await this.getDeviceId();
 
         const attributes: Record<string, any> = {
             // deviceInfo already namespaces its own keys (app.*, device.*) — flatten flat

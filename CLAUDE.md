@@ -57,7 +57,9 @@ src/
 │   ├── webSender.ts / nativeSender.ts
 │   ├── web/               ← *.web.ts capture adapters (+ store.web.ts over localStorage)
 │   └── native/            ← *.native.ts capture adapters (+ store.native.ts over AsyncStorage)
-└── shims/react-native-web-shim.ts
+└── shims/
+    ├── react-native-web-shim.ts
+    └── modules.d.ts       ← ambient decls for untyped side-effect deps
 ```
 
 **Two kinds of shared code.** Platform-agnostic *logic* (envelope building, transition
@@ -197,14 +199,22 @@ user.id    : whatever the consumer passes, truncated to 255 — never minted her
 
 Entropy is `crypto.getRandomValues` (#91). RN has no WebCrypto, so the native entry
 side-effect-imports `react-native-get-random-values` (already a dependency) before the first
-id is minted; it is a no-op wherever `crypto` already exists.
+id is minted; it is a no-op wherever `crypto` already exists. There is **no `Math.random()`
+fallback** — `randomHex` throws with a reinstall instruction instead, because a weak id that
+persists forever is worse than refusing to mint one.
+
+The suffix comes from the entry's `platform` opt, never from the device-info adapter: the id is
+persisted forever and `collect()` can throw on first run. `session.id` keeps the narrower
+ios|android rule (§3.3 gives it `_web` in v4, not now) — that rule lives in
+`generateSessionId()`, so the two ids can diverge without either drifting by accident.
 
 **`device.id` is SDK-owned, `user.id` is consumer-owned** — contract §3.2, and the split is the
 whole point. `device.id` is self-minted (never `getUniqueId()`, which carries two lifetimes on
 RN alone), written through the `Store` under `telemetry_device_id`, uninstall-scoped, and it
 **never rotates** — not on `identify()`, not on a user-id change, not on `clearUserProfile()`.
 `user.id` is absent until the host app calls `setUserId` / `setUserProfile({userId})`; there is
-no anonymous mint, no `""` and no placeholder, so `COUNT(DISTINCT device.id)` is anonymous
+no anonymous mint, no `""` and no placeholder — `setUserId("")` clears it rather than shipping
+an empty string, and `clearUserProfile()` clears it too (§3.2) while leaving `device.id` alone — so `COUNT(DISTINCT device.id)` is anonymous
 reach, `COUNT(DISTINCT user.id)` is known-user reach and `GROUP BY device.id` stitches the two.
 
 When the `Store` reports `unavailable` on either the read or the write, the id lives for one

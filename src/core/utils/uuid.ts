@@ -10,6 +10,17 @@
  * (already a dependency) to install it before the first id is minted.
  */
 export function randomHex(length = 16): string {
+    // Guarded, because the failure is otherwise a bare TypeError thrown from the Telemetry
+    // constructor with nothing pointing at the cause. There is no Math.random() fallback on
+    // purpose (#91): silently minting weak ids for a value that persists forever is worse
+    // than refusing, and the fix is a reinstall, not a retry.
+    if (typeof globalThis.crypto?.getRandomValues !== "function") {
+        throw new Error(
+            "edge-telemetry: crypto.getRandomValues is unavailable, so no id can be minted. " +
+            "On React Native this means react-native-get-random-values failed to load — " +
+            "reinstall it and rebuild.",
+        );
+    }
     const bytes = new Uint8Array(Math.ceil(length / 2));
     crypto.getRandomValues(bytes);
     let out = "";
