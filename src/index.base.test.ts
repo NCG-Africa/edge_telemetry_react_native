@@ -96,10 +96,16 @@ describe("public API parity", () => {
   });
 
   it("both expose the platform capture methods", () => {
-    for (const m of ["getDeviceInfo", "getNetworkInfo", "trackFrameDrops", "trackNetworkRequests", "trackMemoryUsage"]) {
+    for (const m of ["getDeviceInfo", "getNetworkInfo", "trackFrameDrops", "trackNetworkRequests"]) {
       expect(typeof (TelemetryWeb.prototype as any)[m]).toBe("function");
       expect(typeof (TelemetryNative.prototype as any)[m]).toBe("function");
     }
+  });
+
+  // §5.2/#105 — `memory_usage` is native-only in v4; web does not expose the method at all.
+  it("only native tracks memory", () => {
+    expect(typeof (TelemetryNative.prototype as any).trackMemoryUsage).toBe("function");
+    expect("trackMemoryUsage" in TelemetryWeb.prototype).toBe(false);
   });
 
   it("web has autoTrackNavigation; native has its screen/route extras", () => {

@@ -19,7 +19,7 @@ describe("tracker-registration methods", () => {
 
     const frame = { start: vi.fn(async () => undefined) };
     const network = { start: vi.fn(async () => undefined) };
-    const memory = { recordMemoryUsage: vi.fn(async () => undefined) };
+    const memory = { start: vi.fn(async () => undefined) };
     const crash = { attach: vi.fn(async () => undefined) };
 
     // return value is void, not a thenable that hangs
@@ -30,7 +30,7 @@ describe("tracker-registration methods", () => {
 
     expect(frame.start).toHaveBeenCalledTimes(1);
     expect(network.start).toHaveBeenCalledTimes(1);
-    expect(memory.recordMemoryUsage).toHaveBeenCalledTimes(1);
+    expect(memory.start).toHaveBeenCalledTimes(1);
     expect(crash.attach).toHaveBeenCalledTimes(1);
   });
 
@@ -319,7 +319,7 @@ describe("v3 wire contract — metric shape", () => {
       networkInfoHandler: networkHandler() as any,
     });
 
-    await t.logMetric("memory_usage", 128, { "memory.unit": "MB" });
+    await t.logMetric("memory_usage", 128, { "memory.type": "rss" });
     await t.flush();
 
     const m = sent[0];
@@ -331,7 +331,7 @@ describe("v3 wire contract — metric shape", () => {
     // Context block rides on the metric too
     expect(m.attributes!["sdk.platform"]).toBe("react-native");
     expect(m.attributes!["session.id"]).toBeDefined();
-    expect(m.attributes!["memory.unit"]).toBe("MB");
+    expect(m.attributes!["memory.type"]).toBe("rss");
   });
 
   it("carries app.build_id on a metric too — the join key is not event-only (§4.8)", async () => {
