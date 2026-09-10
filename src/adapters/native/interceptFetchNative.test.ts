@@ -23,8 +23,12 @@ afterEach(() => { g.XMLHttpRequest = saved.XMLHttpRequest; g.fetch = saved.fetch
 function installFakeXHR(status: number, headers: Record<string, string> = {}) {
     function XHR(this: any) { this.status = status; this._l = {}; }
     XHR.prototype.open = function (this: any, m: string, u: string) { this._m = m; this._u = u; };
-    XHR.prototype.send = function (this: any) { this._l["loadend"]?.(); };
-    XHR.prototype.addEventListener = function (this: any, type: string, cb: any) { this._l[type] = cb; };
+    // a real XHR keeps EVERY listener — a double-patch shows up here as two events, so the
+    // double must not collapse them into one
+    XHR.prototype.send = function (this: any) { (this._l["loadend"] || []).forEach((cb: any) => cb()); };
+    XHR.prototype.addEventListener = function (this: any, type: string, cb: any) {
+        (this._l[type] = this._l[type] || []).push(cb);
+    };
     XHR.prototype.getResponseHeader = function (k: string) { return headers[k.toLowerCase()] ?? null; };
     g.XMLHttpRequest = XHR;
     return XHR;
@@ -126,6 +130,20 @@ describe("NetworkTrackerNative — XHR-only chokepoint (#95)", () => {
 
         expect(calls).toHaveLength(0);
         expect(JSON.stringify(calls)).not.toContain("collector.example.com");
+    });
+
+    it("is idempotent: starting twice still emits one http.request per call", async () => {
+        installFakeXHR(200);
+        installXHRBackedFetch();
+        const { telemetry, calls } = fakeTelemetry();
+
+        // the entry ctor already auto-starts this; a consumer calling trackNetworkRequests()
+        // again must not double-count
+        await new NetworkTrackerNative(telemetry).start();
+        await new NetworkTrackerNative(telemetry).start();
+        await g.fetch("https://api.example.com/v1/users", { method: "GET" });
+
+        expect(calls).toHaveLength(1);
     });
 
     it("stop() restores the original prototype", async () => {

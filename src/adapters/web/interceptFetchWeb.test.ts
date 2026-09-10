@@ -27,7 +27,9 @@ function installFakeXHR(status: number, headers: Record<string, string> = {}) {
   function XHR(this: any) { this.status = status; this._l = {}; }
   XHR.prototype.open = function () { };
   XHR.prototype.send = function () { };
-  XHR.prototype.addEventListener = function (type: string, cb: any) { this._l[type] = cb; };
+  XHR.prototype.addEventListener = function (this: any, type: string, cb: any) {
+    (this._l[type] = this._l[type] || []).push(cb);   // a real XHR keeps every listener
+  };
   XHR.prototype.getResponseHeader = function (k: string) { return headers[k.toLowerCase()] ?? null; };
   g.XMLHttpRequest = XHR;
 }
@@ -90,7 +92,7 @@ describe("NetworkTrackerWeb — http.request (v3)", () => {
     const xhr: any = new g.XMLHttpRequest();
     xhr.open("GET", "https://api.example.com/ping");
     xhr.send();
-    xhr._l.loadend();   // fire completion
+    xhr._l.loadend.forEach((cb: any) => cb());   // fire completion
 
     expect(calls).toHaveLength(1);
     expect(calls[0].name).toBe("http.request");

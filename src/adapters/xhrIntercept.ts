@@ -1,6 +1,11 @@
 import { Telemetry } from "../core/telemetry";
 import { buildHttpAttributes } from "./httpAttributes";
 
+// Double-patching is the exact defect #95 exists to kill: two patches mean two `loadend`
+// listeners and two `http.request` events per call. `trackNetworkRequests()` is public and the
+// entry ctors already call it once, so a consumer calling it again must be a no-op.
+const PATCHED = "__edgeTelemetryXhrPatched";
+
 /**
  * Patches an `XMLHttpRequest` prototype so every completed request emits one `http.request`.
  * Shared because the native build is XHR-*only* (§4.4: RN's `global.fetch` is XHR underneath,
@@ -10,6 +15,7 @@ import { buildHttpAttributes } from "./httpAttributes";
  * @returns the unpatch, so `stop()` can restore the prototype.
  */
 export function patchXHR(telemetry: Telemetry, xhr: any): () => void {
+    if (xhr.prototype[PATCHED]) return () => { };
     const origOpen = xhr.prototype.open;
     const origSend = xhr.prototype.send;
 
@@ -45,5 +51,10 @@ export function patchXHR(telemetry: Telemetry, xhr: any): () => void {
         return origSend.apply(this, arguments as any);
     };
 
-    return () => { xhr.prototype.open = origOpen; xhr.prototype.send = origSend; };
+    xhr.prototype[PATCHED] = true;
+    return () => {
+        xhr.prototype.open = origOpen;
+        xhr.prototype.send = origSend;
+        delete xhr.prototype[PATCHED];
+    };
 }

@@ -41,8 +41,10 @@ function silenceConsole() {
 function installRNHttp(status: number, headers: Record<string, string> = {}) {
   function XHR(this: any) { this.status = status; this._l = {}; }
   XHR.prototype.open = function () {};
-  XHR.prototype.send = function (this: any) { this._l["loadend"]?.(); };
-  XHR.prototype.addEventListener = function (this: any, t: string, cb: any) { this._l[t] = cb; };
+  XHR.prototype.send = function (this: any) { (this._l["loadend"] || []).forEach((cb: any) => cb()); };
+  XHR.prototype.addEventListener = function (this: any, t: string, cb: any) {
+    (this._l[t] = this._l[t] || []).push(cb);   // a real XHR keeps every listener
+  };
   XHR.prototype.getResponseHeader = (k: string) => headers[k.toLowerCase()] ?? null;
   g.XMLHttpRequest = XHR;
   g.fetch = async (url: string, init?: any) => {
