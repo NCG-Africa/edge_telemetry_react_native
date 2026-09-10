@@ -1,75 +1,29 @@
 import { Telemetry } from "../../core/telemetry";
-import { buildHttpAttributes } from "../httpAttributes";
+import { patchXHR } from "../xhrIntercept";
 
 /**
- * Intercepts global `fetch` calls in React Native to log detailed telemetry data
- * about network requests, including timing, method, status, payload sizes, and errors.
+ * Captures all JS-originated HTTP on React Native by patching `XMLHttpRequest` — and nothing
+ * else. RN's `global.fetch` is `XMLHttpRequest` underneath (contract §4.4), so patching both
+ * would emit **two** `http.request` events per `fetch()` call; the one chokepoint catches
+ * `fetch` *and* axios, which is why an axios app's HTTP dashboard was empty before #95.
  *
- * Use the `start()` method to begin interception.
+ * Outside the boundary and uncountable: rn-fetch-blob, RN Firebase, native Apollo links,
+ * expo-file-system, `Image` loading and `WebSocket` — none of them touch JS HTTP.
  */
 export class NetworkTrackerNative {
-    private originalFetch: typeof fetch;
+    private unpatch?: () => void;
 
-    constructor(private telemetry: Telemetry) {
-        this.originalFetch = global.fetch.bind(global);
-    }
+    constructor(private telemetry: Telemetry) { }
 
-    /**
-     * Starts intercepting global fetch requests.
-     * Wraps `global.fetch` with telemetry logging.
-     *
-     * @returns Promise<void> resolves immediately after interception is set up.
-     */
     public start(): Promise<void> {
-        return new Promise((resolve) => {
-            global.fetch = async (
-                input: string | URL | Request,
-                init?: RequestInit
-            ): Promise<Response> => {
-                const start = Date.now();
-                let response: Response | null = null;
-                let error: unknown = null;
-
-                try {
-                    response = await this.originalFetch(input, init);
-                    return response;
-                } catch (err) {
-                    error = err;
-                    throw err;
-                } finally {
-                    const end = Date.now();
-                    const durationMs = end - start;
-
-                    const url = typeof input === "string" ? input : input.toString();
-
-                    // Never self-capture the SDK's own collector POST
-                    const endpoint = this.telemetry.getEndpoint?.();
-                    if (!(endpoint && url.startsWith(endpoint))) {
-                        const responseSize = response
-                            ? Number(response.headers.get("content-length") ?? 0)
-                            : 0;
-
-                        this.telemetry.log("http.request", buildHttpAttributes({
-                            url,
-                            method: init?.method ?? "GET",
-                            statusCode: response?.status ?? 0,
-                            durationMs,
-                            error,
-                            requestBody: init?.body,
-                            responseSize,
-                        }));
-                    }
-                }
-            };
-
-            resolve();
-        });
+        const xhr = (globalThis as any).XMLHttpRequest;
+        if (xhr) this.unpatch = patchXHR(this.telemetry, xhr);
+        return Promise.resolve();
     }
 
-    /**
-     * Restores the original fetch function, removing the interception.
-     */
+    /** Restores the original XHR prototype, removing the interception. */
     public stop(): void {
-        global.fetch = this.originalFetch;
+        this.unpatch?.();
+        this.unpatch = undefined;
     }
 }

@@ -59,17 +59,24 @@ events:
       - {field: screen.exit_method, type: string, unit: none, always_present: true}        # "navigation"
 
   - name: http.request
-    trigger: intercepted fetch (web+native) and XMLHttpRequest (web). Skips the SDK's own collector POST. evidence src/adapters/httpAttributes.ts:5-36; native interceptFetchNative.native.ts:52-60; web interceptFetchWeb.web.ts:67-75,122-130
+    trigger: >
+      XMLHttpRequest only on native — RN's global.fetch IS XHR underneath, so patching both would emit two
+      events per fetch(); the one chokepoint catches fetch and axios (#95, contract 4.4). Web patches fetch
+      AND XHR, because browser fetch is native and not XHR-backed. Skips the SDK's own collector POST on
+      every path. evidence src/adapters/httpAttributes.ts:76-104; src/adapters/xhrIntercept.ts:14-50;
+      native interceptFetchNative.native.ts:18-22; web interceptFetchWeb.web.ts:34-73
     payload_fields:
-      - {field: http.url, type: string, unit: none, always_present: true}
-      - {field: http.method, type: string, unit: none, always_present: true}
-      - {field: http.status_code, type: int, unit: none, always_present: true}            # 0 on network error / no response
+      - {field: http.method, type: string, unit: none, always_present: true}              # UPPERCASED in the shared builder (#95); the forwarded request is untouched
+      - {field: http.status_code, type: int, unit: none, always_present: true}            # 0 = never got a response: DNS/TLS/timeout/abort. Never folded into 5xx
       - {field: http.duration_ms, type: int, unit: ms, always_present: true}
       - {field: http.success, type: bool, unit: none, always_present: true}               # !error && 200<=status<400
-      - {field: http.host, type: string, unit: none, always_present: false}               # only if URL parses
-      - {field: http.path, type: string, unit: none, always_present: false}               # only if URL parses; NOT query-stripped (see privacy)
-      - {field: http.request_size, type: int, unit: bytes, always_present: false}         # only when request body is a string (.length, NOT bytes)
-      - {field: http.response_size, type: int, unit: bytes, always_present: false}        # from content-length header, only if truthy
+      - {field: http.route, type: string, unit: none, always_present: true}               # normalized template, contract 4.4.1; "/" when the path is empty
+      - {field: http.host, type: string, unit: none, always_present: false}               # keeps the port; omitted on a native relative URL
+      - {field: http.request_size, type: int, unit: bytes, always_present: false}         # true UTF-8 bytes; ArrayBuffer/TypedArray byteLength; Blob size. Omitted (never 0) for FormData/streams/no body
+      - {field: http.response_size, type: int, unit: bytes, always_present: false}        # from content-length; omitted when the header is absent, but a real 0 ships
+    removed_fields:
+      - {field: http.url, removed_in: "#95", why: "the identifier lives in the path, so query-stripping did not address the threat — contract 9.1"}
+      - {field: http.path, removed_in: "#95", why: "raw values vs http.route's templates; not a rename a COALESCE can paper over"}
 
   - name: app.crash
     trigger: JS global error (ErrorUtils native / window.onerror web), unhandled promise rejection, and (opt-out, default ON) console.error/console.warn. evidence src/adapters/crashCapture.ts:6-49; native crashHandlerNative.native.ts:15-45; web crashHandler.web.ts:15-29
@@ -265,7 +272,13 @@ transport:
 # ============================================================
 privacy:
   ip_handling: no client-side IP collection or transmission found.
-  url_sanitization: NONE. http.url is the raw full URL including query string; http.path = URL.pathname (query kept on http.url, not stripped). Web navigation captures window.location.pathname+search (query string retained). evidence httpAttributes.ts:16-31, navigationWeb.web.ts:42
+  url_sanitization: >
+    http.request carries NO per-request URL at any SDK setting (#95): http.url and http.path are removed and
+    replaced by http.host (with port, omitted on a relative URL) and http.route, a template normalized SDK-side
+    per contract 4.4.1 — nothing raw ever leaves the device and the processor never re-derives. Residue: an
+    all-alpha slug such as /accounts/savings survives as itself. STILL UNSANITISED: web navigation captures
+    window.location.pathname+search with the query string retained. evidence httpAttributes.ts:20-33,76-104,
+    navigationWeb.web.ts:42
   user_identifiers: >
     Auto: session.id; device.id ("device_{ms}_{16hex}_{ios|android|web}", SDK-minted and
     persisted through the Store under telemetry_device_id, uninstall-scoped, never rotated —
@@ -299,7 +312,8 @@ privacy:
     evidence core/beforeSend.ts, core/beforeSend.test.ts, telemetry.ts:1039-1058
   pii_risks: >
     HIGH surface. (1) email/phone/fullName/avatar sent plaintext once profile set.
-    (2) http.url carries full URLs incl. query strings (tokens/PII in query params leak).
+    (2) web navigation paths keep their query string (navigationWeb.web.ts:42); http.request itself no
+        longer carries any URL (#95).
     (3) crash.message / crash.stacktrace — arbitrary error text, incl. console.error/warn
     args stringified (captureConsole default ON) — may contain user data.
     (4) crash.breadcrumbs — JSON trail of last 20 event names+timestamps.
@@ -379,8 +393,9 @@ inconsistencies_and_surprises: >
   4b. randomHex() THROWS (no Math.random fallback) when crypto.getRandomValues is missing —
      utils/uuid.ts:12-20. On RN that means react-native-get-random-values failed to load, which
      the native entry warns about first (index.native.ts:29-34).
-  6. http.request_size = string .length (chars), not byte length (httpAttributes.ts:32) — mislabeled unit for multibyte bodies.
-  7. Query strings are never stripped from http.url or web navigation paths — PII/token leak risk.
+  6. CLOSED by #95: http.request_size is now true UTF-8 bytes (and byteLength/size for buffers and blobs).
+  7. Query strings are never stripped from web navigation paths — PII/token leak risk (navigationWeb.web.ts:42).
+     http.url and http.path no longer exist, so http.request is out of this gap's scope as of #95.
   8. console.error/warn capture defaults ON (captureConsole=true) — turns every console.error into
      an app.crash event; noisy apps will emit crash events for non-crashes.
   9. wire envelope has no top-level location field though the type name (telemetry_batch) and
