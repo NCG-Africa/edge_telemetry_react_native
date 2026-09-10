@@ -198,10 +198,11 @@ the cap the tail is dropped on a frame boundary and marked `… [truncated]`.
 ### Identity
 
 ```typescript
-identify(profile: {                     // EdgeRum-style — emits user.profile.update and
-  name?: string; email?: string;        // attaches identity to subsequent events. It carries
-  phone?: string; avatar?: string;      // no id, so traffic stays anonymous until setUserId.
-  customAttributes?: Record<string, any>;
+identify(profile: {                     // EdgeRum-style — emits user.profile.update, the ONLY
+  userId?: string;                      // event carrying user.name/.email/.phone/user.custom.*.
+  name?: string; email?: string;        // `userId` sets the consumer-owned user.id the profile
+  phone?: string; avatar?: string;      // upserts on; omit it and traffic stays anonymous —
+  customAttributes?: Record<string, any>;   // the SDK never mints one.
 }): Promise<void>
 
 setUserId(id: string): Promise<void>    // consumer-owned user.id; truncated to 255 chars.
@@ -216,8 +217,16 @@ setUserContact(email?, phone?): Promise<void>
 ```
 
 ```typescript
-await telemetry.identify({ name: "Ada Lovelace", email: "ada@example.com" });
+await telemetry.identify({ userId: "u-42", name: "Ada Lovelace", email: "ada@example.com" });
 ```
+
+> **The profile PII rides `user.profile.update` and nothing else.** `user.name`, `user.email`,
+> `user.phone` and `user.custom.*` used to be on the Context block of *every* event, so a
+> 10,000-event session put 10,000 copies of an email address on the wire. Caps are **255 / 255 /
+> 50**; `user.custom.*` is bounded at 64 keys, 64-char keys and 255-char values, with
+> non-primitive values `JSON.stringify`'d then truncated. Anything over is dropped, counted in
+> `user.custom_dropped` and warned once in dev — a bad payload is never a throw. The other
+> profile setters record state only: **call `identify()` for the profile to reach the wire.**
 
 ### Context accessors
 
@@ -399,8 +408,9 @@ If storage is unavailable — incognito, a partitioned iframe, Safari ITP evicti
 `device.id` lives for one process only and `device.id_ephemeral: true` rides the Context block
 so that population can be excluded from device counts. The key is omitted when false.
 
-`identify()` attaches host-app identity (`user.name`/`email`/`phone`) to subsequent events and
-emits one `user.profile.update` — it carries no id of its own.
+`identify()` emits one `user.profile.update`, the only event carrying `user.name` / `email` /
+`phone` / `user.custom.*`. Its optional `userId` sets `user.id`; without it the traffic stays
+anonymous, since the SDK never mints one.
 
 ---
 
