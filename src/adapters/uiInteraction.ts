@@ -173,6 +173,36 @@ export function resolveUiName(
     return { target: UI_UNNAMED, nameSource: "none", tag: tagOf(host), node: host, actionable: true };
 }
 
+/**
+ * §4.6's key block, shared so a web click and a native tap cannot drift on a key name.
+ * Everything platform-specific is decided by the caller: web resolves the ladder against the
+ * DOM, native is handed the name outright.
+ *
+ * `ui.x`/`ui.y` default to `0` — the key is never-null in §4.6 and a keyboard activation
+ * (web) or a `trackTap(name)` (native) genuinely has no viewport coordinate. `ui.rage` is
+ * **omitted when false**, deliberately asymmetric with `ui.dead`, which the web caller adds
+ * later or not at all.
+ */
+export function uiAttributes(a: {
+    type: "click" | "tap";
+    target: string;
+    nameSource: UiNameSource;
+    tag: string;
+    x?: number;
+    y?: number;
+    rage?: boolean;
+}): Record<string, any> {
+    return {
+        "ui.type": a.type,
+        "ui.target": a.target,
+        "ui.name_source": a.nameSource,
+        "ui.tag": a.tag,
+        "ui.x": Math.round(a.x ?? 0),
+        "ui.y": Math.round(a.y ?? 0),
+        ...(a.rage ? { "ui.rage": true } : {}),
+    };
+}
+
 /** §4.6's threshold: **≥3** clicks inside the window. */
 export const RAGE_CLICK_THRESHOLD = 3;
 

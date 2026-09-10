@@ -233,6 +233,7 @@ attachNavigation(navigationRef): Promise<void>   // React Navigation container r
 trackRoute(from: string, to: string): Promise<void>
 screenStart(name: string): Promise<void>         // → navigation
 screenEnd(name: string): Promise<void>           // → screen.duration (dwell ms)
+trackTap(name: string): Promise<void>            // → ui.interaction (§4.6) — see below
 ```
 
 ```typescript
@@ -278,9 +279,25 @@ navigation within 1000 ms — judged on actionable clicks only, excluding text e
 ⚠ **The role gate is not a privacy guarantee.** `<button>Delete John Kamau</button>` still ships
 that text. Use `beforeSend` to scrub it — there is deliberately no per-element masking attribute.
 
-Native taps are **explicit-only** and land in a follow-up: `PressEvent.nativeEvent.target` is a
-node tag number with no public API resolving it, so the root `<View>` cannot tell a tap on a button
-from a tap on padding. `interactionProps()` and `user.interaction` are retired.
+### Native taps — `trackTap(name)`
+
+Native taps are **explicit-only**: `PressEvent.nativeEvent.target` is a node tag number with no
+public API resolving it, so the root `<View>` cannot tell a tap on a button from a tap on padding.
+`interactionProps()` and `user.interaction` are retired; name the taps you care about instead.
+
+```tsx
+<Pressable onPress={() => { telemetry.trackTap("checkout"); navigation.navigate("Cart"); }} />
+```
+
+The name is rung 1's equivalent — explicit author intent — so it ships **unnormalized and
+uncapped**, `ui.name_source` has exactly two values (`edge_action`, or `none` for a blank name whose
+`ui.target` is `unnamed`), and `surface` never appears. The row's timestamp and its
+`view.id` / `view.name` / `session.id` are taken **at the tap**, so a tap that navigates is still
+attributed to the screen it happened on.
+
+⚠ **`ui.rage` on native is gated to named taps**, so a low count means *few named taps*, not happy
+users — and **`ui.dead` is absent from every native row** (no DOM, hence no mutation signal), so any
+dead-click rate must filter to the web build.
 
 ---
 

@@ -1,6 +1,7 @@
 // React Native telemetry implementation
 import { TelemetryBase } from "./index.base";
 import { debug, setDebug } from "./core/debug";
+import { RAGE_WINDOW_MS, RageTracker, UI_UNNAMED, uiAttributes } from "./adapters/uiInteraction";
 import type { Store } from "./core/store";
 import type { BeforeSend } from "./core/beforeSend";
 
@@ -15,6 +16,15 @@ export { memoryStore, type MemoryStoreOpts } from "./core/memoryStore";
 export type { BeforeSend } from "./core/beforeSend";
 
 export class TelemetryNative extends TelemetryBase {
+    /** ≥3 named taps in a 1000 ms window, keyed on the name — see `trackTap`. */
+    private readonly tapRage = new RageTracker(RAGE_WINDOW_MS);
+    /**
+     * The resolved core, once `instancePromise` settles. `trackTap` is the one public method that
+     * cannot afford an `await` before it reads the world: the host's own press handler
+     * navigates on the very next line (§4.6's mint/emit split).
+     */
+    private resolved?: any;
+
     constructor(opts?: {
         apiKey?: string;
         sender?: any;
@@ -112,6 +122,7 @@ export class TelemetryNative extends TelemetryBase {
             await telemetry.resumeOrStartSession()
                 .catch(err => debug.warn("Native session resume failed:", err));
 
+            this.resolved = telemetry;
             return telemetry;
         })();
 
@@ -212,9 +223,58 @@ export class TelemetryNative extends TelemetryBase {
         return inst.recordRouteChange(from, to);
     }
 
-    // ⚠ `interactionProps()` is gone with `user.interaction` (§4.6, #102). It sat on the
-    // consumer's **root** `<View>`, where `PressEvent.nativeEvent.target` is a node tag
-    // number with no public API resolving it — so it could not tell a tap on a button from a
-    // tap on padding, and every row it emitted was an un-nameable one. §4.6 makes native
-    // **explicit-only**: #103 restores taps as a public `trackTap(name)`.
+    // ---------- Interactions ----------
+
+    /**
+     * §4.6's native producer, explicit-only (#103). `interactionProps()` is gone with
+     * `user.interaction` (#102): it sat on the consumer's **root** `<View>`, where
+     * `PressEvent.nativeEvent.target` is a node tag number with no public API resolving it,
+     * so it could not tell a tap on a button from a tap on padding and every row it emitted
+     * was un-nameable. There is no role model to gate on and no DOM to derive from, so
+     * anything auto-derived here would be either wrong or a PII leak.
+     *
+     * `name` is web's rung 1 — explicit author intent — so it ships **unnormalized and
+     * uncapped**, and `ui.name_source` has exactly **two** values: `edge_action`, or `none`
+     * for a blank name, whose `ui.target` is `unnamed`. **`surface` never appears**: it only
+     * means something where role-less elements exist.
+     *
+     * ⚠ **The mint/emit split.** The row's `timestamp`, `view.id`, `view.name` and
+     * `session.id` are snapshotted **here, synchronously**, because the host's press handler
+     * navigates on the next line and the emit rides a promise. Stamping emit time would
+     * attribute a navigating tap to **the view it opened**, inverting every "which screen
+     * frustrates users" query. Before `instancePromise` settles there is no core to snapshot
+     * from, so a tap that early falls back to emit-time identity — the launch view either
+     * way.
+     *
+     * ⚠ **`ui.dead` is absent on every native row**, never `false`: with no DOM there is no
+     * mutation signal, so any dead-click *rate* must filter to the web build.
+     */
+    async trackTap(name: string) {
+        const at = Date.now();
+        const named = typeof name === "string" && name.trim() !== "";
+        const attrs = uiAttributes({
+            type: "tap",
+            target: named ? name : UI_UNNAMED,
+            nameSource: named ? "edge_action" : "none",
+            // No element model: nothing was resolved, so the tag names the platform rather
+            // than inventing a `<button>` that does not exist. §4.6 types it never-null, as
+            // it does the coordinates the builder floors at 0 — a `PressEvent` carries some,
+            // but `trackTap(name)` deliberately takes none: the name is the whole contract.
+            tag: "native",
+            // Gated to named taps (§4.6): running rage over `unnamed` would not merely lose
+            // information, it would invent a frustration event that never happened. Identity
+            // is the name, which on native *is* the element — there is no node to key on.
+            rage: named && this.tapRage.record(name, at),
+        });
+        // §6.2: **every** tap mints an interaction root, live carrier or not — a tap is a new
+        // user action by definition, so the request it fires is its child and not the route
+        // change's before it.
+        const emit = (inst: any) =>
+            inst.log("ui.interaction", { ...inst.trace.interactionSpan(at), ...attrs }, inst.snapshot(at));
+        // Swallowed like every other capture path: the README's own example calls this
+        // un-awaited from an `onPress`, and a RUM SDK must not be able to fault the host with
+        // an unhandled rejection.
+        return Promise.resolve(this.resolved ? emit(this.resolved) : this.instancePromise.then(emit))
+            .catch((err: unknown) => debug.warn("Native ui.interaction failed:", err));
+    }
 }

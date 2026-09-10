@@ -145,7 +145,8 @@ captureError(error: unknown, context?)   // emits app.error — never app.crash
 `getCurrentRoute()` is a navigation-tree API, not a native one, so one wiring gives web and native
 the same `view.name`.
 
-Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `screenEnd(name)`.
+Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `screenEnd(name)`,
+`trackTap(name)`.
 
 `trackErrors`, `trackFrameDrops`, `trackNetworkRequests`, `trackMemoryUsage`,
 `autoTrackNavigation` and (web) `trackInteractions` are auto-started in the constructor —
@@ -469,12 +470,31 @@ an `app.crash` or `app.error` row **where `trace.root_type = 'interaction'`**. �
 optional; without it the signal absorbs launch and route-change errors. No fourth causality window
 was invented.
 
-**Native has no producer.** `interactionProps()` is deleted, not renamed: it sat on the consumer's
-**root** `<View>`, where `PressEvent.nativeEvent.target` is a node tag number with no public API
-resolving it, so it could not tell a tap on a button from a tap on padding and every row it emitted
-was un-nameable. §4.6 makes native **explicit-only** — #103 restores taps as `trackTap(name)`, with
-a two-value `ui.name_source`, no `surface`, and **no `ui.dead` at all** (no DOM, hence no mutation
-signal — ⚠ any dead-click *rate* must filter to the web build).
+**Native is explicit-only: `trackTap(name)`** (§4.6, #103, on `TelemetryNative`).
+`interactionProps()` is deleted, not renamed: it sat on the consumer's **root** `<View>`, where
+`PressEvent.nativeEvent.target` is a node tag number with no public API resolving it, so it could
+not tell a tap on a button from a tap on padding and every row it emitted was un-nameable. There is
+no role model to gate on and no DOM to derive from, so anything auto-derived would be wrong or a PII
+leak.
+
+`name` is rung 1's equivalent — explicit author intent — so it ships **unnormalized and uncapped**,
+and `ui.name_source` has exactly **two** values: `edge_action`, or `none` for a blank name, whose
+`ui.target` is `unnamed`. **`surface` never appears** — it only means something where role-less
+elements exist. `ui.tag` is the constant `"native"` and `ui.x`/`ui.y` are `0`: §4.6 types all three
+never-null and there is no element and no coordinate to report. **`ui.dead` is absent from every
+native row**, never `false` — no DOM, hence no mutation signal (⚠ any dead-click *rate* must filter
+to the web build).
+
+⚠ **The mint/emit split is real on native too, and for the same reason.** The row's `timestamp`,
+`view.id`, `view.name` and `session.id` are snapshotted **synchronously inside `trackTap`**, because
+the host's press handler navigates on the very next line while the emit rides a promise. That is
+what `TelemetryNative.ready` — the resolved core, cached the moment `instancePromise` settles —
+exists for; a tap arriving before init falls back to emit-time identity, which is the launch view
+either way.
+
+**Native rage is gated to named taps**, and its identity is the **name**, not a node: on native the
+name *is* the element. Running it over `unnamed` would invent a frustration event that never
+happened, so ⚠ **a low native rage count means few named taps, not happy users**.
 
 ### Trace and span
 
@@ -505,7 +525,7 @@ process, which is the hazard that actually exists here. `ViewManager` is owned t
 
 ⚠ **A click mints unconditionally**, replacing whatever root was live rather than joining it: a
 tap is a new user action by definition, which is what makes the request a tap fires a child of the
-tap and not of the route change before it. Native taps mint nothing until #103. The launch root is minted **before** `ViewManager`, so the initial view is
+tap and not of the route change before it. On native the same mint rides `trackTap(name)` (#103). The launch root is minted **before** `ViewManager`, so the initial view is
 its child and **a web hard load is `launch`, never `navigation`**. Web's launch span starts at
 `performance.timeOrigin`, native's at SDK `initialize()`; neither is a fork time and the two are
 **not the same interval** — do not compare native and web launch envelopes.
@@ -897,7 +917,7 @@ the original name as `event.name`. Currently emitted:
 | `http.request` | XHR only on native (fetch *is* XHR there); fetch + XHR on web |
 | `app.crash` | JS error or unhandled rejection — **unhandled only**, no public path (§4.7) |
 | `app.error` | `captureError()`, an opted-in `console.error`, and a re-routed public `log("app.crash")` |
-| `ui.interaction` | every web click — actionable or not (§4.6). No native producer until #103 |
+| `ui.interaction` | every web click, actionable or not; every native `trackTap(name)` (§4.6) |
 | `view` | each of the four view exit boundaries (§4.5) |
 | `app.start` | once per process at init — the `launch` root, and §4.3's launch compensator |
 | `network_change` | connectivity type transition |
@@ -985,9 +1005,19 @@ above rather than defects.
 - **`ui.interaction` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
   `user.interaction` came off the list in the same change.
-- **Native emits no interaction rows at all** until #103's `trackTap(name)`. `interactionProps()`
-  and the root-responder auto-tap are gone, so `view.action_count` is 0 on every native view and
-  `trace.root_type = interaction` has no native producer.
+- **Native interaction coverage equals native instrumentation coverage.** `trackTap(name)` is the
+  only producer, so `view.action_count` counts *named taps*, not taps; an uninstrumented screen is
+  indistinguishable from an unused one. Same reason `ui.rage` is gated to `edge_action`.
+- **`trackTap` ships `ui.tag: "native"` and `ui.x`/`ui.y` of `0`.** All three are never-null in
+  §4.6 and native has no element and no coordinate; a `PressEvent` carries coordinates but
+  `trackTap(name)` deliberately takes none. Flag it if the backend wants the tag column empty
+  instead of a constant.
+- **Native rage keys on the name, so two different buttons sharing one `trackTap` name are
+  one burst.** There is no node to key on — the name *is* the element — and the collision
+  over-reports where web's node identity cannot. Name taps per control.
+- **A tap arriving before `instancePromise` settles loses the mint/emit split** — there is no core
+  to snapshot from, so it reports emit-time identity. That window is the launch view either way,
+  which is why it is not worth a queue.
 - **`ui.dead`'s navigation signal fires on the background and session-rotation boundaries too** —
   neither is a navigation the click caused, so those clicks report *alive*. Under-reporting is the
   direction §4.6 requires; the alternative is a false accusation.
@@ -995,7 +1025,9 @@ above rather than defects.
   with every other key — absence means "not evaluated", exactly as it does for the exempt cases.
 - **§4.6's key table caps `ui.target` at 64 while its prose exempts rung 1.** The issue's
   acceptance criteria say `data-edge-action-name` ships "unnormalized and uncapped", so that is
-  what ships. Flag it if the backend column is a hard 64.
+  what ships — and native's `trackTap(name)` is rung 1's equivalent, so **every** native
+  `ui.target` is uncapped, not just the annotated web minority. Flag it if the backend column is
+  a hard 64.
 - **A hard navigation drains open dead-click windows, but `log()` is still async.** `pagehide`
   and `visibilitychange: hidden` emit every pending row with `ui.dead` **omitted** — the window
   never closed, so it was not evaluated. The enqueue itself is a promise, so a document that
@@ -1079,8 +1111,9 @@ above rather than defects.
   the same gap `apiKey` already has — both are only enforced in the factory.
 - `traceparent.outcome` is **not** on §3.6's Tier A list, so `beforeSend` can delete or rewrite
   it (Tier C) — same status as `trace.root_type`, `span.start_time` and `span.duration_ms`.
-- `trace.root_type = interaction` has **no native producer**: web clicks mint one as of #102,
-  native taps start no action until #103's `trackTap(name)`.
+- `trace.root_type = interaction` is minted by every web click (#102) and every native
+  `trackTap(name)` (#103) — but on native only where the consumer called it, so an unattributed
+  native request means *an uninstrumented tap*, not *no action*.
 - An XHR `send()` that throws **synchronously** never reaches `loadend`, so a `request` root it
   minted lives out its 2 s window with no row describing it. Rare, and knowingly left.
 - **`view.id` is resolved at log time, not frozen at span start** (§3.1). Point events are

@@ -6,6 +6,7 @@ import {
     isDeadClickExempt,
     normalizeUiName,
     resolveUiName,
+    uiAttributes,
     type UiElement,
 } from "./uiInteraction";
 
@@ -174,5 +175,21 @@ describe("RageTracker", () => {
         rage.record(node, 10_000);
         rage.record(node, 10_100);
         expect(rage.record(node, 10_200)).toBe(true);
+    });
+});
+
+describe("uiAttributes — the key block both builds share", () => {
+    it("omits ui.rage when false and floors the coordinates §4.6 types never-null", () => {
+        expect(uiAttributes({ type: "tap", target: "checkout", nameSource: "edge_action", tag: "native" }))
+            .toEqual({
+                "ui.type": "tap",
+                "ui.target": "checkout",
+                "ui.name_source": "edge_action",
+                "ui.tag": "native",
+                "ui.x": 0,
+                "ui.y": 0,
+            });
+        expect(uiAttributes({ type: "click", target: "x", nameSource: "text", tag: "button", x: 10.6, y: 3.2, rage: true }))
+            .toMatchObject({ "ui.x": 11, "ui.y": 3, "ui.rage": true });
     });
 });
