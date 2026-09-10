@@ -1,8 +1,15 @@
 // src/index.web.ts
 import { TelemetryBase } from "./index.base";
 import { debug, setDebug } from "./core/debug";
+import type { Store } from "./core/store";
 
 export { createTelemetry, type TelemetryOpts } from "./createTelemetry.web";
+
+// The Store port (#89) — public so a consumer can inject their own persistence,
+// and so the in-memory fake is available outside the test tree.
+export type { Store, SyncStore, AsyncStore, StoreRead, StoreWrite } from "./core/store";
+export { unavailableStore } from "./core/store";
+export { memoryStore, type MemoryStoreOpts } from "./core/memoryStore";
 
 export class TelemetryWeb extends TelemetryBase {
     constructor(opts?: {
@@ -13,6 +20,7 @@ export class TelemetryWeb extends TelemetryBase {
         endpoint?: string;
         captureConsole?: boolean;
         debug?: boolean;
+        store?: Store;
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -22,6 +30,7 @@ export class TelemetryWeb extends TelemetryBase {
         this.instancePromise = (async () => {
             const { Telemetry } = await import("./core/telemetry");
             const { webSender } = await import("./adapters/webSender");
+            const { webStore } = await import("./adapters/web/store.web");
 
             const { DeviceInfoTrackerWeb } = await import("./adapters/web/deviceInfo.web");
             const { NetworkInfoTrackerWeb } = await import("./adapters/web/networkInfo.web");
@@ -39,6 +48,8 @@ export class TelemetryWeb extends TelemetryBase {
                 // device.platform="web" still rides as an attribute from the adapter.
                 deviceInfoHandler: deviceInfoTrackerWeb,
                 networkInfoHandler: networkInfoTrackerWeb,
+                // #89: localStorage by default; synchronous reads are the web build's guarantee.
+                store: opts?.store ?? webStore(),
             });
 
             return telemetry;

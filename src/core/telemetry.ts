@@ -3,6 +3,7 @@ import { NavigationTracker } from "../adapters/navigationTracker";
 import { ScreenTimingTracker } from "../adapters/screenTiming";
 import { BreadcrumbBuffer } from "./breadcrumbs";
 import { randomHex } from "./utils/uuid";
+import { unavailableStore, type Store } from "./store";
 import { version as PKG_VERSION } from "../../package.json";
 
 // v3 wire contract constants
@@ -135,6 +136,7 @@ type Opts = {
     platform?: string;          // device OS (ios|android|web); forms the device/session id suffix
     deviceInfoHandler?: DeviceInfoHandler;
     networkInfoHandler?: NetworkInfoHandler;
+    store?: Store;              // persisted state port (#89); defaulted per build by the entry
 };
 
 /**
@@ -157,6 +159,13 @@ export class Telemetry {
 
     private networkInfoHandler: NetworkInfoHandler;
     private deviceInfoHandler: DeviceInfoHandler;
+
+    // Persisted state (#89). The entry injects webStore()/nativeStore(); shared core
+    // never imports either. Defaults to reporting `unavailable` so a caller on a build
+    // that forgot to inject takes the same branch as incognito rather than crashing.
+    // ponytail: no reader yet — v4's device.id, session resume, sticky sample rate and
+    // capped offline store are the consumers this seam exists for.
+    public readonly store: Store;
 
     private frameDropsHandler?: FrameDropsHandler;
     private networkHandler?: NetworkHandler;
@@ -186,6 +195,7 @@ export class Telemetry {
         this.flushIntervalMs = opts?.flushIntervalMs ?? 10000;
         this.endpoint = opts?.endpoint;
         this.platform = opts?.platform;   // set before id generation (suffix source)
+        this.store = opts?.store ?? unavailableStore;
 
         // start a session
         this.sessionId = opts?.sessionId ?? this.generateSessionId();

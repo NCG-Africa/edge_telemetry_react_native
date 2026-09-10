@@ -41,6 +41,8 @@ src/
 │   ├── telemetry.ts       ← Telemetry: queue, batch, retry, session lifecycle, log/logMetric
 │   ├── breadcrumbs.ts     ← ring buffer (last 20) for crash.breadcrumbs
 │   ├── debug.ts           ← debug() gate; all SDK-internal logging goes through this
+│   ├── store.ts           ← Store port: get/set/remove over persisted state, no RN import
+│   ├── memoryStore.ts     ← in-memory Store, configurable sync or async
 │   └── utils/uuid.ts      ← randomHex() — one shared impl, no platform split
 ├── adapters/
 │   ├── batch.ts           ← buildBatch(): the telemetry_batch envelope, shared by both senders
@@ -52,8 +54,8 @@ src/
 │   ├── networkChange.ts   ← edge-triggered network_change emitter
 │   ├── navigationTracker.ts / screenTiming.ts
 │   ├── webSender.ts / nativeSender.ts
-│   ├── web/               ← *.web.ts capture adapters
-│   └── native/            ← *.native.ts capture adapters
+│   ├── web/               ← *.web.ts capture adapters (+ store.web.ts over localStorage)
+│   └── native/            ← *.native.ts capture adapters (+ store.native.ts over AsyncStorage)
 └── shims/react-native-web-shim.ts
 ```
 
@@ -96,6 +98,7 @@ type TelemetryOpts = {
   captureConsole?: boolean; // console.error/warn → app.crash. Default ON
   debug?: boolean;          // SDK-internal diagnostics. Default off
   sender?: Sender;          // override the default platform sender
+  store?: Store;            // override the default platform Store (see below)
 };
 ```
 
@@ -180,6 +183,29 @@ device.id  : native getUniqueId(); web device_{ms}_{uuidv4}_web
 ```
 
 Entropy is `Math.random()`, not crypto — deliberate, marked with a `ponytail:` comment.
+
+### The Store port
+
+Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
+interface with **no React Native import** — v4 moves `device.id`, session resume, the sticky
+sample rate and the capped offline store into shared core, which cannot reach AsyncStorage.
+
+**The sync/async split is load-bearing, not an implementation detail.** `SyncStore`
+(`adapters/web/store.web.ts`, `localStorage`) has finished its read when `get()` returns;
+`AsyncStore` (`adapters/native/store.native.ts`, `AsyncStorage`) settles later. That is why the
+crash-loss window closes on web and only narrows on native. Do **not** flatten the two behind a
+uniform `Promise` — a caller must be able to depend on the web side being synchronous. Shared
+code that doesn't care takes the `Store` union and `await`s either side.
+
+Reads return `hit` | `miss` | `unavailable`. `unavailable` is a first-class path, not an error:
+incognito, partitioned iframes, ITP eviction and full disks land there, and that population is
+what `device.id_ephemeral` reports. Never throw out of a Store, and never collapse
+`unavailable` into `miss`.
+
+Each entry injects its default (`webStore()` / `nativeStore()`); `TelemetryOpts.store`
+overrides. `memoryStore({ async?, unavailable?, seed? })` is a shipped in-memory
+implementation — a production-shaped seam, not a test-only affordance — configurable to either
+build's shape.
 
 ### Event allowlist
 

@@ -2,6 +2,35 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
+## Unreleased
+
+### Added
+
+- **The `Store` port** (#89) — a narrow `get` / `set` / `remove` interface over persisted
+  state, declared in shared core (`src/core/store.ts`) with no React Native import. v4 moves
+  `device.id`, session resume, the sticky sample rate and the capped offline store into
+  shared core, and shared core cannot reach AsyncStorage; that is what forces the seam. It is
+  architecture, not testability.
+
+  **Web is synchronous and native is asynchronous, and the port keeps the difference in the
+  types.** `SyncStore` (`adapters/web/store.web.ts`, over `localStorage`) has completed its
+  read by the time `get()` returns; `AsyncStore` (`adapters/native/store.native.ts`, over
+  `AsyncStorage`) settles later. That asymmetry is exactly why the crash-loss window *closes*
+  on web and only *narrows* on native, so it is not papered over with a uniform `Promise`
+  signature — a caller can depend on the web side being synchronous. Shared code that doesn't
+  care takes the `Store` union and `await`s either.
+
+  **Storage-unavailable is a first-class outcome, not an error.** Reads return
+  `hit` | `miss` | `unavailable`. Incognito, partitioned iframes, Safari ITP eviction and full
+  disks land on `unavailable` — never a throw, and never conflated with a key that simply
+  isn't there. That population is what v4's `device.id_ephemeral` reports (wire contract §3.2).
+
+  The store is injectable via `TelemetryOpts.store` and defaulted per build by the entry.
+  `memoryStore()` ships alongside it — a real in-memory implementation, configurable to either
+  build's shape so the sync/async asymmetry can be tested deliberately.
+
+  Nothing reads the store yet; this release only lands the seam.
+
 ## 3.1.0
 
 **Wire fix, shipped alone and ahead of v4.** Seven Context-block keys were spelled camelCase,

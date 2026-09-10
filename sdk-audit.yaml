@@ -222,7 +222,20 @@ privacy:
 # 6. Public API surface
 # ============================================================
 api:
-  init_config_options: [apiKey (required, must start with "edge_"), sender, batchSize, flushIntervalMs, endpoint, captureConsole, debug]   # evidence createTelemetry.web.ts:3-11 / .native.ts; assertApiKey validates edge_ prefix
+  init_config_options: [apiKey (required, must start with "edge_"), sender, batchSize, flushIntervalMs, endpoint, captureConsole, debug, store]   # evidence createTelemetry.web.ts:4-13 / .native.ts; assertApiKey validates edge_ prefix
+  exported_ports:
+    store: |
+      Store port (#89). Narrow get/set/remove over persisted state, declared in shared core
+      (core/store.ts) with no React Native import. Two shapes, and the difference is
+      load-bearing: SyncStore (web, localStorage — adapters/web/store.web.ts) completes reads
+      before returning; AsyncStore (native, AsyncStorage — adapters/native/store.native.ts)
+      settles later. Defaulted per build by the entry (index.web.ts / index.native.ts) and
+      overridable via TelemetryOpts.store. Reads return hit | miss | unavailable — storage
+      being refused (incognito, partitioned iframe, ITP eviction, full disk) is a distinct
+      non-throwing outcome, never conflated with a key that isn't there; it is the population
+      v4's device.id_ephemeral will report. memoryStore() ships as an in-memory implementation
+      configurable to either shape. NOT YET READ BY ANYTHING — the seam exists for v4's
+      device.id, session resume, sticky sample rate and capped offline store.
   custom_event_api: "log(event: string, data?: Record<string, any>): Promise<void>"   # index.base.ts:21-24
   user_id_api: "setUserId(id): Promise<void>; generateUserId(): Promise<string>"      # index.base.ts:45-53
   other_public_methods:
