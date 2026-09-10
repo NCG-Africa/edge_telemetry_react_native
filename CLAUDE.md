@@ -72,12 +72,14 @@ src/
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
 │   │                        idempotent, and one listener per instance — see below
 │   ├── frameAggregate.ts  ← §5.1 pure math: p95, the measured target_fps, dropped_count
+│   ├── webVitals.ts       ← §5.3 pure half: the four shared keys + the ten per-vital ones
 │   ├── frameTracker.ts    ← the shared rAF loop; the window resets at every view boundary
 │   ├── uiInteraction.ts   ← §4.6 role gate, the five-rung name ladder, the rage window
 │   ├── networkChange.ts   ← edge-triggered network_change emitter
 │   ├── navigationTracker.ts / screenTiming.ts
 │   ├── webSender.ts / nativeSender.ts
-│   ├── web/               ← *.web.ts capture adapters (+ store.web.ts over localStorage)
+│   ├── web/               ← *.web.ts capture adapters (+ store.web.ts over localStorage,
+│   │                        webVitals.web.ts — the only `web-vitals` importer in the tree)
 │   └── native/            ← *.native.ts capture adapters (+ store.native.ts over AsyncStorage)
 └── shims/
     ├── react-native-web-shim.ts
@@ -150,8 +152,10 @@ Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `
 `trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory_usage` is (§5.2).
 
 `trackErrors`, `trackFrameDrops`, `trackNetworkRequests`, `autoTrackNavigation`, (native)
-`trackMemoryUsage` and (web) `trackInteractions` are auto-started in the constructor —
-consumers don't call them.
+`trackMemoryUsage` and (web) `trackInteractions` + `trackWebVitals` are auto-started in the
+constructor — consumers don't call them. `trackWebVitals` is additionally **private**: there is
+nothing to configure, and a vital that only fires if someone remembered to call a method is a
+vital nobody has.
 
 ---
 
@@ -397,9 +401,15 @@ and background boundaries only; ⚠ **`session_rotation` is excluded**, and the 
 below says why.
 
 **The background boundary must be awaited before the flush.** `AppLifecycleEmitter.onState` returns
-a promise for exactly this reason: on native, backgrounding forces a `flush()` because the queue
-only lives in memory, and the `view` row the boundary emits is the row that flush exists to rescue.
-Firing the flush on the next line sends the batch before the row is enqueued.
+a promise for exactly this reason: backgrounding forces a `flush()` because the queue only lives in
+memory, and the `view` row the boundary emits is the row that flush exists to rescue. Firing the
+flush on the next line sends the batch before the row is enqueued.
+
+⚠ **Both builds flush there now.** Web did not until #106: web's queue is in memory too, and §5.3's
+CLS and INP are *held* across the whole page load and drained at this boundary precisely because the
+`web-vitals` library's own page-hide report loses them on a closed tab — holding them and then not
+flushing would move that defect rather than close it. Web's sender is `fetch({keepalive:true})`,
+which is what lets a hidden tab's batch outlive the document.
 
 ### `ui.interaction`
 
@@ -832,6 +842,74 @@ It owns a `setInterval`; the rAF-driven `FrameDropTracker` does not, and a leake
 calling `logMetric` on a shut-down instance is not the same residue as a rAF loop the platform
 already parks on background.
 
+### Core Web Vitals — web only, on the metric path
+
+`adapters/webVitals.ts` (the pure half) + `adapters/web/webVitals.web.ts` (the subscription),
+§5.3, #106. Five names — `LCP`, `FCP`, `CLS`, `INP`, `TTFB` — all already on `ALLOWED_NAMES`.
+
+**They ride the metric path, and the decider was not taxonomy.** An *event* named `LCP` lands its
+name in the performance-events table and **loses its number**: `extractPerformanceEvent` promotes
+only the memory and frame columns. The metric path promotes `value` and `metric.unit` for free,
+indexed by `metric_name`.
+
+**Source is `web-vitals/attribution`, a bundled web-only dependency.** Hand-rolling was rejected on
+session-windowed CLS (the naive sum is wrong *and plausible*) and percentile INP. It is imported
+from **exactly one file** — `adapters/web/webVitals.web.ts` — which is what keeps it out of
+`index.native` entirely; `vite.config.ts` externalizes an **explicit allowlist**, so a bundled
+dependency stays bundled and **consumers install nothing**. Both halves are asserted against the
+**built output** in `src/vitals.native.test.ts`, by walking the chunk graph rollup emitted.
+
+**Four shared keys**, on every vital row:
+
+| Key | Rule |
+|---|---|
+| `vital.rating` | never absent — `good` \| `needs-improvement` \| `poor` |
+| `vital.navigation_type` | never absent — 6 values, ⚠ **load-bearing**: a `back-forward-cache` LCP is ~0 ms and silently drags a p75 down if the population is not separable |
+| `vital.target` | LCP's `target` / CLS's `largestShiftTarget` / INP's `interactionTarget`; **absent on FCP and TTFB** |
+| `vital.load_state` | **absent on LCP and TTFB** — neither has one |
+
+**Ten per-vital keys.** LCP: `lcp.time_to_first_byte`, `lcp.resource_load_delay`,
+`lcp.resource_load_duration`, `lcp.element_render_delay`, `lcp.url` (query-stripped).
+INP: `inp.input_delay`, `inp.processing_duration`, `inp.presentation_delay`,
+`inp.interaction_type`. CLS: `cls.largest_shift_value`. TTFB and FCP carry none.
+
+⚠ **LCP's four phases sum exactly to `value`** — a testable claim, asserted on the wire, not a
+description. `lcp.time_to_first_byte` deliberately duplicates the `TTFB` row rather than forcing a
+cross-row join to decompose one number.
+
+⚠ **`vital.target` is a raw CSS selector, bag-only, never promoted, and the least sanitized key on
+the wire** — which is *the* reason `beforeSend` covers metrics (§3.6). §4.6's action-name ladder was
+rejected for it on the record: the role gate blanks `<img>`, `<h1>` and banners, which is most vital
+targets, and un-gating the ladder would rebuild the `textContent` hole the gate closes. A selector
+is developer-authored structure — tags, ids, classes — never user content.
+
+**CLS and INP subscribe with `reportAllChanges: true` as a running-value *subscription, not an
+emission trigger*.** The latest value is held in memory and shipped at the `ViewManager`'s
+**background boundary** — the library's default page-hide report races the document's teardown and
+loses both on a closed tab. LCP, FCP and TTFB fire once on the initial load and emit straight from
+the callback.
+
+**The boundary seam is `ViewManager.onBoundary()`, which now hands the subscriber the successor's
+load type.** `frame_render_time` wants every boundary; vitals want **`"resume"` — background —
+only.** Emitting a page-load-scoped vital at a soft navigation would ship a second row for the same
+page load and stamp it with a `view.id` that is not the initial view's. A held value that has not
+moved since its last row is skipped, so a tab hidden twice with no shifts in between is one CLS
+sample, not two — the same no-delta-no-report property the library's own reporter has.
+
+⚠ **All five are page-load-scoped, not view-scoped, and that is documented rather than engineered
+around.** `LCP`, `FCP` and `TTFB` physically **cannot recur on a soft navigation**. So **`view.id`
+on a vital row is always the *initial* view's** — a real join key, just not "the view this happened
+in" for CLS and INP. `GROUP BY view.name` over vitals reads **"by entry point"**, which is a
+genuinely useful dashboard only if you name it that way. View-scoping would need the Chrome-only
+Soft Navigations API, or a per-view INP reset producing "slowest interaction in this view" wearing
+INP's name.
+
+**Vitals are Tier 3 — trace-free**, like every other metric (§6.3), and `metric.unit` ships on all
+five: `ms` for four, **`score` for CLS**.
+
+**`TelemetryNative` emits none, ever**, and exposes no method to. Native's load-performance
+analogue is `app.start` (§4.3).
+
 ### The Store port
 
 Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
@@ -1009,9 +1087,11 @@ the original name as `event.name`. Currently emitted:
 | `custom_event` | any non-allowlisted `log()` name |
 | `frame_render_time` | **metric** — p95 per window; the window closes at 10s **or at a view boundary** (§5.1) |
 | `memory_usage` | **metric** — resident MB, **native only**, sampled every 30 s (§5.2) |
+| `LCP` `FCP` `TTFB` | **metric** — **web only**, once on the initial load (§5.3) |
+| `CLS` `INP` | **metric** — **web only**, running values drained at the background boundary (§5.3) |
 
-Allowlisted but with **no producer**: `page_load`, `resource_timing`, `long_task`, `LCP`,
-`FCP`, `CLS`, `INP`, `TTFB`. These are the RN-Web track, not built yet.
+Allowlisted but with **no producer**: `page_load`, `resource_timing`, `long_task`. The
+remainder of the RN-Web track, not built yet.
 
 **Adding a new `eventName` requires backend sign-off** — unlisted names are dropped on
 ingest.
@@ -1184,6 +1264,49 @@ above rather than defects.
   carries across a rotation — a session that ended by idleness or the 4-hour cap, whose last
   window is ≤10 s. Resetting there would either pair a new `session.id` with the departing
   `view.id` or rotate the session twice; both are worse than the residue.
+- **Vitals are page-load-scoped, so `view.id` on a vital row is the *initial* view's.** For CLS
+  and INP that is not the view the value accumulated in. `GROUP BY view.name` over vitals reads
+  "by entry point" and must be named that way; anything grouping them by a non-entry view name
+  returns empty. §5.3 rules this documented rather than engineered around.
+- **A tab hidden, restored and hidden again ships a second CLS/INP row** whenever the running
+  value moved in between — the later row carries the larger cumulative value. One page load can
+  therefore contribute more than one vital sample, and there is no page-load id on the row to
+  collapse them by. Take the max per `(session.id, metric_name)` at the entry view, not an
+  average. Emitting only at the first background instead would silently discard everything
+  after the user's first tab-away.
+- **A vital that arrives after the tab is already gone is lost.** `log()` is async and the
+  background boundary's drain rides a promise, so a document that unloads inside that microtask
+  loses the row — the same residue the crash path documents, and awaiting harder does not change
+  it. The drain is still strictly better than the library's default page-hide report, which
+  races teardown on *every* close rather than on the tail of one.
+- **`vite.config.ts` is deliberately *not* extended for `web-vitals`, inverting #106's wording.**
+  The issue asks for the externalization allowlist to be extended; externalizing is what would make
+  every consumer install the package, and its own acceptance criterion is "consumers install no new
+  dependency". Contract §5.3 calls it "a bundled web-only `dependency`", and the contract wins. The
+  allowlist matters here by staying an *explicit* list — a bundled dependency stays bundled — and
+  `src/vitals.native.test.ts` asserts the config does **not** name it. Flag it if that reading is
+  wrong; the zero-bytes-to-native half is asserted against the built chunk graph either way.
+- **`shutdown()` does not stop the vitals tracker.** Its `onBoundary` unsubscribe is discarded, so a
+  view boundary after shutdown can still `logMetric`. Unlike `memory_usage` it owns no timer — the
+  only thing that can fire it is a boundary, which needs a live app — so it did not earn the `stop()`
+  hook §5.2 gave the memory sampler. The library's own observers are never detached either.
+- **`vital.target` and `vital.load_state` are omitted when absent, not sent as explicit `null`s**,
+  though §5.3's table types both `Null? yes`. This is the same omit-vs-explicit-null conflict
+  already recorded for `view.loading_time`, and it is resolved the same way: omission is what every
+  other optional key on this wire does. Changing it is a wire change and needs backend sign-off.
+- **`src/vitals.native.test.ts` reads `dist/`**, so it is red after `npm run clean` until the next
+  `npm run build`. Deliberate — §5.3's "zero extra bytes on native" is a claim about the *built*
+  output, and a source-graph proxy would pass a bundler change that a chunk graph catches. `npm ci`
+  runs `prepare`, so CI and any fresh install have `dist/` before `npm test`.
+- **`vital.target` is Tier C in `beforeSend`** — a selector is developer-authored structure, but
+  it is the least sanitized key on the wire and a consumer who disagrees can delete it. That
+  forfeit is theirs.
+- **The five vitals need backend allowlist sign-off before they ship** — all five are already in
+  `ALLOWED_NAMES`, so they are being emitted, and an unlisted name is dropped on ingest.
+  §5.3's fourteen attribution keys need columns or a bag that is actually queried.
+- **`web-vitals` is a runtime `dependency` a native consumer also installs on disk** — bundled,
+  so their app ships zero bytes of it, but `npm ls` shows it. Making it a devDependency would
+  work today and break the moment anything externalizes it; the contract calls it a dependency.
 - **`metric.unit` is omitted for a name the SDK has no unit for** — a consumer's own
   `recordMetric()` name ships no unit rather than a guessed one.
 - The deprecated web `navigation` event still carries `location.pathname + search` raw, query

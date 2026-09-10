@@ -123,6 +123,9 @@ export class TelemetryWeb extends TelemetryBase {
         this.trackInteractions().catch(err => {
             debug.log("Web trackInteractions errors", err);
         });
+        this.trackWebVitals().catch(err => {
+            debug.log("Web trackWebVitals errors", err);
+        });
         this.attachAppLifecycle().catch(err => {
             debug.log("Web attachAppLifecycle errors", err);
         });
@@ -153,8 +156,19 @@ export class TelemetryWeb extends TelemetryBase {
         const inst = await this.instancePromise;
         const { AppLifecycleEmitter } = await import("./adapters/appLifecycle");
         const emitter = new AppLifecycleEmitter(inst);
-        const onState = () => emitter.onState(document.visibilityState === "visible")
-            .catch((e: any) => debug.warn("Web app lifecycle failed:", e));
+        const onState = () => {
+            const isActive = document.visibilityState === "visible";
+            // Awaited before the flush, not fired alongside it — the same ordering native has
+            // (§4.5). Backgrounding is a view boundary, and the rows it emits are exactly the
+            // rows this flush exists to rescue: the `view` row, and §5.3's drained CLS and INP,
+            // whose whole reason for being held is that the library's page-hide report loses
+            // them on a closed tab. Holding them and then not flushing would move that defect
+            // rather than close it. Web's sender uses `fetch({keepalive:true})`, which is what
+            // lets a hidden tab's batch outlive the document.
+            return emitter.onState(isActive)
+                .then(() => (isActive ? undefined : inst.flush()))
+                .catch((e: any) => debug.warn("Web app lifecycle failed:", e));
+        };
         onState();   // seed current state
         document.addEventListener("visibilitychange", onState);
     }
@@ -196,6 +210,23 @@ export class TelemetryWeb extends TelemetryBase {
         // per-tracker, so constructing a fresh one on a second call would add a second
         // capture-phase listener and double every `ui.interaction` row.
         (inst.webInteractions ??= new InteractionTrackerWeb(inst)).start();
+    }
+
+    /**
+     * §5.3/#106 — the five Core Web Vitals on the metric path, web only. Auto-started and
+     * deliberately not public API: there is nothing for a consumer to configure, and a vital
+     * that only fires if someone remembered to call a method is a vital nobody has.
+     *
+     * `web-vitals/attribution` is bundled, so this is the only import of it in the tree and
+     * `index.native` never reaches it. A failed chunk load is caught by the caller and costs
+     * the vitals, nothing else.
+     */
+    private async trackWebVitals() {
+        const { WebVitalsTracker } = await import("./adapters/web/webVitals.web");
+        const inst = await this.instancePromise;
+        // One tracker per core instance: `start()`'s guard is per-tracker, so a fresh one on a
+        // second call would double-subscribe and double every vital row.
+        await (inst.webVitals ??= new WebVitalsTracker(inst)).start();
     }
 
     async autoTrackNavigation() {

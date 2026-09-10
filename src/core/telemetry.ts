@@ -359,6 +359,10 @@ export class Telemetry {
     // Untyped and unset on native, whose producer is the public `trackTap(name)` (#103) and
     // needs no tracker here — its only state is a rage window, held by TelemetryNative.
     public webInteractions?: { start(): void };
+    // The web vitals tracker, parked here for the same reason (§5.3, #106): `trackWebVitals()`
+    // must reuse it, or a second call double-subscribes and doubles every vital row. Unset on
+    // native, which emits no vitals ever.
+    public webVitals?: { start(): Promise<void> };
     private readonly deprecatedScreenFeeds: boolean;
     // last-known screen; best-effort context for the deprecated screen feeds (#33)
     public currentScreen?: string;

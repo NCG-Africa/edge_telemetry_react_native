@@ -320,6 +320,7 @@ Auto-started in the constructor (both platforms unless noted):
 | Custom `log()` name (non-allowlisted) | `custom_event` | event |
 | Memory sample | `memory_usage` | metric |
 | Frame render window | `frame_render_time` | metric |
+| Core Web Vitals (web only) | `LCP` `FCP` `CLS` `INP` `TTFB` | metric |
 
 Both error events carry `error.type` (from `error.name`, never the minified `constructor.name`),
 `error.source` — `global_handler` | `unhandled_rejection` | `cross_origin` | `console` | `reported`
@@ -327,9 +328,14 @@ Both error events carry `error.type` (from `error.name`, never the minified `con
 `error.breadcrumbs` (last 20 actions, JSON-stringified) rides `app.crash` only. Sessions rotate after 30 minutes of inactivity; `session.finalized` flushes
 immediately and includes a journey summary + `sdk.error_count`.
 
-**Web-only signals** (`page_load`, `resource_timing`, `long_task`, and Web Vitals
-LCP/FCP/CLS/INP/TTFB) are emitted only by the web build — native never reports metrics it can't
-honestly measure.
+**Web-only signals** are emitted only by the web build — native never reports metrics it can't
+honestly measure. The five **Core Web Vitals** ship on the metric path with attribution:
+`vital.rating`, `vital.navigation_type`, `vital.target` and `vital.load_state` on every row, plus
+per-vital breakdowns (LCP's four phases sum exactly to its `value`). CLS and INP are held as
+running values and emitted when the tab is hidden, not on every change. All five are
+**page-load-scoped**, so `view.id` on a vital row is always the *initial* view's — group vitals by
+entry point, not by "the screen this happened on". `page_load`, `resource_timing` and `long_task`
+are allowlisted but not yet produced.
 
 ---
 
