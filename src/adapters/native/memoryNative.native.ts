@@ -9,15 +9,9 @@ const SAMPLE_INTERVAL_MS = 30000;
 const BYTES_PER_MB = 1024 * 1024;
 
 /**
- * §5.2 / #105 — `memory_usage`, **native only**, sourced from the device-info package's
- * used-memory call.
- *
- * RSS, not heap: `performance.memory` sees the JS heap alone, while RN's memory lives
- * largely in native allocations (images, native views) — which are what actually get the
- * process OOM-killed. RSS is also engine- and architecture-independent, so a Hermes and a
- * JSC build report the same quantity.
- *
- * The metric is Tier 3 (trace-free) — a windowed sample belongs to no single action.
+ * §5.2 / #105 — `memory_usage`: RSS, **native only**, sampled every 30 s. The rationale for
+ * every part of that sentence lives in CLAUDE.md's `memory_usage` section; this file is the
+ * mechanism.
  */
 export class TelemetryMemoryUsageNative {
     private intervalId: ReturnType<typeof setInterval> | null = null;
@@ -26,31 +20,27 @@ export class TelemetryMemoryUsageNative {
 
     /**
      * One sample: `value` = resident MB, with the device total alongside so headroom is
-     * readable without a second join. A device-info call that throws or reports a
-     * non-finite number emits nothing — a fabricated 0 would drag every percentile down.
+     * readable without a second join. An unusable read emits nothing — a fabricated 0 would
+     * drag every percentile down and read as a memory *win*.
+     *
+     * The two reads are guarded separately on purpose: `value` is what §5.2 makes primary,
+     * so a device-info build whose `getTotalMemory()` throws must still ship the resident
+     * figure with `memory.total_mb` simply absent.
      */
     async recordMemoryUsage(): Promise<void> {
-        let usedBytes: number;
-        let totalBytes: number;
-        try {
-            usedBytes = await DeviceInfoLib.getUsedMemory();
-            totalBytes = await DeviceInfoLib.getTotalMemory();
-        } catch (err) {
-            debug.warn("memory_usage sample failed:", err);
-            return;
-        }
-        if (!Number.isFinite(usedBytes) || usedBytes < 0) return;
+        const usedBytes = await readBytes(() => DeviceInfoLib.getUsedMemory());
+        if (usedBytes === undefined) return;
 
-        const usedMb = usedBytes / BYTES_PER_MB;
-        const attrs: Record<string, any> = {
+        const attrs: Record<string, string | number> = {
             "memory.type": "rss",
             "memory.source": Platform.OS,
         };
-        if (Number.isFinite(totalBytes) && totalBytes > 0) {
+        const totalBytes = await readBytes(() => DeviceInfoLib.getTotalMemory());
+        if (totalBytes !== undefined && totalBytes > 0) {
             attrs["memory.total_mb"] = totalBytes / BYTES_PER_MB;
         }
 
-        await this.telemetry.logMetric("memory_usage", usedMb, attrs);
+        await this.telemetry.logMetric("memory_usage", usedBytes / BYTES_PER_MB, attrs);
     }
 
     /**
@@ -58,19 +48,34 @@ export class TelemetryMemoryUsageNative {
      * one-shot read and applied `.catch` to its `void` return — so the metric was
      * single-shot at best.
      */
-    async start(intervalMs: number = SAMPLE_INTERVAL_MS): Promise<void> {
+    async start(): Promise<void> {
         if (this.intervalId !== null) return;   // idempotent: one loop per instance
         this.intervalId = setInterval(() => {
             void this.recordMemoryUsage();
-        }, intervalMs);
+        }, SAMPLE_INTERVAL_MS);
         await this.recordMemoryUsage();
     }
 
-    /** Stops the periodic sampler if it was started. */
+    /** Stops the periodic sampler. Called by `Telemetry.shutdown()`. */
     stop(): void {
         if (this.intervalId !== null) {
             clearInterval(this.intervalId);
             this.intervalId = null;
         }
+    }
+}
+
+/**
+ * One device-info read, reduced to `number | undefined`. Both a throw (the package is a
+ * peer dep — a consumer can be on a build without the native module) and a non-finite or
+ * negative reading mean "nothing to report", and the caller treats them the same.
+ */
+async function readBytes(read: () => Promise<number>): Promise<number | undefined> {
+    try {
+        const bytes = await read();
+        return Number.isFinite(bytes) && bytes >= 0 ? bytes : undefined;
+    } catch (err) {
+        debug.warn("memory_usage read failed:", err);
+        return undefined;
     }
 }

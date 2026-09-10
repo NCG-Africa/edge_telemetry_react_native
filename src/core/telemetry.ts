@@ -228,6 +228,8 @@ export interface NetworkHandler {
 
 export interface MemoryHandler {
     start(): Promise<void>;
+    /** Torn down by `shutdown()`: unlike the rAF-driven trackers this one owns a timer. */
+    stop?(): void;
 }
 
 export interface NavigationHandler {
@@ -566,6 +568,10 @@ export class Telemetry {
     }
 
     public trackMemoryUsage(memoryHandler: MemoryHandler) {
+        // Re-registration retires the incumbent's timer. `trackMemoryUsage()` is auto-started
+        // in the native constructor *and* public, so a consumer calling it hands core a second
+        // tracker — without this, two 30-second loops and double the sample volume.
+        this.memoryHandler?.stop?.();
         this.memoryHandler = memoryHandler;
         void memoryHandler.start().catch((err) => {
             debug.warn("Telemetry memoryHandler start failed:", err);
@@ -1424,6 +1430,7 @@ export class Telemetry {
 
     async shutdown() {
         if (this.intervalId) clearInterval(this.intervalId);
+        this.memoryHandler?.stop?.();
         await this.flush();
     }
 

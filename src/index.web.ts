@@ -181,9 +181,8 @@ export class TelemetryWeb extends TelemetryBase {
         return inst.trackNetworkRequests(networkTracker);
     }
 
-    // §5.2/#105: web emits no `memory_usage` at all. `performance.memory` is Chromium-only,
-    // so the metric's *presence* was a browser-detection signal wearing a memory label and a
-    // p95 over it was Chrome-only data with no population marker on the row.
+    // §5.2/#105: web emits no `memory_usage` at all, and exposes no `trackMemoryUsage`.
+    // Why, in CLAUDE.md's `memory_usage` section.
 
     /**
      * §4.6/#102 — one capture-phase `click` listener on `document`. Auto-started, like every

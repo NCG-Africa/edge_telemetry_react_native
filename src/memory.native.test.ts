@@ -65,6 +65,18 @@ async function flushUntilSampled(t: { flush(): Promise<unknown> }, sent: Telemet
   }
 }
 
+/**
+ * The same wait, unconditionally spent. An absence assertion has to outlast the window a
+ * positive one would have used, or it passes for the wrong reason.
+ */
+async function flushFully(t: { flush(): Promise<unknown> }, sent: TelemetryEvent[]) {
+  for (let i = 0; i < 20; i++) {
+    await settle();
+    await t.flush();
+  }
+  return sent;
+}
+
 async function launch() {
   const { createTelemetry } = await import("./createTelemetry.native");
   const sent: TelemetryEvent[] = [];
@@ -138,12 +150,54 @@ describe("#105 memory_usage on the native wire (§5.2)", () => {
     expect(samplesOf(sent).length).toBe(4);
   });
 
-  it("emits nothing when the device-info read throws — no fabricated zero", async () => {
-    getUsedMemory.mockRejectedValueOnce(new Error("no such module"));
+  it("still ships the resident figure when only the total read fails — total_mb just goes absent", async () => {
+    getTotalMemory.mockRejectedValue(new Error("no such method"));
     const { t, sent } = await launch();
+    await flushUntilSampled(t, sent);
+
+    const [s] = samplesOf(sent);
+    expect(s).toBeDefined();
+    expect(s.value).toBe(128);
+    expect("memory.total_mb" in s.attributes!).toBe(false);
+  });
+
+  it("stops sampling after shutdown() — the sampler owns a timer the rAF trackers do not", async () => {
+    const { t, sent } = await launch();
+    await flushUntilSampled(t, sent);
+    expect(samplesOf(sent).length).toBe(1);
+
+    await t.shutdown();
+    await vi.advanceTimersByTimeAsync(120000);
+    await settle();
     await t.flush();
 
+    expect(samplesOf(sent).length).toBe(1);
+  });
+
+  it("emits nothing when the device-info read throws — no fabricated zero", async () => {
+    getUsedMemory.mockRejectedValue(new Error("no such module"));
+    const { t, sent } = await launch();
+    await flushFully(t, sent);
+
     expect(samplesOf(sent).length).toBe(0);
+    // Positive control: the rest of the SDK is alive, so the absence above is the read
+    // failing and not a launch that never happened.
+    expect(sent.some((e) => e.eventName === "session.started")).toBe(true);
+  });
+
+  it("a consumer calling the public trackMemoryUsage() does not open a second loop", async () => {
+    const { t, sent } = await launch();
+    await flushUntilSampled(t, sent);
+    const atLaunch = samplesOf(sent).length;
+
+    await t.trackMemoryUsage();          // auto-started in the constructor too
+    await settle();
+    await vi.advanceTimersByTimeAsync(30000);
+    await settle();
+    await t.flush();
+
+    // one re-registration sample plus one tick — not two ticks from two live intervals
+    expect(samplesOf(sent).length).toBe(atLaunch + 2);
   });
 });
 
@@ -161,9 +215,10 @@ describe("#105 memory_usage is native-only (§5.2)", () => {
     });
     await settle();
     await vi.advanceTimersByTimeAsync(120000);
-    await settle();
-    await t.flush();
+    await flushFully(t, sent);
 
     expect(samplesOf(sent).length).toBe(0);
+    // Positive control: this build is emitting, it just never emits *this* metric.
+    expect(sent.some((e) => e.eventName === "session.started")).toBe(true);
   });
 });

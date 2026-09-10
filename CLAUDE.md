@@ -819,13 +819,18 @@ architecture-independent, so a Hermes and a JSC build report the same quantity.
 |---|---|
 | `value` | resident MB — `metric.unit` is `MB` |
 | `memory.type` | const `"rss"` ⚠ was `"heap"` in v3, on the same column |
-| `memory.total_mb` | device total MB; omitted when the read reports nothing usable |
+| `memory.total_mb` | device total MB; **omitted when only the total read fails** — the two device-info reads are guarded separately so a failing total cannot cost the resident figure §5.2 makes primary |
 | `memory.source` | `Platform.OS` |
 
 **`usage_mb`, `pressure_level` and `memory.unit` are gone** — the first duplicated `value`, the second
 has been discarded on arrival for every RN sample ever sent, and the third is superseded by
 `metric.unit`. ⚠ **A read that throws or returns a non-finite number emits nothing** rather than a
 fabricated `0`, which would drag every percentile down and read as a memory *win*.
+
+⚠ **This is the one tracker `shutdown()` tears down**, via an optional `stop()` on `MemoryHandler`.
+It owns a `setInterval`; the rAF-driven `FrameDropTracker` does not, and a leaked 30-second timer
+calling `logMetric` on a shut-down instance is not the same residue as a rAF loop the platform
+already parks on background.
 
 ### The Store port
 
