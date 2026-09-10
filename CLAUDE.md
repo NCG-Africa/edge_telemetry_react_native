@@ -1,11 +1,25 @@
 # CLAUDE.md — @nathanclaire/edge-telemetry-sdk (React Native) Development Guide
 
-Source of truth for AI-assisted development on this repo. Read it before writing code.
+**The** source of truth for development on this repo. Read it before writing code.
 
-`sdk-audit.yaml` (repo root) is the machine-readable companion: every emitted event, every
-common attribute, transport behaviour and known gap, each with a `file:line` citation. When
-this doc and the audit disagree, the audit was generated from the code — trust it and fix
-this doc.
+There is no companion file. `sdk-audit.yaml` was retired: a second hand-maintained
+description of the same behaviour drifts from the first, and two documents disagreeing is
+worse than one being incomplete. Its known gaps and its backend sign-off asks were already
+duplicated in this file and stayed. What went with it was a third copy of the per-event
+field tables — type, null discipline, `always_present` — which `docs/backend-wire-contract.md`
+pins and this file explains; and a `done | partial | na` feature checklist, which said nothing
+Known gaps did not already say more precisely.
+
+Two documents outrank this one, and only within their scope:
+
+| Document | Authority |
+|---|---|
+| `docs/backend-wire-contract.md` | **every wire key** — name, type, null discipline, cardinality, enum domain. It is a cross-SDK contract; where it and this doc disagree, it wins. |
+| `docs/wire-inventory.md` | a **historical record**, pinned to v3.0.1 at `9b7bf83`. Read it for what shipped then, never for what ships now. |
+
+Anything else — architecture, conventions, why a decision went the way it did, what is still
+broken — lives here. When the code and this doc disagree, the code won and this doc is the
+bug: fix it in the same commit.
 
 ---
 
@@ -941,8 +955,9 @@ ingest.
 
 ## Known gaps
 
-Real, current, from `sdk-audit.yaml`. Flag before "fixing" — several need backend
-coordination.
+Real and current, maintained by hand as behaviour changes. Flag before "fixing" — several
+need backend coordination, and several are deliberate trade-offs with the reasoning recorded
+above rather than defects.
 
 - `memory_usage` is **single-shot**: `trackMemoryUsage()` calls `recordMemoryUsage()` once;
   the periodic `start()` in the memory adapters is never invoked.
@@ -1092,4 +1107,5 @@ coordination.
 4. New attributes? → flatten to dot-notation, keep values primitive.
 5. New public method? → `async`, and add it to `TelemetryBase` if it's platform-agnostic.
 6. New dependency? → peer dep? native-only? optional? Don't bundle RN/React.
-7. Changed behaviour? → update `sdk-audit.yaml` in the same commit.
+7. Changed behaviour? → update this file in the same commit — the affected section *and*
+   Known gaps. It is the only description of this SDK there is.

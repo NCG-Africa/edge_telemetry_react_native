@@ -10,6 +10,11 @@
 > spelling change, not a set change. Affected rows below are marked `⚠→`. **Do not read the
 > camelCase spellings below as current.**
 
+> ⚠ **`sdk-audit.yaml` no longer exists.** It was retired in favour of `CLAUDE.md` as the
+> single source of truth. Every reference to it below is preserved as part of this pinned
+> record and describes a file that has since been deleted — read §8's divergences as history,
+> not as a live comparison.
+
 **Scope:** `@nathanclaire/edge-telemetry-sdk` **v3.0.1**, tree at `9b7bf83`.
 Resolves [#49](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/49) under
 map [#48](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/48).
