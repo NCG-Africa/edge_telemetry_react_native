@@ -125,3 +125,62 @@ describe("ViewManager — the name ladder", () => {
     expect(logged[1].data["view.time_spent"]).toBeLessThan(20);
   });
 });
+
+// §5.1's boundary seam. The ordering is the contract: a subscriber runs while the departing
+// view is still current, so anything it emits is booked against the screen that was leaving.
+describe("ViewManager — onBoundary (§5.1)", () => {
+  it("runs subscribers before the successor mints, and awaits them", async () => {
+    const { vm } = manager();
+    await vm.navigate("Home", "route");
+    const home = vm.id;
+
+    const seen: string[] = [];
+    vm.onBoundary(async () => {
+      await Promise.resolve();
+      seen.push(vm.id);              // resolved after an await — still the departing view
+    });
+
+    await vm.navigate("Cart", "route");
+    expect(seen).toEqual([home]);
+    expect(vm.id).not.toBe(home);
+  });
+
+  it("fires on the route-change and background boundaries, and stops after unsubscribe", async () => {
+    const { vm } = manager();
+    let hits = 0;
+    const off = vm.onBoundary(() => { hits++; });
+
+    await vm.navigate("Home", "route");   // rung 2 over rung 0 is an upgrade, not a boundary
+    expect(hits).toBe(0);
+
+    await vm.navigate("Cart", "route");   // same rung, new name — a real navigation
+    await vm.background();                // the background boundary
+    expect(hits).toBe(2);
+
+    off();
+    await vm.navigate("Checkout", "route");
+    expect(hits).toBe(2);
+  });
+
+  // The new session.id is installed before the successor mints, so a row emitted here would
+  // pair it with the departing view.id — what §4.5's "view.id never spans a session.id" bars.
+  it("does not fire on the session_rotation boundary", async () => {
+    const { vm } = manager();
+    let hits = 0;
+    vm.onBoundary(() => { hits++; });
+
+    await vm.beginView("session_rotation");
+    expect(hits).toBe(0);
+  });
+
+  it("swallows a throwing subscriber rather than aborting the view mint", async () => {
+    const { vm } = manager();
+    await vm.navigate("Home", "route");
+    const home = vm.id;
+    vm.onBoundary(() => { throw new Error("frame window is broken"); });
+
+    await vm.navigate("Cart", "route");
+    expect(vm.id).not.toBe(home);
+    expect(vm.name).toBe("Cart");
+  });
+});

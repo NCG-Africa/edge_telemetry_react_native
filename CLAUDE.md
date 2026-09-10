@@ -71,7 +71,8 @@ src/
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
 │   │                        idempotent, and one listener per instance — see below
-│   ├── frameAggregate.ts  ← rAF deltas → one frame_render_time metric per 10s window
+│   ├── frameAggregate.ts  ← §5.1 pure math: p95, the measured target_fps, dropped_count
+│   ├── frameTracker.ts    ← the shared rAF loop; the window resets at every view boundary
 │   ├── uiInteraction.ts   ← §4.6 role gate, the five-rung name ladder, the rage window
 │   ├── networkChange.ts   ← edge-triggered network_change emitter
 │   ├── navigationTracker.ts / screenTiming.ts
@@ -388,6 +389,12 @@ the `deprecatedScreenFeeds` opt, which the **web** entry sets `false` so a now-s
 `attachNavigation` cannot start `screen.duration` on a build that has never had it. ⚠ The flag does
 **not** silence `navigation` on web — `navigationWeb.web.ts`'s history path emits it directly, as
 it always has. §4.0 says web should emit neither; closing that is a separate change.
+
+**`ViewManager.onBoundary()` is the view-boundary seam** (§5.1, #104). A subscriber is awaited
+inside `beginView` while the departing view is still current — that is what lets the frame window
+close on the screen the user is leaving rather than the one arriving. It fires on the route-change
+and background boundaries only; ⚠ **`session_rotation` is excluded**, and the Metrics section
+below says why.
 
 **The background boundary must be awaited before the flush.** `AppLifecycleEmitter.onState` returns
 a promise for exactly this reason: on native, backgrounding forces a `flush()` because the queue
@@ -748,6 +755,47 @@ has not wired this up is exactly the consumer who has not set `debug: true`.
 requests and not `console.warn`. Only `app.crash` gets the dedicated crash path (persist + one
 batch) and the eviction reprieve.
 
+### Metrics — `metric.unit` and the frame window
+
+`core/telemetry.ts`'s `METRIC_UNIT` map + `adapters/frameAggregate.ts` + `adapters/frameTracker.ts`
+(§5.1, #104). Metrics are Tier 3 — **trace-free, all of them**.
+
+**`metric.unit` ships on every metric whose name has one**: `ms` for `frame_render_time` and the four
+timing vitals, `MB` for `memory_usage`, **`score` for `CLS`**. Without the CLS entry every chart that
+does not special-case `metric_name` renders a CLS of `0.08` as a flat zero line beside an LCP of
+`4000` in the same `value` column. It is stamped **after** caller `data`, so a stray attribute cannot
+mislabel the unit of the column the row lands in, and it is **omitted** for a name not in the map —
+a consumer's own `recordMetric()` name has no unit the SDK can honestly claim.
+
+**`frame.target_fps` is measured, not assumed** — and `frame.target_hz` is gone. rAF cannot fire
+faster than the display, so the floor of the window's deltas *is* the refresh interval; no new
+platform API is involved. ⚠ The floor is the **5th percentile, not the minimum**: one spurious
+short delta would snap a 60 Hz device to 120 and double its `frame.dropped_count`, reintroducing
+the very defect the key exists to fix, while a real 120 Hz display produces short deltas by the
+hundred. It then snaps to §5.1's `{60, 90, 120}`, which absorbs what jitter is left. ⚠ **`frame.dropped_count` budgets against the measured rate**, so its values move on
+every 90/120 Hz device — v3's hardcoded 60 was simply wrong there, and this is a correction with a
+chart discontinuity, not a regression.
+
+**The window closes at 10 s *or* at a view boundary, whichever comes first**, which is what puts a
+route change's dropped frames on the screen that was **leaving**. The seam is
+`ViewManager.onBoundary()`: subscribers are **awaited inside `beginView`, before the successor
+replaces the current view**, so the metric's Context block resolves to the departing `view.id`.
+⚠ That ordering *is* the feature — fire it after the mint and the fix inverts into the bug.
+⚠ **It does not fire on the `session_rotation` boundary.** `newSession()` installs the new
+`session.id` before minting the successor, so a row emitted there would carry the new `session.id`
+with the departing `view.id` — exactly what §4.5's "`view.id` never spans a `session.id`" bars.
+Emitting *before* the rotation is worse: `logMetric` re-checks expiry, `lastActivity` is still
+stale, and the emit would rotate the session a second time. A throwing subscriber is **swallowed**
+— a broken frame window must not be able to abort view minting.
+Variable-length windows are why **`frame.window_duration_ms` always ships**: a p95 over an unknown
+sample count is uncomparable. An empty window emits nothing but still resets the clock, so the key
+always describes the samples it carries. Accepted cost: a fast route change emits a p95 over a thin
+sample.
+
+The rAF loop is **one shared `FrameDropTracker`**, not a `.web`/`.native` pair — rAF and
+`performance.now()` are globals both runtimes provide, so there was nothing platform-specific left to
+split and the two builds cannot drift on window length, measurement or the reset.
+
 ### The Store port
 
 Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
@@ -923,7 +971,7 @@ the original name as `event.name`. Currently emitted:
 | `network_change` | connectivity type transition |
 | `user.profile.update` | `identify()` |
 | `custom_event` | any non-allowlisted `log()` name |
-| `frame_render_time` | **metric** — p95 per 10s window |
+| `frame_render_time` | **metric** — p95 per window; the window closes at 10s **or at a view boundary** (§5.1) |
 | `memory_usage` | **metric** — used heap MB |
 
 Allowlisted but with **no producer**: `page_load`, `resource_timing`, `long_task`, `LCP`,
@@ -1083,8 +1131,20 @@ above rather than defects.
   latency runs a handler in the *old* view and belongs to the action envelope (§6.6), which is not
   built. A prefetched screen therefore reports `no_activity` — exact as "started no fetches of its
   own", wrong if read as "does not fetch".
-- The frame window does **not** reset at a view boundary (§5.1), so a 10 s window straddling a
-  route change still charges the departing screen's frames to the arriving one.
+- **`frame.target_fps` is snapped to {60, 90, 120}** (§5.1's domain), so a 144 Hz panel reports
+  120 and budgets its dropped frames at 8.3 ms rather than 6.9 ms. The key exists for the budget,
+  not for a display census. Flag it if the backend wants the measured rate raw.
+- **`frame.dropped_count`'s values moved** with the measurement: on a 90/120 Hz device v3 budgeted
+  against a hardcoded 60 and undercounted. A correction, not a regression — but it is a chart
+  discontinuity at the cutover.
+- **A fast route change emits a p95 over a thin sample.** That is the accepted cost of the
+  boundary reset; `frame.window_duration_ms` is what makes those rows filterable.
+- **The frame window does not reset at the `session_rotation` boundary**, so at most one window
+  carries across a rotation — a session that ended by idleness or the 4-hour cap, whose last
+  window is ≤10 s. Resetting there would either pair a new `session.id` with the departing
+  `view.id` or rotate the session twice; both are worse than the residue.
+- **`metric.unit` is omitted for a name the SDK has no unit for** — a consumer's own
+  `recordMetric()` name ships no unit rather than a guessed one.
 - The deprecated web `navigation` event still carries `location.pathname + search` raw, query
   string included. `http.request` and `view.name` are both clean; this feed is not.
 - **`app.start` needs backend allowlist sign-off before it ships** — it is already in
