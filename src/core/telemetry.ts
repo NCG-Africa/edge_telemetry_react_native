@@ -4,6 +4,7 @@ import { ScreenTimingTracker } from "../adapters/screenTiming";
 import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
 import { TraceManager } from "../adapters/traceManager";
 import { BreadcrumbBuffer } from "./breadcrumbs";
+import { buildErrorAttributes } from "../adapters/crashCapture";
 import { randomHex } from "./utils/uuid";
 import type { Store } from "./store";
 import { memoryStore } from "./memoryStore";
@@ -42,6 +43,15 @@ export type DropReason = "queue_full" | "store_full" | "rejected";
  */
 /** An event's `event.sequence`, or -1 before `enqueue()` has stamped one. */
 const seqOf = (e: TelemetryEvent): number => e.attributes?.['event.sequence'] ?? -1;
+
+/**
+ * §4.7's two error names. Both book `sdk.error_count` and `view.error_count` — a closed
+ * enumeration, not resource failures and not `console.warn`. Only `app.crash` gets the
+ * dedicated crash path and the eviction reprieve, which is the whole point of the split:
+ * `COUNT(event_name='app.crash')` must stay a crash count nobody can forget to filter.
+ */
+export const isErrorName = (name?: string): boolean =>
+    name === "app.crash" || name === "app.error";
 
 export function evictIndex(events: TelemetryEvent[]): number {
     const i = events.findIndex(e => e.eventName !== "app.crash");
@@ -96,6 +106,8 @@ const ALLOWED_NAMES = new Set<string>([
     "session.started", "session.finalized", "app_lifecycle", "page_load", "navigation",
     "screen.duration", "http.request", "user.interaction", "network_change",
     "user.profile.update", "custom_event", "app.crash", "view",
+    // ⚠ `app.error` needs backend allowlist sign-off before it ships (#100, §4.7).
+    "app.error",
     // ⚠ `app.start` needs backend allowlist sign-off before it ships (#98, §4.3/§6.2) — an
     // unlisted eventName is dropped on ingest. It is listed here, so it is being emitted.
     "app.start",
@@ -111,10 +123,12 @@ const ALLOWED_NAMES = new Set<string>([
  * included**. A windowed aggregate belongs to no single action, and a `rum.action.id` on
  * one would invite a `GROUP BY` over a number that was never attributable.
  *
- * `app.error` joins this set with #100; `ui.interaction` joins Tier 1 with #102/#103, which
- * is also what gives `user.interaction` a root to mint — until then it is trace-free.
+ * ⚠ "% of errors attributed to an action" is bounded well below 100% by design: a consumer
+ * calling `captureError()` from a background retry has no live root and gets no trace keys at
+ * all. `ui.interaction` joins Tier 1 with #102/#103, which is also what gives
+ * `user.interaction` a root to mint — until then it is trace-free.
  */
-const TIER_2_NAMES = new Set<string>(["app.crash", "custom_event"]);
+const TIER_2_NAMES = new Set<string>(["app.crash", "app.error", "custom_event"]);
 
 // Events carry `eventName`; metrics carry `metricName` + numeric `value` (v3 §"Event vs Metric").
 // Kept as one loose shape (not a strict union) so callers can read `.eventName` without narrowing;
@@ -143,7 +157,9 @@ export interface Sender {
 
 
 export interface CrashHandlerOptions {
-    captureConsole?: boolean;   // funnel console.error/warn into app.crash (default on, opt-out)
+    // console.error -> app.error, console.warn -> a breadcrumb. Default OFF (§4.7, #100):
+    // React's own dev-mode warnings dominated v3's crash count.
+    captureConsole?: boolean;
 }
 
 export interface CrashHandler {
@@ -332,14 +348,14 @@ export class Telemetry {
     private sdkVersion: string;
     private platform?: string;
     private eventCount = 0;
-    // last-20 action trail, attached to app.crash as crash.breadcrumbs (#28)
+    // last-20 action trail, attached to app.crash as error.breadcrumbs (#28, §4.7)
     private breadcrumbs = new BreadcrumbBuffer(20);
     // session lifecycle (#29)
     private lastActivity?: number;       // last non-session event time; drives 30-min idle rotation
     private sessionSequence = 0;         // increments per acknowledged (2xx) batch
     private eventSequence = 0;           // event.sequence — per-session ordinal, stamped at enqueue
     private sessionEventCount = 0;       // events this session (journey summary)
-    private errorCount = 0;              // app.crash count this session (sdk.error_count)
+    private errorCount = 0;              // app.crash + app.error this session (sdk.error_count)
 
     // Sampling and scrubbing (#93, §3.6). `configuredSampleRate` is what the constructor
     // was given and what every rotation re-rolls at; `sampleRate` is what *this* session
@@ -426,6 +442,28 @@ export class Telemetry {
     }
 
     // ---------- Session & User APIs ----------
+
+    /**
+     * §4.7 — report a handled error. Accepts `unknown` on purpose: half of real `catch`
+     * blocks receive a string or an axios rejection object, and a consumer should not have
+     * to prove to TypeScript that it is an `Error` before reporting it.
+     *
+     * Emits `app.error`, **never** `app.crash`. There is deliberately no public path to
+     * `app.crash` — a consumer's own code must not be able to manufacture rows in the one
+     * table an unfiltered crash-free rate is read from.
+     */
+    public captureError(error: unknown, context?: Record<string, any>) {
+        // Context first: the SDK's own `error.*` keys win a collision.
+        return this.log("app.error", { ...context, ...buildErrorAttributes("reported", error) });
+    }
+
+    /**
+     * Extend the breadcrumb trail without emitting anything. §4.7 demotes `console.warn` to
+     * exactly this — React's dev-mode warnings were the bulk of v3's `app.crash` volume.
+     */
+    public addBreadcrumb(name: string, data?: Record<string, any>) {
+        this.breadcrumbs.add({ name, ...data, timestamp: new Date().toISOString() });
+    }
 
     public trackErrors(crashHandler: CrashHandler, options?: CrashHandlerOptions) {
         this.crashHandler = crashHandler;
@@ -912,7 +950,7 @@ export class Telemetry {
             if (reason) await this.rotateSession(reason);
             this.lastActivity = now;
             this.sessionEventCount++;
-            if (name === 'app.crash') this.errorCount++;
+            if (isErrorName(name)) this.errorCount++;
             activity = true;
         }
 
@@ -934,9 +972,13 @@ export class Telemetry {
             // Assigned after `collectContext`, so a caller's `data` cannot forge them.
             if (TIER_2_NAMES.has(eventName)) Object.assign(attributes, this.trace.annotate());
 
-            // app.crash carries the trail of prior actions; other events extend the trail.
+            // `app.crash` carries the trail of prior actions; other events extend the trail.
+            // ⚠ Breadcrumbs ride `app.crash` **only** (§4.7): `app.error` volume is
+            // consumer-controlled, and a 1-2 KB blob on a high-volume event is how the
+            // transport budget gets spent by the SDK's own doing. Stringified, because
+            // `stringAttr` renders a real array through `fmt.Sprint` as Go map syntax.
             if (eventName === 'app.crash') {
-                attributes['crash.breadcrumbs'] = this.breadcrumbs.toJSON();
+                attributes['error.breadcrumbs'] = this.breadcrumbs.toJSON();
                 crashed = true;
             } else {
                 this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
@@ -944,10 +986,11 @@ export class Telemetry {
 
             // Two of §4.5's three counters, booked against the view this row is pinned to.
             // `view.error_count` is a closed enumeration — crashes only, not failed requests
-            // and not console.warn. `view.request_count` is NOT booked here: §4.5.2 counts
+            // and not console.warn — but `app.error` counts too (§4.5). `view.request_count`
+            // is NOT booked here: §4.5.2 counts
             // requests *started* in the view, and this row is emitted at completion, which
             // can be a route change later. The interceptors book it at send time instead.
-            if (eventName === 'app.crash') this.views.countError();
+            if (isErrorName(eventName)) this.views.countError();
             else if (eventName === 'user.interaction') this.views.countAction();
 
             this.enqueue({
@@ -988,14 +1031,14 @@ export class Telemetry {
      * asymmetry is the `Store` port's whole point (`core/store.ts`).
      *
      * The persisted copy is a safety copy, not a handoff: the queue is left intact, because
-     * most `app.crash` rows are non-fatal (a caught error, or a `console.error` under the
-     * default `captureConsole`) and the process usually lives on. A successful send therefore
+     * an `app.crash` is not always fatal — `window.onerror` fires and the page keeps running
+     * — and the process usually lives on. A successful send therefore
      * leaves a duplicate on disk to replay next launch — which is what `event.sequence` and
      * the backend's `(session_id, event_sequence)` dedup exist for (§2.4).
      *
      * *One* duplicate. Each row is written at most once by this path, watermarked on
-     * `event.sequence`: `captureConsole` is on by default, so a chatty app crash-flushes
-     * often, and re-persisting the whole queue each time would fill the store with copies of
+     * `event.sequence`: a chatty app crash-flushes often, and re-persisting the whole queue
+     * each time would fill the store with copies of
      * its own backlog and book `store_full` drops that are not loss — corrupting the very
      * counter this change adds.
      */

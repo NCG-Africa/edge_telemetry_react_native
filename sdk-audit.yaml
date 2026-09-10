@@ -106,7 +106,7 @@ events:
       - {field: view.loading_time, type: int, unit: ms, always_present: false}              # network settle (#97, contract 4.5.2). OMITTED when null (not an explicit wire null — see inconsistency 20). Only `settled` ever carries a number; read the outcome beside it
       - {field: view.loading_time_outcome, type: string, unit: none, always_present: true}  # settled|no_activity|capped|abandoned. NEVER null. Free invariant: no_activity <=> view.request_count = 0
       - {field: view.time_spent, type: int, unit: ms, always_present: true}                # FOREGROUND-only dwell: the clock pauses on background
-      - {field: view.error_count, type: int, unit: none, always_present: true}             # app.crash only — a closed enumeration. NOT failed requests, NOT console.warn
+      - {field: view.error_count, type: int, unit: none, always_present: true}             # app.crash + app.error — a closed enumeration. NOT failed requests, NOT console.warn (#100)
       - {field: view.action_count, type: int, unit: none, always_present: true}            # user.interaction rows sharing the view.id
       # §6 Tier 1, captured at view ENTRY (#98): a `view` row parents to the root that OPENED the
       # screen, not the one live when the user left it. A POINT SPAN — see span.duration_ms.
@@ -159,17 +159,36 @@ events:
       - {field: http.path, removed_in: "#95", why: "raw values vs http.route's templates; not a rename a COALESCE can paper over"}
 
   - name: app.crash
-    trigger: JS global error (ErrorUtils native / window.onerror web), unhandled promise rejection, and (opt-out, default ON) console.error/console.warn. evidence src/adapters/crashCapture.ts:6-49; native crashHandlerNative.native.ts:15-45; web crashHandler.web.ts:15-29
+    trigger: UNHANDLED only — JS global error (ErrorUtils native / window.onerror web) and unhandled promise rejection. There is NO public path (#100, contract 4.7) — TelemetryBase.log("app.crash") is routed to app.error, so COUNT(event_name='app.crash')/sessions is a crash-free rate with no WHERE clause. evidence src/adapters/crashCapture.ts; native crashHandlerNative.native.ts:14-31; web crashHandler.web.ts:14-28; index.base.ts:23-34
     payload_fields:
-      - {field: crash.cause, type: string, unit: none, always_present: true}              # "Error"|"UnhandledRejection"|"ConsoleError"|"ConsoleWarn"
-      - {field: crash.message, type: string, unit: none, always_present: true}            # may be null
-      - {field: crash.stacktrace, type: string, unit: none, always_present: true}         # may be null; absent for console captures
-      - {field: crash.fatal, type: bool, unit: none, always_present: false}               # only for native ErrorUtils path (isFatal)
-      - {field: crash.breadcrumbs, type: string, unit: none, always_present: true}        # JSON-stringified array of last 20 {name,timestamp}; evidence telemetry.ts:497-498, breadcrumbs.ts
+      - {field: error.type, type: string, unit: none, always_present: true}               # from error.name ONLY, never constructor.name (minification refragments grouping every deploy). cap 255
+      - {field: error.source, type: string, unit: none, always_present: true}             # global_handler|unhandled_rejection|cross_origin (web only, window.onerror with error===undefined)
+      - {field: error.message, type: string, unit: none, always_present: false}           # OMITTED when absent — no wire null. cap 1000
+      - {field: error.stacktrace, type: string, unit: none, always_present: false}        # OMITTED when absent. cap 2000, tail-truncated on a FRAME BOUNDARY (a mid-frame cut resolves to a different, wrong Hermes location), marked "\n… [truncated]"
+      - {field: error.fatal, type: bool, unit: none, always_present: false}               # NATIVE ONLY — omitted on web, where nothing is fatal. A cross-platform crash-free chart built on it scores web at 100% forever
+      - {field: error.breadcrumbs, type: string, unit: none, always_present: true}        # JSON-stringified array of last 20 {name,timestamp}; app.crash ONLY (app.error volume is consumer-controlled). evidence telemetry.ts, breadcrumbs.ts
+      # error.handled does not exist — the event name carries that bit. No fingerprint on the
+      # wire: grouping is processor-side, because algorithms change and that is a backfill
+      # server-side but an app-store rollout SDK-side. All five crash.* keys retired in #100.
       # §6 Tier 2 — annotation-only (#98): joins a trace without occupying a span. NO span.id, no
       # parent, no duration, no start_time. All three are ABSENT when no root is live: Tier 2
       # never mints. Stamped in log() from the live carrier, which the crash handler reaches
       # synchronously — JS is single-threaded, so Android's process-global lastRoot has no referent.
+      - {field: trace.id, type: string, unit: none, always_present: false}
+      - {field: rum.action.id, type: string, unit: none, always_present: false}
+      - {field: trace.root_type, type: string, unit: none, always_present: false}
+
+  - name: app.error
+    trigger: HANDLED / non-fatal — captureError(error, context?) (source "reported"), an opted-in console.error (source "console"), and TelemetryBase.log("app.crash") re-routed. ⚠ needs backend allowlist sign-off before it ships; it is in ALLOWED_NAMES, so it is being emitted. evidence src/adapters/crashCapture.ts; core/telemetry.ts captureError(); index.base.ts
+    payload_fields:
+      - {field: error.type, type: string, unit: none, always_present: true}               # same rules as app.crash
+      - {field: error.source, type: string, unit: none, always_present: true}             # console|reported
+      - {field: error.message, type: string, unit: none, always_present: false}
+      - {field: error.stacktrace, type: string, unit: none, always_present: false}
+      # NO error.breadcrumbs, NO error.fatal (nothing reported is fatal), NO error.handled.
+      # §6 Tier 2 — annotation-only, same discipline as app.crash. ⚠ "% of errors attributed to
+      # an action" is bounded well below 100% BY DESIGN: captureError() from a background retry
+      # has no live root and correctly carries no trace keys at all.
       - {field: trace.id, type: string, unit: none, always_present: false}
       - {field: rum.action.id, type: string, unit: none, always_present: false}
       - {field: trace.root_type, type: string, unit: none, always_present: false}
@@ -348,7 +367,7 @@ transport:
     flush_interval: 30000 ms default (flushIntervalMs; <=0 disables timer). Android's number, deliberately — these SDKs feed shared tables and a per-SDK cadence makes cross-platform arrival comparisons wrong (contract 9.4, #94). evidence telemetry.ts:331
     max_batch_size: 50 events default (batchSize). flush() splices UP TO batchSize per send; flush auto-triggered when queue length >= batchSize. Also Android's number (contract 9.4, #94). evidence telemetry.ts:330
     queue_cap: 500 events, drop-oldest, app.crash evicted LAST (evictIndex scans for the oldest non-crash; when every row is a crash the oldest crash goes rather than growing past the cap). Each eviction books sdk.events_dropped++ / sdk.drop_reason="queue_full". evidence telemetry.ts:26,44-47,1066-1071 (#94)
-    crash_path: an app.crash does NOT wait for the batch to fill — flushCrash() persists the WHOLE queue through the Store, reorders crashes to the front, then sends EXACTLY ONE batch. Not a drain: a dying process gets one round trip. The queue is left intact (most app.crash rows are non-fatal — a caught error or a console.error under the default captureConsole), so a successful send leaves ONE duplicate on disk to replay next launch; (session.id, event.sequence) is what makes that free. Each row is written at most once by this path, watermarked on event.sequence (crashPersistedThrough, telemetry.ts:323) — re-persisting the whole queue per crash would fill the store with copies of its own backlog and book store_full drops that are not loss. The batch is spliced BEFORE the send, because the interval and the batch-full trigger both fire flush() unawaited and a post-send splice could delete rows the batch never carried. evidence telemetry.ts:872-920 (#94)
+    crash_path: an app.crash does NOT wait for the batch to fill — flushCrash() persists the WHOLE queue through the Store, reorders crashes to the front, then sends EXACTLY ONE batch. Not a drain: a dying process gets one round trip. The queue is left intact (an app.crash is not always fatal — window.onerror fires and the page keeps running), so a successful send leaves ONE duplicate on disk to replay next launch; (session.id, event.sequence) is what makes that free. Each row is written at most once by this path, watermarked on event.sequence (crashPersistedThrough, telemetry.ts:323) — re-persisting the whole queue per crash would fill the store with copies of its own backlog and book store_full drops that are not loss. The batch is spliced BEFORE the send, because the interval and the batch-full trigger both fire flush() unawaited and a post-send splice could delete rows the batch never carried. evidence telemetry.ts:872-920 (#94)
     flush_on_background: true (native only) — finalizeSession() awaits flush() on AppState background. evidence telemetry.ts:316, index.native.ts:93
   retry:
     strategy: native = exponential backoff 500*2^attempts + Math.random()*200 jitter (nativeSender.ts:44-46); web = linear attempts*500 (webSender.ts:45). Retry lives in the sender's send().
@@ -421,9 +440,9 @@ privacy:
     HIGH surface. (1) email/phone/fullName/avatar sent plaintext once profile set.
     (2) the deprecated web `navigation` event keeps its query string (navigationWeb.web.ts handleChange);
         http.request carries no URL (#95) and view.name's URL rung is normalized and query-free (#96).
-    (3) crash.message / crash.stacktrace — arbitrary error text, incl. console.error/warn
-    args stringified (captureConsole default ON) — may contain user data.
-    (4) crash.breadcrumbs — JSON trail of last 20 event names+timestamps.
+    (3) error.message / error.stacktrace — arbitrary error text, incl. console.error args
+    stringified when captureConsole is opted IN (default OFF since #100) — may contain user data.
+    (4) error.breadcrumbs — JSON trail of last 20 event names+timestamps.
     (5) http request/response bodies NOT sent, only sizes.
 
 # ============================================================
@@ -457,6 +476,7 @@ api:
     - "setUserName(fullName, firstName?, lastName?) / setUserContact(email?, phone?)"
     - "identify({name?, email?, phone?, avatar?, customAttributes?}) => emits user.profile.update"
     - "trackErrors({captureConsole?})"
+    - "captureError(error: unknown, context?) => emits app.error, NEVER app.crash (#100). Accepts unknown: a string, a plain object and an Error all work"
     - "getDeviceInfo() / getNetworkInfo()"
     - "attachNavigation(ref) — BOTH builds as of #96; getCurrentRoute() is a navigation-tree API, not a native one"
     - "TelemetryNative only: trackRoute(from,to), screenStart(name), screenEnd(name), interactionProps()"
@@ -470,8 +490,8 @@ features:
   session-tracking: {status: done, evidence: "telemetry.ts:367-474 + index.native.ts:77, index.web.ts:60", notes: "resume through the Store across process death; 30-min idle + 4-hour cap; session.reason on started/finalized; no lifecycle rotation on either build (#92)"}
   view-loading-time: {status: done, evidence: "adapters/loadingTime.ts + viewManager.ts + the two interceptors + index.*.ts runtime-ready seed", notes: "#97 network settle, ONE shared module for both builds. 1000ms quiet window subtracted back out (the same constant as 4.6's dead-click window), 30s hard cap emitting null not the cap, zero-network null not 0, collector POST out of scope, initial_load seeded from loadEventEnd (web) / performance.rnStartupTiming (native). Requests count to the view they STARTED in. loading_time omitted when null; loading_time_outcome always ships"}
   view-tracking: {status: done, evidence: "adapters/viewManager.ts + adapters/navigationRef.ts + screenTiming.ts + navigationTracker.ts", notes: "#96 ViewManager: view.id/view.name on every row, the `view` event at four exit boundaries, and the explicit>route>url>none name ladder (rank beats order — a higher rung re-stamps in place and never changes view.id). attachNavigation moved to TelemetryBase, so React Navigation names views identically on both builds. view.loading_time landed separately in #97 — see view-loading-time"}
-  error-capture: {status: done, evidence: crashCapture.ts + crashHandler.web.ts/crashHandlerNative.native.ts, notes: "JS errors, unhandled rejections, console.error/warn -> app.crash"}
-  crash-capture: {status: partial, evidence: crashHandlerNative.native.ts:15-25, notes: "JS-level only (ErrorUtils/window.onerror). No native iOS/Android signal/ANR crash capture. crash.fatal only on native ErrorUtils path"}
+  error-capture: {status: done, evidence: crashCapture.ts + crashHandler.web.ts/crashHandlerNative.native.ts, notes: "JS errors + unhandled rejections -> app.crash; captureError() and an opted-in console.error -> app.error; console.warn -> breadcrumb (#100)"}
+  crash-capture: {status: partial, evidence: crashHandlerNative.native.ts:15-25, notes: "JS-level only (ErrorUtils/window.onerror). No native iOS/Android signal/ANR crash capture. error.fatal only on the native ErrorUtils path"}
   network-capture: {status: done, evidence: interceptHttpNative.native.ts + interceptFetchWeb.web.ts + xhrIntercept.ts, notes: "XHR only on native (fetch IS XHR there, so axios is covered); fetch+XHR on web; bodies never read, sizes only"}
   custom-events: {status: done, evidence: telemetry.ts:474-520, notes: "log(); non-allowlisted names remapped to custom_event + event.name"}
   web-vitals: {status: planned, evidence: telemetry.ts:19-21, notes: "LCP/FCP/CLS/INP/TTFB/page_load/resource_timing/long_task allowlisted but NO emitter exists"}
@@ -507,8 +527,8 @@ inconsistencies_and_surprises: >
      PII/token leak risk (navigationWeb.web.ts handleChange). http.url and http.path no longer exist
      (#95) and view.name's URL rung is normalized with the query dropped (#96), so both are out of
      this gap's scope; only the v5-bound `navigation` feed still carries a raw path.
-  8. console.error/warn capture defaults ON (captureConsole=true) — turns every console.error into
-     an app.crash event; noisy apps will emit crash events for non-crashes.
+  8. CLOSED by #100: captureConsole defaults OFF, console.error is app.error (not app.crash) and
+     console.warn is demoted to a breadcrumb. React's dev-mode warnings no longer inflate crashes.
   9. wire envelope has no top-level location field though the type name (telemetry_batch) and
      CLAUDE.md target contract mention an optional location (batch.ts:5-12 omits it).
   10. TelemetryOpts.apiKey typed required in createTelemetry (assertApiKey throws on missing/bad
@@ -648,6 +668,20 @@ inconsistencies_and_surprises: >
       carriedReferrer().
   37. #99: `traceparent.outcome` is NOT on contract 3.6's Tier A list, so beforeSend can delete
       or rewrite it (Tier C) — same status as trace.root_type, span.start_time and span.duration_ms.
+  38. #100: `app.error` needs backend allowlist sign-off before it ships. It IS in ALLOWED_NAMES,
+      so it is being emitted, and an unlisted eventName is dropped on ingest.
+  39. #100 DIVERGENCE: contract 4.7 says there is no public path to `app.crash`; RN implements
+      that by ROUTING a consumer's `log("app.crash", …)` to `app.error` (source "reported") with
+      a debug warning, rather than dropping it. A reported error is data — it just is not a
+      crash. The block lives on TelemetryBase, so the SDK's own crash handlers, which hold the
+      core `Telemetry`, are unaffected. evidence index.base.ts log().
+  40. #100: the 2000-char `error.stacktrace` cap is a TUNING KNOB, not a contractual constant,
+      and may be tight for Hermes — where `line` is a constant 1 and the bytecode offset carries
+      the whole location. The cut lands on a frame boundary for exactly that reason.
+  41. #100: `error.*` keys are not on contract 3.6's Tier A list, so beforeSend may delete or
+      rewrite them (Tier C). That is deliberate — this is where the PII lives.
+  42. #100: crash capture is still JS-level only, so `error.fatal: true` means "RN's ErrorUtils
+      called it fatal", not "the process died". Native signal/ANR capture is still absent.
 
 ci_cd:
   what_exists: >

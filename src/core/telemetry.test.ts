@@ -362,12 +362,12 @@ describe("navigation route changes", () => {
   });
 });
 
-describe("v3 wire contract — crash.breadcrumbs", () => {
+describe("v3 wire contract — error.breadcrumbs", () => {
   function captureSender(sent: TelemetryEvent[]) {
     return { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
   }
 
-  it("attaches crash.breadcrumbs (JSON of prior actions) to an app.crash event", async () => {
+  it("attaches error.breadcrumbs (JSON of prior actions) to an app.crash event", async () => {
     const sent: TelemetryEvent[] = [];
     const t = new Telemetry({
       sender: captureSender(sent), batchSize: 50, flushIntervalMs: 0,
@@ -376,11 +376,11 @@ describe("v3 wire contract — crash.breadcrumbs", () => {
 
     await t.log("navigation", { "navigation.to_screen": "Home" });
     await t.log("http.request", { "http.route": "/x" });
-    await t.log("app.crash", { "crash.cause": "Error" });
+    await t.log("app.crash", { "error.source": "global_handler" });
     await t.flush();
 
     const crash = sent.find((e) => e.eventName === "app.crash")!;
-    const raw = crash.attributes!["crash.breadcrumbs"];
+    const raw = crash.attributes!["error.breadcrumbs"];
     expect(typeof raw).toBe("string");
     const trail = JSON.parse(raw);
     expect(trail.map((b: any) => b.name)).toEqual(["navigation", "http.request"]);
@@ -388,7 +388,7 @@ describe("v3 wire contract — crash.breadcrumbs", () => {
     expect(trail.map((b: any) => b.name)).not.toContain("app.crash");
   });
 
-  it("caps crash.breadcrumbs at the last 20 actions", async () => {
+  it("caps error.breadcrumbs at the last 20 actions", async () => {
     const sent: TelemetryEvent[] = [];
     const t = new Telemetry({
       sender: captureSender(sent), batchSize: 50, flushIntervalMs: 0,
@@ -396,11 +396,11 @@ describe("v3 wire contract — crash.breadcrumbs", () => {
     });
 
     for (let i = 0; i < 25; i++) await t.log("custom_event", { i });
-    await t.log("app.crash", { "crash.cause": "Error" });
+    await t.log("app.crash", { "error.source": "global_handler" });
     await t.flush();
 
     const crash = sent.find((e) => e.eventName === "app.crash")!;
-    const trail = JSON.parse(crash.attributes!["crash.breadcrumbs"]);
+    const trail = JSON.parse(crash.attributes!["error.breadcrumbs"]);
     expect(trail).toHaveLength(20);
   });
 });
@@ -432,12 +432,14 @@ describe("v3 session lifecycle — started / finalized", () => {
     });
 
     await t.log("custom_event");
-    await t.log("app.crash", { "crash.cause": "Error" });
+    await t.log("app.crash", { "error.source": "global_handler" });
+    await t.captureError(new Error("handled"));
     await t.finalizeSession("idle");   // no explicit flush() — finalize flushes immediately
 
     const fin = sent.find((e) => e.eventName === "session.finalized")!;
     expect(fin).toBeDefined();
-    expect(fin.attributes!["sdk.error_count"]).toBe(1);            // one app.crash this session
+    // §4.7's closed enumeration: app.crash + app.error, not console.warn and not failures.
+    expect(fin.attributes!["sdk.error_count"]).toBe(2);
     expect(typeof fin.attributes!["session.duration_ms"]).toBe("number");
     expect(fin.attributes!["session.event_count"]).toBeGreaterThanOrEqual(2);
   });

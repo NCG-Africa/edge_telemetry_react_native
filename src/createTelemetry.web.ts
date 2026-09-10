@@ -10,7 +10,8 @@ export type TelemetryOpts = {
     batchSize?: number;
     flushIntervalMs?: number;
     endpoint?: string;
-    captureConsole?: boolean;   // funnel console.error/warn into app.crash (default on, opt-out)
+    // console.error -> app.error, console.warn -> a breadcrumb. Default OFF (§4.7, #100).
+    captureConsole?: boolean;
     debug?: boolean;            // SDK-internal diagnostics; off by default (#23)
     store?: SyncStore;          // persisted-state port (#89); MUST be sync — see core/store.ts
     // Constructor-only (§3.6) — there is deliberately no runtime setter for either.

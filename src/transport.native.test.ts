@@ -1,6 +1,12 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 import type { TelemetryEvent } from "./core/telemetry";
 
+// §4.7 removes the public path to `app.crash` (#100), so a test that needs one drives the
+// same core the platform crash handler drives.
+const crash = async (t: any, data?: Record<string, any>) =>
+  (await (t as any).instancePromise).log("app.crash", data);
+
+
 // Native mirror of transport.web.test.ts (#94). Same assertions on the wire; the two that
 // differ are here because they are where the two builds genuinely differ — the offline
 // store's write is a Promise, so the crash-loss window narrows here rather than closing.
@@ -78,7 +84,7 @@ describe("native transport hardening (#94)", () => {
     const r = recordingSender();
     const t = await makeTelemetry(r.sender, { batchSize: 5000 });
 
-    await t.log("app.crash", { "crash.message": "first" });
+    await crash(t, { "error.message": "first" });
     await t.log("custom_event", { marker: "oldest-ordinary" });
     for (let i = 0; i < 600; i++) await t.log("custom_event", { i });
     await t.flush();
@@ -99,7 +105,7 @@ describe("native transport hardening (#94)", () => {
     r.persisted.length = 0;
 
     await t.log("custom_event", { n: 2 });
-    await t.log("app.crash", { "crash.message": "boom" });
+    await crash(t, { "error.message": "boom" });
 
     expect(r.batches).toHaveLength(1);
     expect(r.batches[0][0].eventName).toBe("app.crash");

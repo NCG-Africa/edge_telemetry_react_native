@@ -39,7 +39,7 @@ src/
 ├── index.base.ts                         ← TelemetryBase: shared delegation for both
 ├── core/
 │   ├── telemetry.ts       ← Telemetry: queue, batch, retry, session lifecycle, log/logMetric
-│   ├── breadcrumbs.ts     ← ring buffer (last 20) for crash.breadcrumbs
+│   ├── breadcrumbs.ts     ← ring buffer (last 20) for error.breadcrumbs
 │   ├── debug.ts           ← debug() gate; all SDK-internal logging goes through this
 │   ├── store.ts           ← Store port: get/set/remove over persisted state, no RN import
 │   ├── memoryStore.ts     ← in-memory Store, configurable sync or async
@@ -48,7 +48,7 @@ src/
 │   ├── batch.ts           ← buildBatch(): the telemetry_batch envelope, shared by both senders
 │   ├── failedEvents.ts    ← offline-queue key + decode/encode, shared by both senders
 │   ├── appLifecycle.ts    ← AppLifecycleEmitter (edge-triggered foreground/background)
-│   ├── crashCapture.ts    ← shared crash normalisation → app.crash
+│   ├── crashCapture.ts    ← §4.7 error surface: error.* keys, app.crash vs app.error
 │   ├── viewManager.ts     ← the View entity: view.id/view.name, the `view` event, the ladder
 │   ├── loadingTime.ts     ← shared network-settle: view.loading_time + the 4-value outcome
 │   ├── traceManager.ts    ← §6 trace/span: carrier, three roots, three tiers, the outcome ladder
@@ -105,7 +105,7 @@ type TelemetryOpts = {
   endpoint?: string;        // POST target. Default is a PLACEHOLDER — always pass a real one
   batchSize?: number;       // events per flush. default 50 (Android's, §9.4)
   flushIntervalMs?: number; // default 30000; <=0 disables the interval timer
-  captureConsole?: boolean; // console.error/warn → app.crash. Default ON
+  captureConsole?: boolean; // console.error → app.error, console.warn → breadcrumb. Default OFF
   debug?: boolean;          // SDK-internal diagnostics. Default off
   sender?: Sender;          // override the default platform sender
   store?: Store;            // override the default platform Store (see below)
@@ -123,6 +123,7 @@ identify({name?, email?, phone?, avatar?, customAttributes?})   // emits user.pr
 setUserId / setUserProfile / setUserDetails / updateUserProfile
 getUserProfile / clearUserProfile / setUserName / setUserContact
 trackErrors({captureConsole?}) / getDeviceInfo() / getNetworkInfo()
+captureError(error: unknown, context?)   // emits app.error — never app.crash
 ```
 
 `attachNavigation(ref)` lives on `TelemetryBase` and works on **both** builds: React Navigation's
@@ -411,7 +412,7 @@ its child and **a web hard load is `launch`, never `navigation`**. Web's launch 
 
 **Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request` (`ui.interaction` with
 #102/#103). Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
-`app.crash` and `custom_event` (`app.error` with #100). ⚠ `custom_event` is the one place RN goes
+`app.crash`, `app.error` and `custom_event`. ⚠ `custom_event` is the one place RN goes
 past Android, flagged as an invention. **Tier 3 is trace-free**: *all metrics*, plus
 `app_lifecycle`, `network_change`, the session events, `user.profile.update` and the deprecated
 feeds. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
@@ -523,6 +524,72 @@ behaviour change the SDK was never entitled to make.
 `liveRoot()` drops an expired root. That is the split §6.5 asks the backend to keep as
 `injected_unattributed_context_lost` / `_no_action`.
 
+### The error surface
+
+`adapters/crashCapture.ts`, shared by both builds (§4.7, #100). **Two names, not one.**
+
+| | `app.crash` | `app.error` |
+|---|---|---|
+| Means | unhandled / fatal-ish | handled / non-fatal |
+| Producers | `ErrorUtils` / `window.onerror`, unhandled rejection | `captureError()`, opted-in `console.error` |
+| `error.breadcrumbs` | ✓ | — |
+| `error.fatal` | native only | — |
+
+The reason is one query: **crash-free rate is `COUNT(event_name='app.crash') / sessions` with no
+`WHERE` clause** — the metric people dashboard, and the one that silently breaks when someone forgets
+the filter.
+
+**There is no public path to `app.crash`.** A consumer's own code must not be able to manufacture
+rows in the one table an unfiltered count is read from — which is also why `eventName` is Tier A
+immutable in `beforeSend`. The block lives on **`TelemetryBase.log()`**, so the SDK's own handlers,
+which hold the core `Telemetry`, are unaffected. ⚠ A caller-supplied `app.crash` is **routed to
+`app.error`**, not dropped: a reported error is data, it just isn't a crash.
+
+**All five `crash.*` keys are retired for dotted `error.*`, and both explicit wire nulls go with
+them** — the SDK's omitted-means-absent discipline is now universal.
+
+| Key | Rule |
+|---|---|
+| `error.type` | from **`error.name` only, never `constructor.name`** — minification turns `class PaymentError` into `"a"`, refragmenting grouping on every deploy. Cap 255; un-named classes report `"Error"` |
+| `error.source` | 5 values: `global_handler`, `unhandled_rejection`, `cross_origin` (web), `console`, `reported` |
+| `error.message` | omitted when absent. Cap 1000 |
+| `error.stacktrace` | omitted when absent. Cap 2000, **tail-truncated on a frame boundary** |
+| `error.fatal` | **native only, omitted on web** |
+| `error.breadcrumbs` | **stringified** JSON array, **`app.crash` only** |
+
+⚠ **`error.source` is a re-cut of `crash.cause`, not a rename** — do not map the old values on
+positionally. `cross_origin` is new and names an instrumentation gap: `window.onerror` receives
+`error === undefined` for a bundle served from a CDN without CORS headers, the classic
+`"Script error."` with no stack. **`ConsoleWarn` is deleted** — a warning becomes a breadcrumb.
+
+⚠ **`error.fatal` is a trap.** On web nothing is fatal — `window.onerror` fires and the page keeps
+running — so a cross-platform `1 − COUNT(fatal=true)/sessions` scores **web at 100% forever**. Any
+cross-platform crash-free chart must exclude web, or use the unfiltered `COUNT(app.crash)`.
+
+**`error.handled` does not exist** — the event name carries that bit, and carrying both is a
+denormalization that can disagree. **No fingerprint on the wire**: grouping is processor-side,
+because algorithms always change and that is a backfill server-side but an app-store rollout
+SDK-side.
+
+**Breadcrumbs are stringified** because `stringAttr` renders a real array through `fmt.Sprint` as Go
+map syntax, not JSON. They ride `app.crash` **only**: `app.error` volume is consumer-controlled, and
+a 1–2 KB blob on a high-volume event is how the transport budget gets spent by the SDK's own doing.
+
+**`captureError(error: unknown, context?)`** takes `unknown` on purpose — half of real `catch`
+blocks receive a string or an axios rejection object, and a consumer should not have to prove to
+TypeScript that it is an `Error` first. The caller's `context` is spread **under** the SDK's
+`error.*` keys, so it can annotate but not forge. It is Tier 2, so ⚠ **"% of errors attributed to an
+action" is bounded well below 100% by design**: a `captureError()` from a background retry has no
+live root and correctly carries no trace keys at all.
+
+**`captureConsole` defaults off.** React's own dev-mode `console.warn` output was the dominant
+contributor to v3's crash count, which is what made "is my app crashing more this release?"
+unanswerable. Opted in, `console.error` becomes `app.error` and `console.warn` a breadcrumb.
+
+`view.error_count` and `sdk.error_count` count **both** names — a closed enumeration, not failed
+requests and not `console.warn`. Only `app.crash` gets the dedicated crash path (persist + one
+batch) and the eviction reprieve.
+
 ### The Store port
 
 Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
@@ -568,12 +635,12 @@ dedup index is built on.
 
 **On `app.crash`** the queue is persisted and **one** batch is sent, crashes reordered to the
 front. Not a drain — a dying process gets one round trip. The queue is *left intact*, because
-most `app.crash` rows are non-fatal (a caught error, a `console.error` under the default
-`captureConsole`) and the process usually lives on; a successful send therefore leaves *one*
+an `app.crash` is not always fatal — `window.onerror` fires and the page keeps running — and the
+process usually lives on; a successful send therefore leaves *one*
 duplicate on disk, and `event.sequence` is what makes that free.
 
 *One*, because the persist is watermarked on `event.sequence` (`crashPersistedThrough`): a
-chatty app crash-flushes often, and re-persisting the whole queue each time would fill the store
+crash-heavy session flushes often, and re-persisting the whole queue each time would fill the store
 with copies of its own backlog and book `store_full` drops that are not loss. The batch is
 spliced out **before** the send, not after — both the interval and the batch-full trigger fire
 `flush()` unawaited, so a post-send splice could delete rows the batch never carried.
@@ -690,7 +757,8 @@ the original name as `event.name`. Currently emitted:
 | `navigation` | route change or `screenStart()` |
 | `screen.duration` | `screenEnd()` |
 | `http.request` | XHR only on native (fetch *is* XHR there); fetch + XHR on web |
-| `app.crash` | JS error, unhandled rejection, console.error/warn |
+| `app.crash` | JS error or unhandled rejection — **unhandled only**, no public path (§4.7) |
+| `app.error` | `captureError()`, an opted-in `console.error`, and a re-routed public `log("app.crash")` |
 | `user.interaction` | native taps via `interactionProps()` |
 | `view` | each of the four view exit boundaries (§4.5) |
 | `app.start` | once per process at init — the `launch` root, and §4.3's launch compensator |
@@ -753,15 +821,20 @@ coordination.
   `device.platform` is `"web"`.
 - Web navigation paths keep their query strings, so tokens and PII in query params ship as-is.
   (`http.request` itself carries no URL — see the `http.request` section.)
-- `captureConsole` defaults ON, so every `console.error` becomes an `app.crash`.
 - `flush()` sends **one** batch per call — it does not loop. At 50/30 s a large backlog still
   drains a batch per interval; the draining `flush()` is contract §12.5 and a separate change.
 - `sdk.drop_reason` has no `rejected` producer: 4xx-drops-the-batch is #113.
 - A re-persist inside `replayFailed()` can evict without booking it — the sender has no core
   instance in reach. §3.7 already calls these counters lossy about their own loss.
-- `captureConsole` defaults ON *and* `app.crash` now forces a persist-plus-send, so a chatty
-  `console.error` is a storage write and a POST each. #100 (split `app.crash` from `app.error`)
-  is the fix at the source.
+- **`error.*` keys are Tier C** in `beforeSend` — not on §3.6's Tier A list, so a hook may delete
+  or rewrite them. Deliberate: this is where the PII lives.
+- The 2000-char `error.stacktrace` cap is a **tuning knob, not a contractual constant**, and may be
+  tight for Hermes. The cut lands on a frame boundary because a mid-frame cut resolves to a
+  *different, wrong* location rather than failing.
+- **`app.error` needs backend allowlist sign-off before it ships** — it is already in
+  `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
+- Crash capture is still JS-level, so **`error.fatal: true` means "`ErrorUtils` called it fatal"**,
+  not "the process died".
 - No top-level `location` in the envelope, though the contract allows one.
 - `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`
   constructors still accept it as optional.

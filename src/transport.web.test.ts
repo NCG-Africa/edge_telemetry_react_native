@@ -3,6 +3,12 @@ import { createTelemetry } from "./createTelemetry.web";
 import { SESSION_KEY, type TelemetryEvent } from "./core/telemetry";
 import { memoryStore } from "./core/memoryStore";
 
+// §4.7 removes the public path to `app.crash` (#100), so a test that needs one drives the
+// same core the platform crash handler drives.
+const crash = async (t: any, data?: Record<string, any>) =>
+  (await (t as any).instancePromise).log("app.crash", data);
+
+
 // #94 — transport hardening (§2 / §9.4 / §11), driven through the public API and asserted
 // on what reaches the injected Sender. The wire *is* the external behaviour here; reaching
 // into the queue would test the implementation and break on the first refactor.
@@ -77,7 +83,7 @@ describe("the in-memory queue cap (§9.4)", () => {
       sender: r.sender, batchSize: 5000, flushIntervalMs: 0,
     });
 
-    await t.log("app.crash", { "crash.message": "first" });
+    await crash(t, { "error.message": "first" });
     await t.log("custom_event", { marker: "oldest-ordinary" });
     for (let i = 0; i < 600; i++) await t.log("custom_event", { i });
     await t.flush();
@@ -223,7 +229,7 @@ describe("the crash path (§2 / §9.4)", () => {
     r.persisted.length = 0;
 
     await t.log("custom_event", { n: 2 });
-    await t.log("app.crash", { "crash.message": "boom" });
+    await crash(t, { "error.message": "boom" });
 
     // One round trip, not a drain.
     expect(r.batches).toHaveLength(1);
@@ -247,9 +253,9 @@ describe("the crash path (§2 / §9.4)", () => {
     });
 
     await t.log("custom_event", { n: 1 });
-    await t.log("app.crash", { "crash.message": "one" });
+    await crash(t, { "error.message": "one" });
     await t.log("custom_event", { n: 2 });
-    await t.log("app.crash", { "crash.message": "two" });
+    await crash(t, { "error.message": "two" });
 
     // Re-persisting the whole queue each time would fill the store with copies of its own
     // backlog and book store_full drops that are not loss.
@@ -268,7 +274,7 @@ describe("the crash path (§2 / §9.4)", () => {
       },
     });
 
-    await t.log("app.crash", { "crash.message": "boom" });
+    await crash(t, { "error.message": "boom" });
     expect(r.sent().some(e => e.eventName === "app.crash")).toBe(true);
   });
 });
