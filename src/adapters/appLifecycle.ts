@@ -14,11 +14,18 @@ export class AppLifecycleEmitter {
   constructor(private telemetry: Telemetry) {}
 
   onState(isActive: boolean): void {
-    if (this.active !== undefined && this.active !== isActive) {
+    const previous = this.active;
+    this.active = isActive;
+    if (previous === undefined || previous === isActive) return;
+
+    // Background is one of the four view boundaries (§4.5): the view ends and emits, and the
+    // successor's clock starts paused so a night spent backgrounded is not charged as dwell.
+    // Chained, not fired alongside, so the `app_lifecycle` row lands in the view it happened
+    // in — `Promise.resolve` because a consumer-supplied double may return a plain value.
+    void Promise.resolve(
       this.telemetry.log("app_lifecycle", {
         "app_lifecycle.state": isActive ? "foreground" : "background",
-      });
-    }
-    this.active = isActive;
+      }),
+    ).then(() => (isActive ? this.telemetry.views.foreground() : this.telemetry.views.background()));
   }
 }

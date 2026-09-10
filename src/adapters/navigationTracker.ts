@@ -10,7 +10,7 @@ export class NavigationTracker {
     // Route change → v3 `navigation`. Baseline keys follow the reference/Angular shape;
     // iOS (screen/previous_screen/type/kind) reconciliation is OPEN (see additions ledger).
     recordRouteChange(from: string, to: string) {
-        this.telemetry.log("navigation", {
+        return this.telemetry.log("navigation", {
             "navigation.from_screen": from,
             "navigation.to_screen": to,
             "navigation.method": "push",

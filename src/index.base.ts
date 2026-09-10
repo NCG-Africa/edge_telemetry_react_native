@@ -1,8 +1,10 @@
 // Shared delegation base for TelemetryWeb / TelemetryNative.
 // Both platform classes lazily build a core `Telemetry` behind `instancePromise`
 // and forward every public call to it; these methods are identical across platforms.
-// Platform-specific capture (getDeviceInfo, track*, navigation/screen) stays in the
-// subclasses because each imports a different platform adapter.
+// Platform-specific capture (getDeviceInfo, track*, screen) stays in the subclasses
+// because each imports a different platform adapter.
+
+import { debug } from "./core/debug";
 
 type ProfileInput = {
     userId?: string;
@@ -31,6 +33,22 @@ export abstract class TelemetryBase {
     async shutdown() {
         const inst = await this.instancePromise;
         return inst.shutdown();
+    }
+
+    /**
+     * React Navigation → rung 2 of the name ladder, on **both** builds (§4.5.1, #96).
+     * `getCurrentRoute()` is a navigation-tree API that works identically on RN-Web, so a
+     * consumer wires navigation once and gets the same `view.name` on web and native.
+     */
+    async attachNavigation(navigationRef: any) {
+        debug.log("Attaching navigation tracker");
+        if (!navigationRef) {
+            debug.warn("Navigation reference is undefined. Cannot attach navigation tracker.");
+            return;
+        }
+        const inst = await this.instancePromise;
+        const { NavigationRefTracker } = await import("./adapters/navigationRef");
+        new NavigationRefTracker(inst).attach(navigationRef);
     }
 
     async trackErrors(options?: { captureConsole?: boolean }) {

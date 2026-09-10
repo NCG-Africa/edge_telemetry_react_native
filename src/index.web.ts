@@ -62,6 +62,9 @@ export class TelemetryWeb extends TelemetryBase {
                 store,
                 beforeSend: opts?.beforeSend,
                 sessionSampleRate: opts?.sessionSampleRate,
+                // §4.0/§4.11: web has never emitted `navigation` or `screen.duration` from
+                // the route path and must not start now that `attachNavigation` is shared.
+                deprecatedScreenFeeds: false,
             });
 
             // Resume or start the session before the instance is visible (#92). On web the

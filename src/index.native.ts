@@ -171,17 +171,17 @@ export class TelemetryNative extends TelemetryBase {
 
     async screenStart(name: string) {
         const inst = await this.instancePromise;
-        inst.screens.startScreen(name);
+        return inst.screens.startScreen(name);
     }
 
     async screenEnd(name: string) {
         const inst = await this.instancePromise;
-        inst.screens.endScreen(name);
+        return inst.screens.endScreen(name);
     }
 
     async trackRoute(from: string, to: string) {
         const inst = await this.instancePromise;
-        inst.recordRouteChange(from, to);
+        return inst.recordRouteChange(from, to);
     }
 
     // Best-effort native taps → user.interaction (#33). Spread the returned props on your
@@ -194,15 +194,4 @@ export class TelemetryNative extends TelemetryBase {
         return new InteractionEmitter(inst).responderProps();
     }
 
-    async attachNavigation(navigationRef: any) {
-        debug.log("Attaching navigation tracker");
-        if (!navigationRef) {
-            debug.warn("Navigation reference is undefined. Cannot attach navigation tracker.");
-            return;
-        }
-        const inst = await this.instancePromise;
-        const { NavigationTrackerNative } = await import("./adapters/native/navigationNative.native");
-        const tracker = new NavigationTrackerNative(inst);
-        tracker.attach(navigationRef);
-    }
 }

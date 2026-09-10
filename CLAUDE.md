@@ -49,6 +49,8 @@ src/
 │   ├── failedEvents.ts    ← offline-queue key + decode/encode, shared by both senders
 │   ├── appLifecycle.ts    ← AppLifecycleEmitter (edge-triggered foreground/background)
 │   ├── crashCapture.ts    ← shared crash normalisation → app.crash
+│   ├── viewManager.ts     ← the View entity: view.id/view.name, the `view` event, the ladder
+│   ├── navigationRef.ts   ← React Navigation ref listener, shared (getCurrentRoute works on web)
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
 │   │                        idempotent, and one listener per instance — see below
@@ -119,8 +121,12 @@ getUserProfile / clearUserProfile / setUserName / setUserContact
 trackErrors({captureConsole?}) / getDeviceInfo() / getNetworkInfo()
 ```
 
-Native-only on `TelemetryNative`: `attachNavigation(ref)`, `trackRoute(from, to)`,
-`screenStart(name)`, `screenEnd(name)`, `interactionProps()`.
+`attachNavigation(ref)` lives on `TelemetryBase` and works on **both** builds: React Navigation's
+`getCurrentRoute()` is a navigation-tree API, not a native one, so one wiring gives web and native
+the same `view.name`.
+
+Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `screenEnd(name)`,
+`interactionProps()`.
 
 `trackErrors`, `trackFrameDrops`, `trackNetworkRequests`, `trackMemoryUsage` and
 `autoTrackNavigation` are auto-started in the constructor — consumers don't call them.
@@ -186,6 +192,8 @@ event.sequence         — per-session ordinal, stamped AFTER beforeSend; the ba
 user.id                — only when the consumer supplied one; omitted on anonymous traffic
 device.id              — SDK-minted, persisted (+ device.id_ephemeral: true when storage failed)
 session.sample_rate    — the rate this session was rolled at; every row of it carries it
+view.id                — `view_{ms}_{16hex}`; never spans a `session.id` and never spans a process
+view.name              — resolved at log time by lookup on the frozen `view.id`; `"unknown"` until named
 sdk.platform ("react-native"), sdk.version (package.json version)
 sdk.hook_dropped / sdk.hook_failed  — beforeSend counters; separate on purpose
 sdk.events_dropped     — monotonic, process-lifetime; 0 until the first drop
@@ -266,6 +274,52 @@ forwarded request is never touched. `http.status_code` is **`0`** on transport f
 timeout, cancellation) with no invented discriminator, so those stop folding into 5xx.
 
 **Invariant: an `http.request` never contains the collector endpoint.**
+
+### The View entity
+
+`adapters/viewManager.ts`, shared by both builds because none of it is platform-specific. It owns
+`view.id` + `view.name` on the Context block of every row, the `view` event at exit, and the name
+ladder. The initial view **opens at SDK init**, so `view.id` is never absent.
+
+**Four lifetime boundaries and nothing else** (§4.5): route change, background, session rotation,
+process death. `view.id` **never spans a `session.id` and never spans a process** — so
+`rotateSession()` emits the departing view *before* `finalizeSession()`, and `newSession()` mints
+the successor *after* the new `session.id` is in place. Process death emits nothing at all: a
+killed view's dwell is lost by design, because the alternative is a persist on every frame.
+
+**One screen visit can produce several `view` rows** — a background/foreground round trip splits
+it. Sum by `view.name`. That is the price of the event flushing while the app is reliably alive.
+
+**`view.time_spent` is foreground-only.** The background boundary mints the successor immediately
+(`view.id` must never be absent) but starts its clock *paused*, so a night spent backgrounded is
+not charged as dwell to whatever screen was left open.
+
+**The name ladder is rank-beats-order** (§4.5.1): `explicit` > `route` > `url` > `none`.
+
+| Arriving rung vs. current | Result |
+|---|---|
+| higher | re-stamps `view.name`; **`view.id` unchanged** — an upgrade, not a navigation |
+| lower | ignored outright, whenever it arrives |
+| same, different name | a genuine navigation: emit the `view` event, mint a successor |
+| same, same name | nothing |
+
+Rungs 1 and 2 are **never normalized** — a host naming a screen `"Step 2 of 3"` must not receive
+`"Step {id} of {id}"`. Rung 3 (web history only) reuses `normalizeRoute()` and drops the query.
+There is **no `view.url`** and no cardinality guard, for the same reasons `http.route` has neither.
+
+⚠ **`view.name` is mutable within a view's lifetime.** Rows emitted in the upgrade window — single-
+digit milliseconds, between a route event and a mount effect — carry the lower rung's name. **The
+`view` event's `view.name` and `view.name_source` are authoritative**; the Context-block copy is a
+join-free convenience.
+
+`view.loading_time` / `view.loading_time_outcome` are **not built** (§4.5.2, a separate change).
+
+**`navigation` and `screen.duration` are unified onto this module on native**, which fixes the v3
+defect where `attachNavigation` never touched `inst.screens` — so a React Navigation consumer
+emitted `navigation` on every route change and **never a single `screen.duration`**. A deprecated
+event therefore starts firing where it never has, and its v4 volume goes *up*. Both are gated on
+the `deprecatedScreenFeeds` opt, which the **web** entry sets `false`: web has never emitted either
+and a shared `attachNavigation` must not be what starts it.
 
 ### The Store port
 
@@ -436,6 +490,7 @@ the original name as `event.name`. Currently emitted:
 | `http.request` | XHR only on native (fetch *is* XHR there); fetch + XHR on web |
 | `app.crash` | JS error, unhandled rejection, console.error/warn |
 | `user.interaction` | native taps via `interactionProps()` |
+| `view` | each of the four view exit boundaries (§4.5) |
 | `network_change` | connectivity type transition |
 | `user.profile.update` | `identify()` |
 | `custom_event` | any non-allowlisted `log()` name |
@@ -522,6 +577,13 @@ coordination.
 - Crash capture is JS-level only — no native signal/ANR/hang capture.
 - `index.base.ts` `trackErrors()` imports the **native** crash handler in shared code; the
   web build resolves it at runtime and rejects.
+- **`view` needs backend allowlist sign-off before it ships** — an unlisted `eventName` is
+  dropped on ingest. It is already in the SDK's `ALLOWED_NAMES`, so it is being emitted.
+- `view.loading_time` and `view.loading_time_outcome` have no producer (§4.5.2).
+- The frame window does **not** reset at a view boundary (§5.1), so a 10 s window straddling a
+  route change still charges the departing screen's frames to the arriving one.
+- The deprecated web `navigation` event still carries `location.pathname + search` raw, query
+  string included. `http.request` and `view.name` are both clean; this feed is not.
 
 ---
 

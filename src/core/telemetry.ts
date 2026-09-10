@@ -1,6 +1,7 @@
 import { debug } from "./debug";
 import { NavigationTracker } from "../adapters/navigationTracker";
 import { ScreenTimingTracker } from "../adapters/screenTiming";
+import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
 import { BreadcrumbBuffer } from "./breadcrumbs";
 import { randomHex } from "./utils/uuid";
 import type { Store } from "./store";
@@ -93,7 +94,7 @@ const USER_ID_MAX = 255;
 const ALLOWED_NAMES = new Set<string>([
     "session.started", "session.finalized", "app_lifecycle", "page_load", "navigation",
     "screen.duration", "http.request", "user.interaction", "network_change",
-    "user.profile.update", "custom_event", "app.crash",
+    "user.profile.update", "custom_event", "app.crash", "view",
     "resource_timing", "frame_render_time", "memory_usage", "long_task",
     "LCP", "FCP", "CLS", "INP", "TTFB",
 ]);
@@ -225,6 +226,11 @@ type Opts = {
     // all land — that window is the reason, and it is not negotiable.
     beforeSend?: BeforeSend;
     sessionSampleRate?: number; // 0.0-1.0, sticky per session; default 1 (send everything)
+    // The deprecated native screen feeds — `navigation` and `screen.duration` (§4.11).
+    // Defaults on, because shared core's v3 behaviour *is* the native one; the web entry is
+    // the build that opts out, having never emitted either. Config from the entry, which is
+    // the platform split point — not a branch inside shared code.
+    deprecatedScreenFeeds?: boolean;
 };
 
 /**
@@ -258,6 +264,11 @@ export class Telemetry {
     private navigationTracker?: NavigationTracker;
     // single screen-tracking API (timed); used by the native screenStart/screenEnd
     public screens: ScreenTimingTracker;
+    // The View entity (§4.5, #96): view.id/view.name on every row, the `view` event at each
+    // of the four exit boundaries, and the name ladder. Public because the route, lifecycle
+    // and interaction adapters all feed it.
+    public readonly views: ViewManager;
+    private readonly deprecatedScreenFeeds: boolean;
     // last-known screen; best-effort context for user.interaction taps (#33)
     public currentScreen?: string;
 
@@ -359,6 +370,9 @@ export class Telemetry {
 
         this.navigationTracker = new NavigationTracker(this);
         this.screens = new ScreenTimingTracker(this);
+        this.deprecatedScreenFeeds = opts?.deprecatedScreenFeeds ?? true;
+        // The initial view opens here, at SDK init — so no row can ever precede a view (§4.5).
+        this.views = new ViewManager(this);
 
         this.deviceInfoHandler = opts?.deviceInfoHandler ?? {
             start: async () => Promise.resolve(),
@@ -615,11 +629,18 @@ export class Telemetry {
         // session may have been resumed from a record written under an older config.
         this.sampleRate = this.configuredSampleRate;
         this.sampled = this.rollSample();
+        // After the new session.id is in place and before the first row of it is emitted:
+        // `view.id` never spans a `session.id` (§4.5). rotateSession() has already emitted
+        // the departing view's `view` event under the *old* id.
+        this.views.beginView("session_rotation");
         await this.startSession(reason);
     }
 
     /** Boundary rotation: finalize the old session then start a fresh one (the pair). */
     public async rotateSession(reason: SessionEndReason) {
+        // The session-rotation view boundary (§4.5), emitted first so the `view` row lands
+        // under the session it belongs to. newSession() mints the successor.
+        await this.views.endView();
         await this.finalizeSession(reason);
         await this.newSession(reason);
     }
@@ -801,7 +822,10 @@ export class Telemetry {
         // Session activity and the two boundaries — 30-min idle and the 4-hour cap (§4.2).
         // Session events don't count as activity (they're emitted *by* the lifecycle), so
         // they never re-trigger a rotation.
-        if (!name.startsWith('session.')) {
+        // `view` joins the session events here: it is emitted *by* a boundary, from inside
+        // rotateSession() among others, so letting it re-enter the expiry check would recurse
+        // forever on an already-expired session. It is bookkeeping, not user activity.
+        if (!name.startsWith('session.') && name !== 'view') {
             const now = Date.now();
             const reason = this.expiryReason(now);
             if (reason) await this.rotateSession(reason);
@@ -831,6 +855,14 @@ export class Telemetry {
             } else {
                 this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
             }
+
+            // §4.5's three counters, booked against the view this row is pinned to.
+            // `view.error_count` is a closed enumeration — crashes only, not failed requests
+            // and not console.warn — and `view.request_count` counts every http.request,
+            // failures included; the adapters already exclude the collector's own POST.
+            if (eventName === 'app.crash') this.views.count('error');
+            else if (eventName === 'user.interaction') this.views.count('action');
+            else if (eventName === 'http.request') this.views.count('request');
 
             this.enqueue({
                 type: 'event',
@@ -955,6 +987,11 @@ export class Telemetry {
             ...(this.deviceIdEphemeral ? { 'device.id_ephemeral': true } : {}),
             // Omitted entirely on anonymous traffic (§3.2) — no "", no placeholder.
             ...(this.userId ? { 'user.id': this.userId } : {}),
+            // Denormalized onto every row (§4.5) so "errors by screen" needs no join. The id
+            // is the join key; the name is the view's current best, resolved here at log time
+            // by lookup on that id, so a row can never carry a name that disagrees with it.
+            'view.id': this.views.id,
+            'view.name': this.views.name,
             'session.id': this.sessionId,
             'session.start_time': new Date(this.sessionStart).toISOString(),
             'session.sequence': this.sessionSequence,
@@ -1166,9 +1203,36 @@ export class Telemetry {
         return this.eventCount;
     }
 
-    recordRouteChange(from: string, to: string) {
+    /**
+     * A route change: the view boundary (§4.5) plus, on native only, the two deprecated
+     * feeds (§4.11). v3's two native screen paths were disjoint — `attachNavigation` never
+     * touched `inst.screens`, so a React Navigation consumer emitted `navigation` on every
+     * route change and never a single `screen.duration`. Unifying them here is what fixes
+     * that, which is why a *deprecated* event starts firing where it never has.
+     */
+    async recordRouteChange(from: string, to: string) {
         this.currentScreen = to;   // best-effort screen for subsequent taps (#33)
-        return this.navigationTracker?.recordRouteChange(from, to);
+        if (this.deprecatedScreenFeeds) {
+            // Both rows describe the transition, so both are emitted — and awaited — before
+            // the view boundary: they belong to the view being left.
+            await this.navigationTracker?.recordRouteChange(from, to);
+            await this.screens.endScreen(from);
+            // Arm the dwell clock for the arriving screen. `markStart`, not `startScreen`:
+            // the latter emits its own `navigation`, and the line above already emitted this
+            // transition's. This is the join that was missing — v3's `attachNavigation` never
+            // touched `screens`, so `screen.duration` never fired for a React Navigation app.
+            this.screens.markStart(to);
+        }
+        await this.enterView(to, "route");
+    }
+
+    /**
+     * Feed the name ladder (§4.5.1). Rungs 1 and 2 arrive unnormalized; rung 3's caller
+     * normalizes before calling. Whether this re-stamps the current view or mints a
+     * successor is the ladder's decision, not the caller's.
+     */
+    async enterView(name: string, source: ViewNameSource) {
+        await this.views.navigate(name, source);
     }
 
 
