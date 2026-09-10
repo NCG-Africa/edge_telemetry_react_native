@@ -554,7 +554,7 @@ them** — the SDK's omitted-means-absent discipline is now universal.
 | `error.source` | 5 values: `global_handler`, `unhandled_rejection`, `cross_origin` (web), `console`, `reported` |
 | `error.message` | omitted when absent. Cap 1000 |
 | `error.stacktrace` | omitted when absent. Cap 2000, **tail-truncated on a frame boundary** |
-| `error.fatal` | **native only, omitted on web** |
+| `error.fatal` | **native only, omitted on web** — always `false` on `app.error` |
 | `error.breadcrumbs` | **stringified** JSON array, **`app.crash` only** |
 
 ⚠ **`error.source` is a re-cut of `crash.cause`, not a rename** — do not map the old values on
@@ -835,6 +835,12 @@ coordination.
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
 - Crash capture is still JS-level, so **`error.fatal: true` means "`ErrorUtils` called it fatal"**,
   not "the process died".
+- **`sdk.error_count` counts both names.** §4.2 types it only as `int`; §4.5 defines
+  `view.error_count` as `app.crash + app.error` and the two are kept in step. Flag it if the
+  backend wants `sdk.error_count` to stay a pure crash count.
+- **The frame-boundary truncation degrades when there is no boundary** — a single frame longer
+  than 2000 chars has no newline inside the budget, so that one cut lands mid-frame. The
+  `\n… [truncated]` marker is what makes the case countable.
 - No top-level `location` in the envelope, though the contract allows one.
 - `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`
   constructors still accept it as optional.

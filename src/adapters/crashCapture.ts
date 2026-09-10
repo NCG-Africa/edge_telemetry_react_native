@@ -19,6 +19,8 @@ export type ErrorSource =
 const TYPE_MAX = 255;
 const MESSAGE_MAX = 1000;
 const STACK_MAX = 2000;
+/** Breadcrumb text is not an error payload — 20 of these ride every `app.crash`. */
+const CRUMB_MAX = 200;
 
 /** Marked inline: no key, countable with a `LIKE`, zero schema. */
 const TRUNCATED = "\n… [truncated]";
@@ -52,13 +54,16 @@ export function errorType(error: unknown): string {
   return typeof name === "string" && name !== "" ? name : "Error";
 }
 
-/** Half of real `catch` blocks receive a string or an axios rejection object, not an Error. */
-function errorMessage(error: unknown, fallback?: unknown): string | undefined {
+/**
+ * Half of real `catch` blocks receive a string or an axios rejection object, not an Error, so
+ * `fallbackMessage` is consulted **only** when the thrown value carries nothing usable.
+ */
+function errorMessage(error: unknown, fallbackMessage?: unknown): string | undefined {
   if (typeof error === "string" && error !== "") return error;
   const m = (error as any)?.message;
   if (typeof m === "string" && m !== "") return m;
-  if (fallback === undefined || fallback === null || fallback === "") return undefined;
-  return String(fallback);
+  if (fallbackMessage === undefined || fallbackMessage === null || fallbackMessage === "") return undefined;
+  return String(fallbackMessage);
 }
 
 /**
@@ -69,14 +74,14 @@ function errorMessage(error: unknown, fallback?: unknown): string | undefined {
 export function buildErrorAttributes(
   source: ErrorSource,
   error: unknown,
-  opts: { message?: unknown; fatal?: boolean } = {},
+  opts: { fallbackMessage?: unknown; fatal?: boolean } = {},
 ): Record<string, any> {
   const attrs: Record<string, any> = {
     "error.type": cap(errorType(error), TYPE_MAX),
     "error.source": source,
   };
 
-  const message = errorMessage(error, opts.message);
+  const message = errorMessage(error, opts.fallbackMessage);
   if (message !== undefined) attrs["error.message"] = cap(message, MESSAGE_MAX);
 
   const stack = (error as any)?.stack;
@@ -90,7 +95,7 @@ export function buildErrorAttributes(
 
 /** What `captureConsole` needs of a `Telemetry` — structural, so this file imports nothing. */
 type ErrorSink = {
-  log(name: string, data?: Record<string, any>): unknown;
+  captureError(error: unknown, context?: Record<string, any>, source?: ErrorSource): unknown;
   addBreadcrumb(name: string, data?: Record<string, any>): void;
 };
 
@@ -124,12 +129,15 @@ export function captureConsole(
       orig(...args);
     };
 
+  // Through captureError, not log(), so the `error.fatal` platform rule stays in one place.
   target.error = guarded(
-    (text) => telemetry.log("app.error", buildErrorAttributes("console", undefined, { message: text })),
+    (text) => telemetry.captureError(text, undefined, "console"),
     origError,
   );
   target.warn = guarded(
-    (text) => telemetry.addBreadcrumb("console.warn", { message: text }),
+    // Capped here, not at the ring: 20 uncapped React warnings would put kilobytes of
+    // `error.breadcrumbs` on every `app.crash`, which is the budget this split exists to protect.
+    (text) => telemetry.addBreadcrumb("console.warn", { message: cap(text, CRUMB_MAX) }),
     origWarn,
   );
 

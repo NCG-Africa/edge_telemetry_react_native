@@ -185,7 +185,8 @@ events:
       - {field: error.source, type: string, unit: none, always_present: true}             # console|reported
       - {field: error.message, type: string, unit: none, always_present: false}
       - {field: error.stacktrace, type: string, unit: none, always_present: false}
-      # NO error.breadcrumbs, NO error.fatal (nothing reported is fatal), NO error.handled.
+      - {field: error.fatal, type: bool, unit: none, always_present: false}               # NATIVE ONLY, and always false — nothing handled is fatal. Omitted on web, like app.crash
+      # NO error.breadcrumbs (app.crash only), NO error.handled (the event name carries it).
       # §6 Tier 2 — annotation-only, same discipline as app.crash. ⚠ "% of errors attributed to
       # an action" is bounded well below 100% BY DESIGN: captureError() from a background retry
       # has no live root and correctly carries no trace keys at all.
@@ -682,6 +683,18 @@ inconsistencies_and_surprises: >
       rewrite them (Tier C). That is deliberate — this is where the PII lives.
   42. #100: crash capture is still JS-level only, so `error.fatal: true` means "RN's ErrorUtils
       called it fatal", not "the process died". Native signal/ANR capture is still absent.
+  43. #100 DIVERGENCE: `sdk.error_count` (contract 4.2, typed only as `int`) counts app.crash +
+      app.error, matching 4.5's explicit definition of view.error_count. 4.1/4.7 do not rule on
+      it. If the backend wants sdk.error_count to stay a pure crash count, this is the one line
+      to change (isErrorName in telemetry.ts).
+  44. #100: `error.stacktrace` truncation lands on a frame boundary by cutting back to the last
+      newline inside the budget. When there IS no newline inside the budget — a single frame
+      longer than 2000 chars — there is no boundary to land on and the cut is mid-frame. The
+      "\n… [truncated]" marker is what makes that case countable with a LIKE.
+  45. #100: `error.fatal` is stamped from the ENTRY'S DECLARED `platform` opt (the same source
+      that suffixes device.id / session.id), never from a runtime global — shared core must not
+      branch on platform. A direct `new Telemetry()` with no platform opt therefore omits the
+      key, which is the web discipline.
 
 ci_cd:
   what_exists: >

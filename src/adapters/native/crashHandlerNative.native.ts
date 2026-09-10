@@ -25,7 +25,7 @@ export class CrashHandlerNative {
 
                 const onRejection = (event: any) => {
                     this.telemetry.log("app.crash", buildErrorAttributes("unhandled_rejection", event?.reason, {
-                        message: "Unhandled Promise Rejection",
+                        fallbackMessage: "Unhandled Promise Rejection",
                         fatal: false,
                     }));
                 };

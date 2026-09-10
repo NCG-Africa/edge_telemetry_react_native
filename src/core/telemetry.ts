@@ -4,7 +4,7 @@ import { ScreenTimingTracker } from "../adapters/screenTiming";
 import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
 import { TraceManager } from "../adapters/traceManager";
 import { BreadcrumbBuffer } from "./breadcrumbs";
-import { buildErrorAttributes } from "../adapters/crashCapture";
+import { buildErrorAttributes, type ErrorSource } from "../adapters/crashCapture";
 import { randomHex } from "./utils/uuid";
 import type { Store } from "./store";
 import { memoryStore } from "./memoryStore";
@@ -451,18 +451,35 @@ export class Telemetry {
      * Emits `app.error`, **never** `app.crash`. There is deliberately no public path to
      * `app.crash` — a consumer's own code must not be able to manufacture rows in the one
      * table an unfiltered crash-free rate is read from.
+     *
+     * `source` is SDK-internal (`captureConsole` passes `"console"`); the public wrappers
+     * forward two arguments, so a consumer can only ever produce `"reported"`. Routing the
+     * console path through here rather than through `log()` directly is what keeps the
+     * `error.fatal` rule in one place.
      */
-    public captureError(error: unknown, context?: Record<string, any>) {
+    public captureError(error: unknown, context?: Record<string, any>, source: ErrorSource = "reported") {
+        // `error.fatal` is native-only (§4.7): on web nothing is fatal, so the key is omitted
+        // rather than shipped as a permanent `false` that scores web at a perfect crash-free
+        // rate forever. Nothing *reported* is fatal, so on native it is always `false`. The
+        // platform opt is the same one that suffixes the ids — the entry's declaration, not a
+        // branch on a runtime global.
+        const fatal = this.isNativePlatform() ? { fatal: false } : {};
         // Context first: the SDK's own `error.*` keys win a collision.
-        return this.log("app.error", { ...context, ...buildErrorAttributes("reported", error) });
+        return this.log("app.error", { ...context, ...buildErrorAttributes(source, error, fatal) });
     }
 
     /**
      * Extend the breadcrumb trail without emitting anything. §4.7 demotes `console.warn` to
      * exactly this — React's dev-mode warnings were the bulk of v3's `app.crash` volume.
+     *
+     * SDK-internal: `public` only so `adapters/crashCapture.ts` can reach it. Not on
+     * `TelemetryBase` and not part of the consumer API — a host app that wants a trail entry
+     * should `log()` an event, which extends the trail anyway.
      */
     public addBreadcrumb(name: string, data?: Record<string, any>) {
-        this.breadcrumbs.add({ name, ...data, timestamp: new Date().toISOString() });
+        // `name` and `timestamp` last: a caller's `data` annotates the crumb, it does not
+        // rename it out from under the trail.
+        this.breadcrumbs.add({ ...data, name, timestamp: new Date().toISOString() });
     }
 
     public trackErrors(crashHandler: CrashHandler, options?: CrashHandlerOptions) {
@@ -528,13 +545,16 @@ export class Telemetry {
         return Math.random() < this.sampleRate;
     }
 
+    /** §3.3 / §4.7's platform split, from the entry's declared `platform` opt — never a global. */
+    private isNativePlatform(): boolean {
+        return this.platform === "ios" || this.platform === "android";
+    }
+
     private generateSessionId(): string {
         const base = `session_${Date.now()}_${randomHex(16)}`;
         // §3.3 suffixes session.id with ios|android only — the web build gains `_web` in v4,
         // not here. device.id is suffixed on all three, so the rule can't just be `platform`.
-        return this.platform === "ios" || this.platform === "android"
-            ? `${base}_${this.platform}`
-            : base;
+        return this.isNativePlatform() ? `${base}_${this.platform}` : base;
     }
 
     public setSessionId(id: string) {

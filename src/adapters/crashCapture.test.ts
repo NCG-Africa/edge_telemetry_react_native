@@ -2,11 +2,11 @@ import { describe, it, expect, vi } from "vitest";
 import { buildErrorAttributes, errorType, captureConsole } from "./crashCapture";
 
 function fakeSink() {
-  const calls: Array<{ name: string; data: any }> = [];
+  const calls: Array<{ error: unknown; source?: string }> = [];
   const crumbs: Array<{ name: string; data: any }> = [];
   return {
     sink: {
-      log: vi.fn((name: string, data?: any) => { calls.push({ name, data }); }),
+      captureError: vi.fn((error: unknown, _ctx?: any, source?: any) => { calls.push({ error, source }); }),
       addBreadcrumb: vi.fn((name: string, data?: any) => { crumbs.push({ name, data }); }),
     },
     calls,
@@ -54,7 +54,7 @@ describe("buildErrorAttributes — dotted error.* keys, no wire nulls (§4.7)", 
 
   it("takes the message from a thrown string, and from the fallback for a bare object", () => {
     expect(buildErrorAttributes("reported", "plain string")["error.message"]).toBe("plain string");
-    expect(buildErrorAttributes("cross_origin", undefined, { message: "Script error." })["error.message"])
+    expect(buildErrorAttributes("cross_origin", undefined, { fallbackMessage: "Script error." })["error.message"])
       .toBe("Script error.");
   });
 
@@ -88,9 +88,8 @@ describe("captureConsole — console.error is app.error, console.warn is a bread
     fakeConsole.warn("careful");
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].name).toBe("app.error");                    // never app.crash
-    expect(calls[0].data["error.source"]).toBe("console");
-    expect(calls[0].data["error.message"]).toBe("oops 1");
+    expect(calls[0].source).toBe("console");   // captureError only ever emits app.error
+    expect(calls[0].error).toBe("oops 1");
 
     expect(crumbs).toEqual([{ name: "console.warn", data: { message: "careful" } }]);
 
@@ -103,16 +102,26 @@ describe("captureConsole — console.error is app.error, console.warn is a bread
   });
 
   it("does not recurse when the sink itself writes to console.error", () => {
-    const names: string[] = [];
+    const seen: unknown[] = [];
     const fakeConsole: any = { error: vi.fn(), warn: vi.fn() };
     const sink: any = {
-      log: vi.fn((name: string) => { names.push(name); fakeConsole.error("internal noise"); }),
+      captureError: vi.fn((e: unknown) => { seen.push(e); fakeConsole.error("internal noise"); }),
       addBreadcrumb: vi.fn(),
     };
 
     captureConsole(sink, fakeConsole);
     fakeConsole.error("user error");
 
-    expect(names).toEqual(["app.error"]);
+    expect(seen).toEqual(["user error"]);
+  });
+
+  it("caps the breadcrumb text — 20 uncapped React warnings would bloat every app.crash", () => {
+    const { sink, crumbs } = fakeSink();
+    const fakeConsole: any = { error: vi.fn(), warn: vi.fn() };
+
+    captureConsole(sink, fakeConsole);
+    fakeConsole.warn("w".repeat(5000));
+
+    expect(crumbs[0].data.message.length).toBe(200);
   });
 });

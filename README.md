@@ -122,7 +122,7 @@ type TelemetryOpts = {
   endpoint?: string;        // full collector POST URL (used verbatim). Default is a placeholder — always set it
   batchSize?: number;       // events per flush. Default 50 (matches the Android and iOS SDKs)
   flushIntervalMs?: number; // periodic flush. Default 30000; <= 0 disables the timer
-  captureConsole?: boolean; // funnel console.error/warn into app.crash. Default on (opt-out)
+  captureConsole?: boolean; // console.error -> app.error, console.warn -> a breadcrumb. Default OFF
   debug?: boolean;          // SDK-internal console diagnostics. Default false (silent)
   sender?: Sender;          // override the transport (mainly for tests)
 };
@@ -145,9 +145,22 @@ All methods return Promises. Available on both platforms unless marked **native-
 
 ```typescript
 log(event: string, data?: Record<string, any>): Promise<void>   // custom event (see allowlist note)
+captureError(error: unknown, context?): Promise<void>            // report a handled error as app.error
 flush(): Promise<void>                                           // force-send the queue now
 shutdown(): Promise<void>                                        // clear the flush timer + final flush
 ```
+
+```typescript
+try {
+  await pay();
+} catch (err) {                         // `unknown` — a string, a plain object or an Error
+  await telemetry.captureError(err, { "checkout.step": "pay" });
+}
+```
+
+> **`app.crash` is SDK-owned.** It is emitted only for *unhandled* errors, so
+> `COUNT(event_name='app.crash') / sessions` is a crash-free rate with no `WHERE` clause to
+> forget. `log("app.crash", …)` is routed to `app.error` instead of manufacturing a crash row.
 
 > **Allowlist note:** only the allowlisted event names reach the backend as-is. Any other name
 > you pass to `log()` is shipped as `custom_event` with your original name in
@@ -231,15 +244,18 @@ Auto-started in the constructor (both platforms unless noted):
 | Screen dwell time | `screen.duration` | event |
 | HTTP request (fetch/XHR) | `http.request` | event |
 | Connectivity change | `network_change` | event |
-| JS error / crash / (opt-out) console errors | `app.crash` | event |
+| Unhandled JS error / promise rejection | `app.crash` | event |
+| `captureError()` / (opt-in) `console.error` | `app.error` | event |
 | Identity update via `identify()` | `user.profile.update` | event |
 | Tap (native, best-effort) | `user.interaction` | event |
 | Custom `log()` name (non-allowlisted) | `custom_event` | event |
 | Memory sample | `memory_usage` | metric |
 | Frame render window | `frame_render_time` | metric |
 
-`app.crash` carries a `cause` discriminator and `crash.breadcrumbs` (last 20 actions,
-JSON-stringified). Sessions rotate after 30 minutes of inactivity; `session.finalized` flushes
+Both error events carry `error.type` (from `error.name`, never the minified `constructor.name`),
+`error.source` — `global_handler` | `unhandled_rejection` | `cross_origin` | `console` | `reported`
+— and, when present, `error.message` / `error.stacktrace`. `error.fatal` is **native-only**;
+`error.breadcrumbs` (last 20 actions, JSON-stringified) rides `app.crash` only. Sessions rotate after 30 minutes of inactivity; `session.finalized` flushes
 immediately and includes a journey summary + `sdk.error_count`.
 
 **Web-only signals** (`page_load`, `resource_timing`, `long_task`, and Web Vitals

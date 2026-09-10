@@ -28,7 +28,10 @@ export abstract class TelemetryBase {
         // dropped: a reported error is data, it just isn't a crash. (#100)
         if (event === "app.crash") {
             debug.warn("app.crash is SDK-owned (§4.7); routing to app.error — use captureError()");
-            return inst.captureError(data?.["error.message"], data);
+            // The whole bag still rides as context; this only decides which key gets promoted
+            // to `error.message`. `crash.message` is here for v3 callers the rename stranded.
+            const message = data?.["error.message"] ?? data?.["message"] ?? data?.["crash.message"];
+            return inst.captureError(message, data);
         }
         return inst.log(event, data);
     }

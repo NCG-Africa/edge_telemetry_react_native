@@ -133,6 +133,7 @@ describe("app.crash on native — error.fatal and the breadcrumb trail (§4.7)",
 
     const err = sent.find((e) => e.eventName === "app.error")!;
     expect(err.attributes!["error.source"]).toBe("console");
+    expect(err.attributes!["error.fatal"]).toBe(false);
     expect(sent.some((e) => e.eventName === "app.crash")).toBe(false);
     expect("error.breadcrumbs" in err.attributes!).toBe(false);
   });
@@ -151,6 +152,9 @@ describe("captureError on native (§4.7)", () => {
     expect(err["error.source"]).toBe("reported");
     expect(err["error.type"]).toBe("Error");
     expect(err["error.message"]).toBe("gateway");
+    // error.fatal is native-only and nothing reported is fatal — so `false`, not omitted.
+    // The web build omits the key entirely (see error.web.test.ts).
+    expect(err["error.fatal"]).toBe(false);
     expect(sent.some((e) => e.eventName === "app.crash")).toBe(false);
   });
 });

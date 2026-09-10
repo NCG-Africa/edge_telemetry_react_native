@@ -26,6 +26,12 @@ function harness() {
 const attrsOf = (sent: TelemetryEvent[], name: string) =>
   sent.find((e) => e.eventName === name)!.attributes!;
 
+/** Let the ctor's fire-and-forget trackErrors() finish its dynamic import and attach. */
+async function settle(t: any) {
+  await (t as any).instancePromise;
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+
 describe("captureError — the one public error path (§4.7)", () => {
   it("accepts an Error, a string and a plain object, and emits app.error every time", async () => {
     silenceConsole();
@@ -101,6 +107,40 @@ describe("captureError — the one public error path (§4.7)", () => {
     expect(typeof a["rum.action.id"]).toBe("string");
     expect("span.id" in a).toBe(false);
     expect("span.duration_ms" in a).toBe(false);
+  });
+});
+
+describe("cross_origin — the instrumentation gap, not a mystery Error (§4.7)", () => {
+  it("stamps cross_origin when window.onerror arrives with error === undefined", async () => {
+    silenceConsole();
+    const handlers: any = {};
+    vi.stubGlobal("window", {
+      set onerror(h: any) { handlers.onerror = h; },
+      set onunhandledrejection(h: any) { handlers.rejection = h; },
+      addEventListener: () => {},
+    });
+
+    const { t, sent } = harness();
+    await settle(t);                                 // the ctor's trackErrors() attaches async
+
+    // A bundle served from a CDN without CORS headers: "Script error.", no stack, no error object.
+    handlers.onerror("Script error.", "", 0, 0, undefined);
+    await settle(t);
+    await t.flush();
+
+    const a = attrsOf(sent, "app.crash");
+    expect(a["error.source"]).toBe("cross_origin");
+    expect(a["error.message"]).toBe("Script error.");
+    expect("error.stacktrace" in a).toBe(false);
+    expect("error.fatal" in a).toBe(false);          // web omits it — nothing here is fatal
+
+    // ...and a real error object on the same hook is a global_handler, not this rung.
+    handlers.onerror("boom", "", 0, 0, new Error("boom"));
+    await settle(t);
+    await t.flush();
+    expect(sent.filter((e) => e.eventName === "app.crash")
+      .map((e) => e.attributes!["error.source"]))
+      .toEqual(["cross_origin", "global_handler"]);
   });
 });
 
