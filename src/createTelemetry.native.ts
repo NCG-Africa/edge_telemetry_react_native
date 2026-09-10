@@ -2,6 +2,7 @@ import { TelemetryNative } from "./index.native";
 import type { Store } from "./core/store";
 import type { BeforeSend } from "./core/beforeSend";
 import { normalizeAllowlist } from "./adapters/traceHeader";
+import { setDebug } from "./core/debug";
 
 export type TelemetryOpts = {
     apiKey: string;             // required credential; must start with "edge_" (API key or JWT, #90)
@@ -42,8 +43,11 @@ export function createTelemetry(opts: TelemetryOpts) {
     // §6.4's dev throw has to happen *here*, synchronously: the core Telemetry is built
     // inside `instancePromise`, which deliberately never rethrows, so a throw down there
     // would be a silently rejected promise instead of the loud config error dev asks for.
-    // In production the same call drops the bad entry and warns. It runs again in
-    // TraceManager, where it is idempotent.
+    // In production it drops the bad entry and reports through debug() — which is why the
+    // gate has to be open first: the entry ctor's own setDebug() runs *after* this line, so
+    // without this the production report would be a guaranteed no-op even with debug: true.
+    // It runs again in TraceManager, where it is idempotent.
+    setDebug(opts?.debug ?? false);
     normalizeAllowlist(opts?.traceHostAllowlist);
     return new TelemetryNative(opts);
 }

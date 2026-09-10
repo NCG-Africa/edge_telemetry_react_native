@@ -453,8 +453,10 @@ cannot break a consumer's network calls on day one. It is **constructor-only**, 
 predicates, no same-origin exemption: listing a host is the consumer's assertion that *that
 host's* CORS config allows the header, and you cannot make that assertion over a pattern.
 
-A **malformed entry throws in `__DEV__` and is dropped-and-warned in production** — a RUM SDK
-crashing a shipped banking app over a config typo is the one failure worse than no tracing.
+A **malformed entry throws in `__DEV__` and is dropped in production**, reported through
+`debug()` — so it is silent unless the consumer passed `debug: true`, like every other
+SDK-internal diagnostic. A RUM SDK crashing a shipped banking app over a config typo is the one
+failure worse than no tracing.
 The throw is raised in the **synchronous `createTelemetry()` factory**, not in core: core is
 built inside `instancePromise`, which deliberately never rethrows, so a throw there would be a
 silently rejected promise instead of the loud config error dev is asking for.

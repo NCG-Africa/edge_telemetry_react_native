@@ -604,9 +604,11 @@ inconsistencies_and_surprises: >
       which keeps the port. Do not join them. Empty by default: v4 is dark on upgrade.
       evidence src/adapters/traceHeader.ts; traceManager.ts requestTrace()/decide();
       xhrIntercept.ts setRequestHeader patch; web/interceptFetchWeb.web.ts.
-  30. #99: a MALFORMED allowlist entry throws in __DEV__ and is dropped-and-warned in production
-      — a stated divergence from Android's unconditional require(). The throw is raised in the
-      SYNCHRONOUS createTelemetry() factory, not in core: the core Telemetry is built inside
+  30. #99: a MALFORMED allowlist entry throws in __DEV__ and is dropped in production, reported
+      via debug() and therefore SILENT unless debug: true — a stated divergence from Android's
+      unconditional require(). The factory calls setDebug() before validating, because the entry
+      ctor's own setDebug() runs after and the report would otherwise be a guaranteed no-op.
+      The throw is raised in the SYNCHRONOUS createTelemetry() factory, not in core: it is built inside
       instancePromise, which deliberately never rethrows, so a throw there would be a silently
       rejected promise. A direct `new TelemetryWeb()` therefore skips the throw — the same gap
       apiKey already has (see 17).

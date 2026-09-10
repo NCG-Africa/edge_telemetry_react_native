@@ -109,7 +109,7 @@ export class TraceManager {
      * `parent.span.id`. No `span.duration_ms` either: roots derive theirs server-side.
      */
     launchRootAttributes(): TraceAttributes {
-        return spanKeys(this.launch, true, this.launch.spanStartMs);
+        return spanKeys(this.launch, true, this.launch.spanStartMs).keys;
     }
 
     /**
@@ -120,7 +120,7 @@ export class TraceManager {
      */
     viewSpan(entryAt: number): TraceAttributes {
         const { root, isRoot } = this.attach("navigation", entryAt);
-        return spanKeys(root, isRoot, entryAt);
+        return spanKeys(root, isRoot, entryAt).keys;
     }
 
     /**
@@ -158,8 +158,9 @@ export class TraceManager {
         const { root, isRoot, attribution } = this.attach("request", startedAt);
         const outcome: TraceOutcome | undefined =
             decision === "inject" ? attribution : decision;
+        const span = spanKeys(root, isRoot, startedAt);
         const keys: TraceAttributes = {
-            ...spanKeys(root, isRoot, startedAt),
+            ...span.keys,
             ...(outcome ? { "traceparent.outcome": outcome } : {}),
         };
         // `span.duration_ms` is Tier 1 **children only** (§6.1) — a root's is derived.
@@ -168,7 +169,7 @@ export class TraceManager {
             : (endedAt: number) => ({ ...keys, "span.duration_ms": Math.max(0, endedAt - startedAt) });
 
         return decision === "inject"
-            ? { finish, header: formatTraceparent(root.traceId, String(keys["span.id"])) }
+            ? { finish, header: formatTraceparent(root.traceId, span.spanId) }
             : { finish };
     }
 
@@ -305,13 +306,17 @@ export class TraceManager {
  * self-join. `trace.root_type` is denormalized onto every child so launch traffic separates
  * from tap traffic without joining back to the root.
  */
-function spanKeys(root: Root, isRoot: boolean, spanStartMs: number): TraceAttributes {
+function spanKeys(root: Root, isRoot: boolean, spanStartMs: number): { keys: TraceAttributes; spanId: string } {
+    const spanId = isRoot ? root.spanId : mintSpanId();
     return {
-        "trace.id": root.traceId,
-        "span.id": isRoot ? root.spanId : mintSpanId(),
-        ...(isRoot ? {} : { "parent.span.id": root.spanId }),
-        "rum.action.id": root.spanId,
-        "trace.root_type": root.rootType,
-        "span.start_time": new Date(spanStartMs).toISOString(),
+        spanId,
+        keys: {
+            "trace.id": root.traceId,
+            "span.id": spanId,
+            ...(isRoot ? {} : { "parent.span.id": root.spanId }),
+            "rum.action.id": root.spanId,
+            "trace.root_type": root.rootType,
+            "span.start_time": new Date(spanStartMs).toISOString(),
+        },
     };
 }
