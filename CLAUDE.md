@@ -318,8 +318,15 @@ join-free convenience.
 defect where `attachNavigation` never touched `inst.screens` — so a React Navigation consumer
 emitted `navigation` on every route change and **never a single `screen.duration`**. A deprecated
 event therefore starts firing where it never has, and its v4 volume goes *up*. Both are gated on
-the `deprecatedScreenFeeds` opt, which the **web** entry sets `false`: web has never emitted either
-and a shared `attachNavigation` must not be what starts it.
+the `deprecatedScreenFeeds` opt, which the **web** entry sets `false` so a now-shared
+`attachNavigation` cannot start `screen.duration` on a build that has never had it. ⚠ The flag does
+**not** silence `navigation` on web — `navigationWeb.web.ts`'s history path emits it directly, as
+it always has. §4.0 says web should emit neither; closing that is a separate change.
+
+**The background boundary must be awaited before the flush.** `AppLifecycleEmitter.onState` returns
+a promise for exactly this reason: on native, backgrounding forces a `flush()` because the queue
+only lives in memory, and the `view` row the boundary emits is the row that flush exists to rescue.
+Firing the flush on the next line sends the batch before the row is enqueued.
 
 ### The Store port
 
@@ -584,6 +591,18 @@ coordination.
   route change still charges the departing screen's frames to the arriving one.
 - The deprecated web `navigation` event still carries `location.pathname + search` raw, query
   string included. `http.request` and `view.name` are both clean; this feed is not.
+- **`view.id` is resolved at log time, not frozen at span start** (§3.1). Point events are
+  unaffected — they have no span — but an `http.request` that completes after a route change is
+  attributed to the view it *landed* in, and `view.request_count` therefore counts requests
+  completed in the view where §4.5.2 counts requests *started* in it. The freeze arrives with the
+  span/trace work (§6); there is no `trace.id` / `span.id` on the wire yet at all.
+- **A lower rung swallows its own boundary.** §4.5.1's "a lower rung arriving later does not
+  overwrite a higher one" is implemented literally, so a host that calls `screenStart()` once and
+  then relies on `attachNavigation` pins the view to that explicit name: route changes stop minting
+  successors and dwell keeps accruing under the stale name. The rule exists because two rungs
+  normally describe *one* navigation (the upgrade window), and §4.5 separately makes route change an
+  unconditional boundary — the two readings conflict and it needs a contract ruling, not a local
+  invention. Until then: call `screenStart()` per screen, or don't mix it with `attachNavigation`.
 
 ---
 

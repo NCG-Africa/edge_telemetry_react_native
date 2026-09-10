@@ -226,10 +226,11 @@ type Opts = {
     // all land — that window is the reason, and it is not negotiable.
     beforeSend?: BeforeSend;
     sessionSampleRate?: number; // 0.0-1.0, sticky per session; default 1 (send everything)
-    // The deprecated native screen feeds — `navigation` and `screen.duration` (§4.11).
-    // Defaults on, because shared core's v3 behaviour *is* the native one; the web entry is
-    // the build that opts out, having never emitted either. Config from the entry, which is
-    // the platform split point — not a branch inside shared code.
+    // The deprecated native screen feeds — `navigation` and `screen.duration` (§4.11) — on
+    // the ROUTE path. Defaults on, because shared core's v3 behaviour *is* the native one;
+    // the web entry opts out, having never emitted `screen.duration` at all. It does not
+    // silence web's own history path, which still emits `navigation`. Config from the entry,
+    // which is the platform split point — not a branch inside shared code.
     deprecatedScreenFeeds?: boolean;
 };
 

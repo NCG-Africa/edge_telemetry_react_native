@@ -452,6 +452,20 @@ inconsistencies_and_surprises: >
       live-synced. Two tabs open at once share the localStorage record but keep their own
       in-memory lastActivity, so they can diverge and both finalize the same session.id. A
       `storage`-event listener would close it; not built (no AC asked for it).
+  14a. #96: view.id is resolved at LOG time, not frozen at span start (contract 3.1). Point events
+      are unaffected, but an http.request completing after a route change is attributed to the view
+      it LANDED in, so view.request_count counts requests completed in the view where 4.5.2 counts
+      requests STARTED in it. The freeze ships with the span/trace work (contract 6); no trace.id or
+      span.id exists on the wire yet.
+  14b. #96: a LOWER rung swallows its own boundary. 4.5.1's "a lower rung arriving later does not
+      overwrite a higher one" is implemented literally, so screenStart() once + attachNavigation
+      pins the view to the explicit name — route changes stop minting successors and dwell accrues
+      under the stale name. 4.5 separately makes route change an unconditional boundary; the two
+      readings conflict and need a contract ruling. Workaround: call screenStart() per screen, or
+      do not mix it with attachNavigation.
+  14c. #96: view.loading_time_outcome is "never null" in the 4.5 table but ships with
+      view.loading_time or not at all, and 4.5.2 is out of scope for #96. Both omitted; needs
+      sign-off that an outcome without a measurement is not wanted.
   14. #96's `view` event needs the backend allowlist to accept the name before it ships — an
       unlisted eventName is dropped on ingest. It IS in the SDK's ALLOWED_NAMES, so it is emitted.
   15. view.name is mutable within a view's lifetime: rows emitted in the upgrade window (typically

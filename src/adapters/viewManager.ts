@@ -74,7 +74,13 @@ export class ViewManager {
      * - a **higher** rung re-stamps the name and never changes `view.id` — that is what
      *   "rank beats order" means, and it is why a route name arriving after a URL-derived
      *   one upgrades the view in place instead of splitting it in two;
-     * - a **lower** rung is ignored outright, whenever it arrives;
+     * - a **lower** rung is ignored outright, whenever it arrives — ⚠ *including its
+     *   boundary*. A host that mixes rung 1 with `attachNavigation` therefore pins the view
+     *   to the `screenStart` name until the next `screenStart`: route changes stop minting
+     *   successors, and dwell keeps accruing under the explicit name. That is what §4.5.1's
+     *   "a lower rung arriving later does not overwrite a higher one" costs, and the two
+     *   rungs describing one navigation (the upgrade window) is the case it exists for.
+     *   It needs a contract ruling, not a local invention — see CLAUDE.md's known gaps;
      * - the **same** rung naming a different screen is a genuine navigation, so it ends the
      *   view and mints a successor.
      *
@@ -103,9 +109,9 @@ export class ViewManager {
      *
      * `view.loading_time` / `.loading_time_outcome` are deliberately not emitted yet (#96).
      */
-    endView(): Promise<void> {
+    async endView(): Promise<void> {
         const v = this.view;
-        return Promise.resolve(this.telemetry.log("view", {
+        await this.telemetry.log("view", {
             ...(this.host ? { "view.host": this.host } : {}),
             "view.referrer": v.referrer,
             "view.load_type": v.loadType,
@@ -114,7 +120,7 @@ export class ViewManager {
             "view.error_count": v.errors,
             "view.action_count": v.actions,
             "view.request_count": v.requests,
-        })).then(() => undefined);
+        });
     }
 
     /**
@@ -123,22 +129,22 @@ export class ViewManager {
      * An unnamed successor carries the departing view's name: backgrounding and a session
      * rotation do not move the user off the screen they were on.
      */
-    beginView(loadType: ViewLoadType, name?: string, source?: ViewNameSource): void {
+    beginView(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): void {
         const prev = this.view;
         this.view = {
             id: mintViewId(),
             name: name ?? prev.name,
             source: source ?? prev.source,
             referrer: prev.name,
-            loadType,
+            loadType: successorLoadType,
             elapsed: 0, resumedAt: Date.now(), errors: 0, actions: 0, requests: 0,
         };
     }
 
     /** A boundary that stays inside one session: emit, then mint the successor. */
-    async exit(loadType: ViewLoadType, name?: string, source?: ViewNameSource): Promise<void> {
+    async exit(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): Promise<void> {
         await this.endView();
-        this.beginView(loadType, name, source);
+        this.beginView(successorLoadType, name, source);
     }
 
     /**

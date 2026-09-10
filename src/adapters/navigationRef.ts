@@ -30,7 +30,8 @@ export class NavigationRefTracker {
                 debug.log(`NavigationRefTracker: route changed to ${route}`);
                 const from = this.currentRoute ?? "init";
                 this.currentRoute = route;
-                void this.telemetry.recordRouteChange(from, route);
+                this.telemetry.recordRouteChange(from, route)
+                    .catch((err) => debug.warn("NavigationRefTracker: route change failed:", err));
             }
         });
     }

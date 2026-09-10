@@ -1,4 +1,5 @@
 import { Telemetry } from "../../core/telemetry";
+import { debug } from "../../core/debug";
 import { NavigationTracker } from "../navigationTracker";
 import { normalizeRoute } from "../httpAttributes";
 
@@ -78,6 +79,7 @@ export class NavigationTrackerWeb {
         const from = this.currentPath;
         this.currentPath = newPath;
         void Promise.resolve(this.tracker.recordRouteChange(from, newPath))
-            .then(() => this.telemetry.enterView(normalizeRoute(window.location.pathname), "url"));
+            .then(() => this.telemetry.enterView(normalizeRoute(window.location.pathname), "url"))
+            .catch((err) => debug.warn("NavigationTrackerWeb: route change failed:", err));
     }
 }

@@ -124,11 +124,17 @@ export class TelemetryNative extends TelemetryBase {
         const inst = await this.instancePromise;
         const { AppLifecycleEmitter } = await import("./adapters/appLifecycle");
         const emitter = new AppLifecycleEmitter(inst);
-        emitter.onState(AppState.currentState === "active");   // seed current state
+        // seed current state — a transition-only emitter, so this enqueues nothing
+        emitter.onState(AppState.currentState === "active")
+            .catch((e: any) => debug.warn("app lifecycle seed failed:", e));
         AppState.addEventListener("change", (next: string) => {
             const isActive = next === "active";
-            emitter.onState(isActive);
-            if (!isActive) inst.flush().catch((e: any) => debug.warn("background flush failed:", e));
+            // Awaited before the flush, not fired alongside it: backgrounding is a view
+            // boundary (§4.5) and the `view` row it emits is exactly the row this flush
+            // exists to rescue from the kill that usually follows.
+            emitter.onState(isActive)
+                .then(() => (isActive ? undefined : inst.flush()))
+                .catch((e: any) => debug.warn("background flush failed:", e));
         });
     }
 
