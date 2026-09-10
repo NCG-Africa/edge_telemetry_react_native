@@ -1,5 +1,6 @@
 import { TelemetryNative } from "./index.native";
 import type { Store } from "./core/store";
+import type { BeforeSend } from "./core/beforeSend";
 
 export type TelemetryOpts = {
     apiKey: string;             // required credential; must start with "edge_" (API key or JWT, #90)
@@ -10,6 +11,9 @@ export type TelemetryOpts = {
     captureConsole?: boolean;   // funnel console.error/warn into app.crash (default on, opt-out)
     debug?: boolean;            // SDK-internal diagnostics; off by default (#23)
     store?: Store;              // persisted-state port (#89); either shape — the native path awaits
+    // Constructor-only (§3.6) — there is deliberately no runtime setter for either.
+    beforeSend?: BeforeSend;      // sync scrubbing hook, run at enqueue over events and metrics
+    sessionSampleRate?: number;   // 0.0-1.0, sticky per session, re-rolled at rotation; default 1
 };
 
 // Deliberately loose: `apiKey` is the *credential*, and under AUTH_MODE=jwt it is

@@ -102,6 +102,8 @@ type TelemetryOpts = {
   debug?: boolean;          // SDK-internal diagnostics. Default off
   sender?: Sender;          // override the default platform sender
   store?: Store;            // override the default platform Store (see below)
+  beforeSend?: BeforeSend;    // sync scrubbing hook, run at enqueue (see below)
+  sessionSampleRate?: number; // 0.0-1.0, sticky per session; default 1
 };
 ```
 
@@ -178,7 +180,9 @@ are no standalone `device_info` / `network_info` events in v3.
 session.id, session.start_time (ISO), session.sequence   — all three survive a relaunch (§4.2)
 user.id                — only when the consumer supplied one; omitted on anonymous traffic
 device.id              — SDK-minted, persisted (+ device.id_ephemeral: true when storage failed)
+session.sample_rate    — the rate this session was rolled at; every row of it carries it
 sdk.platform ("react-native"), sdk.version (package.json version)
+sdk.hook_dropped / sdk.hook_failed  — beforeSend counters; separate on purpose
 app.*        name, version, build_number, package_name
 device.*     platform, platform_version, model, manufacturer, brand (+ OS-specific extras)
 network.*    type, is_connected
@@ -226,7 +230,8 @@ traffic growth.
 
 Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
 interface with **no React Native import** — v4 moved `device.id` and session resume into shared
-core, and the sticky sample rate and capped offline store follow, none of which can reach
+core, the sticky sample decision rides in the session record, and the capped offline store
+follows — none of which can reach
 AsyncStorage.
 
 **The sync/async split is load-bearing, not an implementation detail.** `SyncStore`
@@ -249,6 +254,54 @@ implementation — a production-shaped seam, not a test-only affordance — conf
 build's shape. A direct `new Telemetry()` with no injected store falls back to
 `memoryStore({ unavailable: true })`, so shared core never has to special-case a missing one.
 
+### `beforeSend` and `sessionSampleRate`
+
+Both are **constructor-only**, in shared core, on both builds (§3.6). There is deliberately no
+runtime setter: registering one later leaves a window between init and registration where
+`session.started`, the launch root and the earliest `http.request`s have already been enqueued.
+
+**`beforeSend(event) => event | null`** runs **synchronously, at enqueue**, over events *and*
+metrics. At enqueue because a failed send persists the batch through the `Store`, so a
+flush-time hook would let unscrubbed PII hit disk — and on native that disk outlives the
+process. Synchronously because `app.crash` flushes during teardown, and a Promise-returning
+hook would put a host `await` in a dying app's path. Metrics are included because `vital.target`
+is a raw CSS selector, the least sanitised key on the wire.
+
+Three tiers, in `core/beforeSend.ts`, **enforced by re-stamping after the hook returns, never by
+throwing** — the realistic hook is `delete attrs[k]` in a loop and the realistic failure is
+over-deletion, so an over-broad hook must not be able to get a consumer's whole feed silently
+discarded behind a 2xx:
+
+| Tier | Keys | Rule |
+|---|---|---|
+| **A — immutable** | `type`, `eventName`/`metricName`, `timestamp`, `session.id`, `session.start_time`, `session.sequence`, `event.sequence`, all `sdk.*`, all `app.*`, `device.platform`, `trace.id`, `span.id`, `parent.span.id`, `rum.action.id`, `view.id` | replaced wholesale from the original — covers deletion *and* forgery |
+| **B — rewritable, not deletable** | `device.id` | a hashed id is legitimate; a missing one 400s the whole batch at the collector |
+| **C — free** | everything else — `user.*`, `http.*`, `error.*`, `ui.target`, `vital.target`, `user.custom.*`, caller `data` | untouched; this is where the PII lives |
+
+The hook is handed a **copy**, never the queued object: re-stamping from an object the hook has
+already mutated in place would restore nothing and make the tier table decorative.
+
+A hook that **throws fails closed** — the event is dropped, never sent in its original form,
+because a bug in a scrubber must not ship the exact field the scrubber existed to remove.
+Only an explicit `null` counts as a deliberate drop; a hook that hands back anything else that
+isn't an event (a forgotten `return`, a string) is a bug and books as *failed*. The two outcomes
+are counted **separately** on the Context block — `sdk.hook_failed` (broken) and `sdk.hook_dropped` (working) — because "my volume
+is down 40%" has to distinguish them and one merged counter answers neither.
+
+**`sessionSampleRate` is sticky per session**: rolled once, re-rolled at each rotation, and
+persisted with the session record (`sampled` + `sampleRate`), so a resume adopts the decision
+rather than re-rolling into a half-sampled session. Never per-event — that would desynchronise
+the per-view counters. A rotation re-rolls at the *configured* rate, not the retired session's.
+
+A **sampled-out session sends nothing at all**: no skeleton record, and **crashes are not
+exempt** — 100% of crashes over 10% of sessions makes the unfiltered crash-free query read 10×
+too high with no `WHERE` available to repair it. The boundary checks still run while sampled
+out, so the rotation that re-rolls the decision happens on schedule. `session.sample_rate` ships
+on every row instead, so extrapolation is arithmetic. An out-of-range or non-finite rate warns
+and falls back to 1: `Math.random() < NaN` is always false and would silently mute a deployment.
+The same range check runs on a **resumed** record — a rate we can't trust loses its stuck
+decision too, and the fresh roll stands, rather than shipping a bad divisor on every row.
+
 ### Session lifecycle
 
 Two boundaries and nothing else (§4.2). **Neither build rotates on a lifecycle transition** —
@@ -264,7 +317,8 @@ queue only lives in memory and that is when the process is most likely to be kil
 Both are checked lazily, in `log()` and again at init. Idle is tested first: a long session that
 also went quiet ended because the user left.
 
-The session record — `{id, start, lastActivity, sequence, eventCount, errorCount}` — is written
+The session record — `{id, start, lastActivity, sequence, eventCount, errorCount, sampled,
+sampleRate}` — is written
 through the `Store` under `telemetry_session` on every non-session event and every acknowledged
 batch. So **process death, tab close, hard reload and bfcache restore all resume** the session
 when the gap is inside the idle window, and on web the record is `localStorage`, hence

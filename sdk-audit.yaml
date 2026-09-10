@@ -140,6 +140,9 @@ common_attributes:
   - {field: session.sequence, type: int, unit: none, always_present: true, evidence: telemetry.ts:617}         # ++ per acknowledged batch
   - {field: sdk.platform, type: string, unit: none, always_present: true, evidence: telemetry.ts:618}          # constant "react-native" (BOTH web & native)
   - {field: sdk.version, type: string, unit: none, always_present: true, evidence: telemetry.ts:619}           # package.json version
+  - {field: session.sample_rate, type: float, unit: none, always_present: true, evidence: telemetry.ts:839}    # 0.0-1.0, the rate THIS session was rolled at (#93); absent => assume 1.0
+  - {field: sdk.hook_dropped, type: int, unit: none, always_present: true, evidence: telemetry.ts:840}         # monotonic; beforeSend returned null — the hook WORKING (#93)
+  - {field: sdk.hook_failed, type: int, unit: none, always_present: true, evidence: telemetry.ts:841}          # monotonic; beforeSend threw — the hook BROKEN (#93)
   # --- device block (from DeviceInfo handler; present when collect() succeeds) ---
   - {field: app.name, type: string, unit: none, always_present: false, evidence: adapters/native/deviceInfo.native.ts:52 / web/deviceInfo.web.ts:16}
   - {field: app.version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:53}
@@ -184,8 +187,8 @@ session:
     session.reason=launch; an expired record is adopted, finalized under its OWN id and
     start_time, then rotated. evidence telemetry.ts:367-403
   persistence: >
-    telemetry_session = {id, start, lastActivity, sequence, eventCount, errorCount}, written on every
-    non-session event and on every acknowledged batch (so a resumed session does not restart
+    telemetry_session = {id, start, lastActivity, sequence, eventCount, errorCount, sampled,
+    sampleRate}, written on every non-session event and on every acknowledged batch (so a resumed session does not restart
     session.sequence at 0). Process death, tab close, hard reload and bfcache restore all resume.
     On web the Store is localStorage, so the session is browser-wide and shared across tabs —
     intended (§4.2). evidence telemetry.ts:422-432, 658, 826
@@ -196,6 +199,19 @@ session:
     foreground=>newSession pair was DELETED in #92, reaching parity by deletion rather than by adding
     one to web. Backgrounding still forces a flush() on native, because the queue only lives in memory
     and the process is then most likely to be killed. evidence index.native.ts:103-119
+  sampling: >
+    sessionSampleRate (constructor-only, default 1) is rolled ONCE per session — Math.random() <
+    rate — and the decision plus the rate it was rolled at travel in the telemetry_session record,
+    so a resume adopts them and a relaunch cannot half-sample a session. A rotation re-rolls at the
+    CONFIGURED rate, not the retired session's. A sampled-out session enqueues nothing at all —
+    no skeleton record, and crashes are NOT exempt (a crash-only exemption makes the unfiltered
+    crash-free query read 1/rate too high). Boundary checks still run while sampled out, so the
+    rotation that re-rolls happens on schedule. An out-of-range or non-finite rate warns and falls
+    back to 1: Math.random() < NaN is always false and would silently mute a deployment. The same
+    range check is applied to a RESUMED record — an untrusted rate loses its stuck decision too,
+    and the fresh constructor roll stands, rather than shipping a bad divisor.
+    session.sample_rate ships on every row so extrapolation is arithmetic (contract 3.6).
+    evidence telemetry.ts:198-205, 384-386, 471-480, 556-560, 760, 839, 882
   id_format: "session_{Date.now()}_{16 hex}" + optional "_{platform}" suffix where platform=ios|android (native only; web has NO suffix). Random via crypto.getRandomValues (#91). evidence telemetry.ts:301-304, utils/uuid.ts:12-18, index.web.ts:38
 
 # ============================================================
@@ -250,6 +266,28 @@ privacy:
     setUserProfile({userId}), truncated to 255, and omitted from the wire until supplied.
     Opt-in host identity via setUserProfile/setUserDetails/identify: fullName, firstName,
     lastName, email, phone, avatar, customAttributes — all shipped verbatim in attributes.
+  scrubbing_hook: >
+    beforeSend(event) => event | null (#93, contract 3.6). Constructor-only on both builds — no
+    runtime setter, because registering later leaves a window where session.started and the earliest
+    requests have already been enqueued. Runs SYNCHRONOUSLY at ENQUEUE (core/beforeSend.ts, called
+    from Telemetry.enqueue at telemetry.ts:907), over events AND metrics: at enqueue so a failed send
+    persists an already-scrubbed batch instead of writing PII to localStorage/AsyncStorage; sync
+    because app.crash flushes during teardown. Three tiers, enforced by RE-STAMPING after the hook
+    returns and never by throwing — Tier A immutable (type, eventName/metricName, timestamp,
+    session.id, session.start_time, session.sequence, event.sequence, all sdk.*, all app.*,
+    device.platform, trace.id,
+    span.id, parent.span.id, rum.action.id, view.id), Tier B rewritable-not-deletable (device.id —
+    deleting it 400s the batch at the collector), Tier C free (user.*, http.*, error.*, vital.target,
+    caller data). The hook receives a COPY, so an in-place `delete attrs[k]` cannot defeat the
+    re-stamp. A throwing hook FAILS CLOSED (event dropped, sdk.hook_failed++) rather than shipping
+    the field it existed to remove; returning null (or nothing) drops it as sdk.hook_dropped++.
+    Does NOT cover the collector-added geo block, which is attached after the request leaves the
+    device (contract 2.2). KNOWN LAG: both counters are stamped by collectContext() BEFORE the
+    hook runs on that row, so a drop first surfaces on the NEXT row and a session's final dropped
+    row never reports its own drop — the same "lossy about their own loss" shape contract 3.7
+    describes for sdk.events_dropped. Alerting on the number under-reports exactly when the hook
+    is worst.
+    evidence core/beforeSend.ts, core/beforeSend.test.ts, telemetry.ts:905-916
   pii_risks: >
     HIGH surface. (1) email/phone/fullName/avatar sent plaintext once profile set.
     (2) http.url carries full URLs incl. query strings (tokens/PII in query params leak).
@@ -262,7 +300,7 @@ privacy:
 # 6. Public API surface
 # ============================================================
 api:
-  init_config_options: [apiKey (required, must start with "edge_"), sender, batchSize, flushIntervalMs, endpoint, captureConsole, debug, store]   # evidence createTelemetry.web.ts:4-13 / .native.ts; assertApiKey validates edge_ prefix
+  init_config_options: [apiKey (required, must start with "edge_"), sender, batchSize, flushIntervalMs, endpoint, captureConsole, debug, store, beforeSend, sessionSampleRate]   # evidence createTelemetry.web.ts:4-13 / .native.ts; assertApiKey validates edge_ prefix
   exported_ports:
     store: |
       Store port (#89). Narrow get/set/remove over persisted state, declared in shared core
@@ -276,8 +314,8 @@ api:
       device.id_ephemeral reports (#91). memoryStore() ships as an in-memory implementation
       configurable to either shape, and memoryStore({unavailable:true}) is shared core's fallback
       when no store is injected. Consumers today: both senders' offline queue, and core's
-      persisted device.id (#91) and the resumable session record (#92). Still pending: sticky
-      sample rate, capped offline store.
+      persisted device.id (#91), the resumable session record and the sticky sample decision that
+      rides in it (#92, #93). Still pending: capped offline store.
       evidence core/store.ts, core/memoryStore.ts, adapters/web/store.web.ts,
       adapters/native/store.native.ts, telemetry.ts:169, index.web.ts / index.native.ts
   custom_event_api: "log(event: string, data?: Record<string, any>): Promise<void>"   # index.base.ts:21-24
@@ -297,6 +335,7 @@ api:
 # 7. Feature checklist
 # ============================================================
 features:
+  sampling-and-scrubbing: {status: done, evidence: "core/beforeSend.ts + telemetry.ts:198-205, 384-386, 760, 882, 905-916", notes: "sessionSampleRate sticky per session and re-rolled at rotation; beforeSend sync at enqueue over events and metrics with A/B/C tier re-stamping and fail-closed (#93). Both constructor-only, both builds, shared core."}
   session-tracking: {status: done, evidence: "telemetry.ts:367-474 + index.native.ts:77, index.web.ts:60", notes: "resume through the Store across process death; 30-min idle + 4-hour cap; session.reason on started/finalized; no lifecycle rotation on either build (#92)"}
   view-tracking: {status: done, evidence: screenTiming.ts + navigationTracker.ts, notes: "navigation (route + screenStart) and screen.duration events"}
   error-capture: {status: done, evidence: crashCapture.ts + crashHandler.web.ts/crashHandlerNative.native.ts, notes: "JS errors, unhandled rejections, console.error/warn -> app.crash"}
