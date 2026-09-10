@@ -53,13 +53,6 @@ export interface NetworkInfo {
     is_connected?: boolean;
 }
 
-export interface WebExtraNetworkInfo {
-    type?: string;
-    isConnected?: boolean;
-    downlink?: number;      // Mbps estimate
-    effectiveType?: string; // "4g", "3g", etc.
-}
-
 export interface NetworkInfoHandler {
     start(telemetry: Telemetry): Promise<NetworkInfo>;
     collect(): Promise<NetworkInfo>;

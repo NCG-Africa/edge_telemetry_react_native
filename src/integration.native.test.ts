@@ -4,8 +4,9 @@ import type { TelemetryEvent } from "./core/telemetry";
 // Native mirror of integration.web.test.ts: drive the public API through
 // createTelemetry({ sender }) and assert on what reaches the injected Sender.
 // Platform APIs are module-stubbed; nothing reaches into private manager state.
+const platform = vi.hoisted(() => ({ OS: "android" }));
 vi.mock("react-native", () => ({
-  Platform: { OS: "android" },
+  Platform: platform,
   AppState: { currentState: "active", addEventListener: () => {} },
 }));
 
@@ -20,7 +21,7 @@ vi.mock("react-native-device-info", () => ({
     getManufacturer: async () => "Google",
     getModel: async () => "Pixel 8",
     getSystemVersion: async () => "14",
-    getSystemName: async () => "Android",
+    getSystemName: async () => (platform.OS === "ios" ? "iOS" : "Android"),
     getDeviceName: async () => "dev",
     getApiLevel: async () => 34,
     getFingerprint: async () => "fp",
@@ -76,6 +77,20 @@ describe("createTelemetry (native) — Context keys are snake_case on the wire (
     expect(a["device.android_release"]).toBe("14");
     expect(Object.keys(a)).toContain("device.ios_system_name");   // undefined off-iOS
     expect(a["network.is_connected"]).toBe(true);
+  });
+
+  // device.ios_system_name is the one key with no value off-iOS; assert it carries
+  // one when it should, or the respelling is only presence-checked.
+  it("ships device.ios_system_name with a value on iOS", async () => {
+    silenceConsole();
+    platform.OS = "ios";
+    try {
+      const a = await firstEventAttributes();
+      expect(a["device.ios_system_name"]).toBe("iOS");
+      expect(Object.keys(a)).not.toContain("device.iosSystemName");
+    } finally {
+      platform.OS = "android";
+    }
   });
 
   it("ships none of the old camelCase spellings", async () => {

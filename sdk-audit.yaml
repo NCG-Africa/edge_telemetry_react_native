@@ -131,8 +131,8 @@ common_attributes:
   # --- device block (from DeviceInfo handler; present when collect() succeeds) ---
   - {field: app.name, type: string, unit: none, always_present: false, evidence: adapters/native/deviceInfo.native.ts:52 / web/deviceInfo.web.ts:16}
   - {field: app.version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:53}
-  - {field: app.build_number, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:54}
-  - {field: app.package_name, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:55}   # web: window.location.hostname
+  - {field: app.build_number, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:55}
+  - {field: app.package_name, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:56}   # web: window.location.hostname
   - {field: device.id, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:59}         # native getUniqueId(); web "device_{ms}_{uuidv4}_web"
   - {field: device.platform, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:60}   # "ios"|"android"|"web"
   - {field: device.platform_version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:61}
@@ -148,7 +148,7 @@ common_attributes:
   - {field: device.iosDeviceName, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:49}    # ios only
   # --- network block (from NetworkInfo handler) ---
   - {field: network.type, type: string, unit: none, always_present: false, evidence: adapters/native/networkInfo.native.ts:19}    # "wifi"/"cellular"/"unknown"
-  - {field: network.is_connected, type: bool, unit: none, always_present: false, evidence: networkInfo.native.ts:20}
+  - {field: network.is_connected, type: bool, unit: none, always_present: false, evidence: networkInfo.native.ts:19}
   # --- user profile (only when a profile is set; undefined values dropped) ---
   - {field: user.name, type: string, unit: none, always_present: false, evidence: telemetry.ts:558}      # = fullName (v3 contract key)
   - {field: user.fullName, type: string, unit: none, always_present: false, evidence: telemetry.ts:559}
