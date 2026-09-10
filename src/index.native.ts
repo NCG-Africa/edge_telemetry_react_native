@@ -74,7 +74,11 @@ export class TelemetryNative extends TelemetryBase {
 
             // Resume or start the session before the instance is visible (#92), so
             // session.started can never land behind the host app's first event.
-            await telemetry.resumeOrStartSession();
+            // Never rethrown into instancePromise: finalizeSession() flushes, flush() rethrows on a
+            // dead collector, and a rejected instancePromise would brick every public method for the
+            // life of the process. Hydration has already run; only the emission is lost.
+            await telemetry.resumeOrStartSession()
+                .catch(err => debug.warn("Native session resume failed:", err));
 
             return telemetry;
         })();

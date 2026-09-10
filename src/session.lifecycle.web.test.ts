@@ -134,6 +134,37 @@ describe("#92 session continuity — resume across process death", () => {
     expect(names()).not.toContain("session.finalized");
   });
 
+  it("a collector that is down at init does not brick the instance", async () => {
+    // The init rotation finalizes, finalizeSession() flushes, and flush() rethrows. If that
+    // reached instancePromise the SDK would reject every call for the life of the process.
+    const store = memoryStore();
+    const first = launch(store);
+    await first.t.log("custom_event");
+    await first.t.flush();
+
+    vi.setSystemTime(Date.now() + 31 * MIN);   // the relaunch owes a finalize
+
+    const sent: TelemetryEvent[] = [];
+    let down = true;
+    const t = createTelemetry({
+      apiKey: "edge_session",
+      endpoint: "https://x/telemetry",
+      sender: {
+        send: async (e: TelemetryEvent[]) => {
+          if (down) { down = false; throw new Error("collector down"); }
+          sent.push(...e);
+        },
+      },
+      store,
+      batchSize: 50,
+      flushIntervalMs: 0,
+    });
+
+    await expect(t.log("custom_event")).resolves.toBeUndefined();
+    await t.flush();
+    expect(sent.some((e) => e.eventName === "custom_event")).toBe(true);
+  });
+
   it("still starts a session when the Store is unavailable", async () => {
     const store = memoryStore({ unavailable: true });
 

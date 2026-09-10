@@ -57,7 +57,11 @@ export class TelemetryWeb extends TelemetryBase {
             // Resume or start the session before the instance is visible (#92). On web the
             // Store is localStorage, so a hard reload, a bfcache restore and a second tab
             // all resume the same session.
-            await telemetry.resumeOrStartSession();
+            // Never rethrown into instancePromise: finalizeSession() flushes, flush() rethrows on a
+            // dead collector, and a rejected instancePromise would brick every public method for the
+            // life of the process. Hydration has already run; only the emission is lost.
+            await telemetry.resumeOrStartSession()
+                .catch(err => debug.warn("Web session resume failed:", err));
 
             return telemetry;
         })();
