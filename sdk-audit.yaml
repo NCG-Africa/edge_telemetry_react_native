@@ -187,8 +187,11 @@ transport:
     max_attempts: 3 (retryCount default). evidence nativeSender.ts:15, webSender.ts:19
     drop_policy: after 3 failed attempts, core flush() calls sender.onFailure() which persists the batch to storage for later replay. If persistence itself throws, batch is unshifted back onto the in-memory queue. evidence telemetry.ts:640-658
   offline:
-    persistence: native = AsyncStorage key "telemetry_failed_events"; web = localStorage key "telemetry_failed_events". Replayed on next init (replayFailedNative / constructor replayFailed hook). evidence nativeSender.ts:7-12,55-83; webSender.ts:6-13,66-79
-    caps: NONE — persisted array grows unbounded (append-only [...existing, ...events]); no size/count cap, no eviction. evidence nativeSender.ts:10-11, webSender.ts:11-12
+    persistence: both senders go through the Store port (#89) under key "telemetry_failed_events" — native via nativeStore()/AsyncStorage, web via webStore()/localStorage, and each entry hands the SAME store to its sender and to core. Replayed on next init (replayFailedNative / constructor replayFailed hook). evidence adapters/failedEvents.ts, nativeSender.ts:13-29,55-84; webSender.ts:14-32,53-70; index.web.ts / index.native.ts
+    durability_asymmetry: web persists SYNCHRONOUSLY inside onFailure() (webSender.ts:14-22), so the write lands before the promise settles — the unload-path crash window closes. Native awaits (nativeSender.ts:13-21), so it only narrows. This is why the port is not uniformly async.
+    corrupt_payload: a half-written or non-array payload decodes to [] and the key is cleared on any hit, so junk is dropped once instead of being re-read every launch. Previously a bare JSON.parse that threw through replayFailed(). evidence adapters/failedEvents.ts decodeFailed, takeFailed in both senders
+    unavailable_storage: reported by the port as {status:"unavailable"} and logged via debug.warn; never throws out of onFailure(). evidence nativeSender.ts:18-20, webSender.ts:19-21
+    caps: NONE — persisted array grows unbounded (append-only [...existing, ...events]); no size/count cap, no eviction. Capping needs sdk.events_dropped + sdk.drop_reason="store_full" (v4, backend sign-off). evidence adapters/failedEvents.ts encodeFailed
   sampling_or_throttling: >
     No event-level sampling, rate limiting, deduplication, or config flag found anywhere in
     event creation (log/logMetric), queueing, or send paths. Checked telemetry.ts, both senders,

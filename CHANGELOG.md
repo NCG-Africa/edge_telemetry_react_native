@@ -30,7 +30,28 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
   build's shape so the sync/async asymmetry can be tested deliberately; a direct
   `new Telemetry()` with no injected store falls back to `memoryStore({ unavailable: true })`.
 
-  Nothing reads the store yet; this release only lands the seam.
+### Changed
+
+- **Both senders' offline queue now goes through the port.** `webSender` and `nativeSender`
+  no longer touch `localStorage` / `AsyncStorage` directly; each entry builds one store and
+  hands it to both the sender and core, so a consumer who injects a store governs the offline
+  queue too. Same key (`telemetry_failed_events`), so queues written by 3.1.0 still replay.
+
+  Three things fall out of it:
+
+  - **Web persists synchronously, native awaits.** `onFailure()` runs on the unload path, and
+    on web the write has landed before the promise settles — the crash-loss window closes
+    there and only narrows on native. `TelemetryOpts.store` is typed `SyncStore` on the web
+    build for exactly this reason; native takes the union, since it only ever awaits.
+  - **A corrupt queue no longer takes startup down.** The old code was a bare
+    `JSON.parse(stored || "[]")` that threw straight through `replayFailed()` on a
+    half-written payload. Decoding now yields "nothing to replay", and the key is cleared on
+    any hit — so junk is dropped once rather than re-read and re-dropped on every launch.
+  - **Storage being unavailable is logged, not thrown.** The batch is already lost; throwing
+    would only lose the next one too.
+
+  The offline store is still unbounded. Capping it needs `sdk.events_dropped` and
+  `sdk.drop_reason="store_full"` on the wire — v4, and backend sign-off.
 
 ## 3.1.0
 

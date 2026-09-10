@@ -46,6 +46,7 @@ src/
 │   └── utils/uuid.ts      ← randomHex() — one shared impl, no platform split
 ├── adapters/
 │   ├── batch.ts           ← buildBatch(): the telemetry_batch envelope, shared by both senders
+│   ├── failedEvents.ts    ← offline-queue key + decode/encode, shared by both senders
 │   ├── appLifecycle.ts    ← AppLifecycleEmitter (edge-triggered foreground/background)
 │   ├── crashCapture.ts    ← shared crash normalisation → app.crash
 │   ├── httpAttributes.ts  ← shared http.* attribute builder
@@ -139,8 +140,9 @@ X-API-Key: edge_...
 Built by `adapters/batch.ts` so both senders are byte-identical. Web uses
 `fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the API-key header.
 On failure: retried (3 attempts; native exponential + jitter, web linear), then persisted
-(`AsyncStorage` native / `localStorage` web, key `telemetry_failed_events`) and replayed on
-next init.
+**through the `Store` port** under key `telemetry_failed_events` and replayed on next init.
+Neither sender touches `localStorage` / `AsyncStorage` directly any more — the decode rules
+are shared in `adapters/failedEvents.ts`, and web's persist stays synchronous on purpose.
 
 ### Event and Metric
 
@@ -202,8 +204,10 @@ incognito, partitioned iframes, ITP eviction and full disks land there, and that
 what `device.id_ephemeral` reports. Never throw out of a Store, and never collapse
 `unavailable` into `miss`.
 
-Each entry injects its default (`webStore()` / `nativeStore()`); `TelemetryOpts.store`
-overrides. `memoryStore({ async?, unavailable?, seed? })` is a shipped in-memory
+Each entry builds **one** store and hands it to both the sender and core, so an injected
+store governs the offline queue too. `TelemetryOpts.store` overrides it — typed `SyncStore` on
+the web build (its guarantee depends on that) and the `Store` union on native, which only ever
+awaits. The offline queue in `webSender` / `nativeSender` is the port's first consumer. `memoryStore({ async?, unavailable?, seed? })` is a shipped in-memory
 implementation — a production-shaped seam, not a test-only affordance — configurable to either
 build's shape. A direct `new Telemetry()` with no injected store falls back to
 `memoryStore({ unavailable: true })`, so shared core never has to special-case a missing one.
@@ -282,7 +286,9 @@ coordination.
 - No URL sanitisation — `http.url` and web navigation paths keep query strings, so tokens
   and PII in query params ship as-is.
 - `captureConsole` defaults ON, so every `console.error` becomes an `app.crash`.
-- The offline store is **unbounded** — append-only, no cap or eviction.
+- The offline store is **unbounded** — append-only, no cap or eviction. It now goes through
+  the `Store` port, so the cap has somewhere to live, but capping it needs `sdk.events_dropped`
+  and `sdk.drop_reason="store_full"` on the wire — v4, backend sign-off.
 - `http.request_size` is string `.length` (chars), not bytes.
 - No top-level `location` in the envelope, though the contract allows one.
 - `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`

@@ -19,7 +19,7 @@ export class TelemetryNative extends TelemetryBase {
         endpoint?: string;
         captureConsole?: boolean;
         debug?: boolean;
-        store?: Store;
+        store?: Store;   // either shape: the native path awaits
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -43,7 +43,10 @@ export class TelemetryNative extends TelemetryBase {
             const networkInfoTrackerNative = new NetworkInfoTrackerNative();
             const deviceInfoTrackerNative = new DeviceInfoTrackerNative();
 
-            const sender = opts?.sender ?? nativeSender(opts?.endpoint, opts?.apiKey);
+            // One store, shared by the offline queue and core (#89) — so a consumer that
+            // injects a store governs both, instead of the sender quietly keeping its own.
+            const store = opts?.store ?? nativeStore();
+            const sender = opts?.sender ?? nativeSender(opts?.endpoint, opts?.apiKey, store);
 
             const telemetry = new Telemetry({
                 sender,
@@ -53,12 +56,11 @@ export class TelemetryNative extends TelemetryBase {
                 platform,
                 deviceInfoHandler: deviceInfoTrackerNative,
                 networkInfoHandler: networkInfoTrackerNative,
-                // #89: AsyncStorage by default; reads settle later on this build.
-                store: opts?.store ?? nativeStore(),
+                store,
             });
 
             // 🔄 recover failed events right after init
-            replayFailedNative(opts?.endpoint, opts?.apiKey).catch(err => {
+            replayFailedNative(opts?.endpoint, opts?.apiKey, store).catch(err => {
                 debug.warn("Native replay failed:", err);
             });
 

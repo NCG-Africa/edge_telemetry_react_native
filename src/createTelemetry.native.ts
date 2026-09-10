@@ -9,7 +9,7 @@ export type TelemetryOpts = {
     endpoint?: string;
     captureConsole?: boolean;   // funnel console.error/warn into app.crash (default on, opt-out)
     debug?: boolean;            // SDK-internal diagnostics; off by default (#23)
-    store?: Store;              // persisted-state port (#89); defaults per build
+    store?: Store;              // persisted-state port (#89); either shape — the native path awaits
 };
 
 export function assertApiKey(apiKey?: string) {

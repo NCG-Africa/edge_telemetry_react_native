@@ -1,7 +1,7 @@
 // src/index.web.ts
 import { TelemetryBase } from "./index.base";
 import { debug, setDebug } from "./core/debug";
-import type { Store } from "./core/store";
+import type { SyncStore } from "./core/store";
 
 export { createTelemetry, type TelemetryOpts } from "./createTelemetry.web";
 
@@ -19,7 +19,7 @@ export class TelemetryWeb extends TelemetryBase {
         endpoint?: string;
         captureConsole?: boolean;
         debug?: boolean;
-        store?: Store;
+        store?: SyncStore;   // sync only: the web build's guarantee depends on it
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -36,7 +36,10 @@ export class TelemetryWeb extends TelemetryBase {
             const deviceInfoTrackerWeb = new DeviceInfoTrackerWeb();
             const networkInfoTrackerWeb = new NetworkInfoTrackerWeb();
 
-            const sender = opts?.sender ?? webSender(opts?.endpoint, opts?.apiKey);
+            // One store, shared by the offline queue and core (#89) — so a consumer that
+            // injects a store governs both, instead of the sender quietly keeping its own.
+            const store = opts?.store ?? webStore();
+            const sender = opts?.sender ?? webSender(opts?.endpoint, opts?.apiKey, store);
 
             const telemetry = new Telemetry({
                 sender,
@@ -47,8 +50,7 @@ export class TelemetryWeb extends TelemetryBase {
                 // device.platform="web" still rides as an attribute from the adapter.
                 deviceInfoHandler: deviceInfoTrackerWeb,
                 networkInfoHandler: networkInfoTrackerWeb,
-                // #89: localStorage by default; synchronous reads are the web build's guarantee.
-                store: opts?.store ?? webStore(),
+                store,
             });
 
             return telemetry;
