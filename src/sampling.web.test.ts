@@ -125,7 +125,7 @@ describe("#93 beforeSend — the tiers hold on the wire", () => {
     const a = attrsOf(sent, "navigation")[0];
     expect(a["session.id"]).toMatch(/^session_/);
     expect(a["session.start_time"]).toBeDefined();
-    expect(a["sdk.platform"]).toBe("react-native");
+    expect(a["sdk.platform"]).toBe("react-native-web");
     expect(a["sdk.version"]).toBeDefined();
     expect(a["device.id"]).toMatch(/^device_/);          // Tier B: deleting it 400s the batch
     expect(a["navigation.to_screen"]).toBeUndefined();   // Tier C really went

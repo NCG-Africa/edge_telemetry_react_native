@@ -11,6 +11,8 @@ import { QUIET_WINDOW_MS, LOADING_TIME_CAP_MS } from "./adapters/loadingTime";
 
 vi.mock("react-native", () => ({
   Platform: { OS: "android" },
+  Dimensions: { get: () => ({ width: 390, height: 844 }) },
+  PixelRatio: { get: () => 3 },
   AppState: { currentState: "active", addEventListener: () => {} },
 }));
 vi.mock("react-native-get-random-values", () => ({}));

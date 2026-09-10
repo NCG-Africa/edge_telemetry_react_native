@@ -1,5 +1,6 @@
 // adapters/web/deviceInfoWeb.web.ts
 import { DeviceInfo, Telemetry } from "../../core/telemetry";
+import { viewportKeys } from "../viewport";
 
 export class DeviceInfoTrackerWeb {
     private telemetry?: Telemetry;
@@ -10,7 +11,13 @@ export class DeviceInfoTrackerWeb {
     // device.id is NOT collected here (#91): core self-mints and persists it via the Store.
     async collect(): Promise<DeviceInfo> {
         const ua = navigator.userAgent;
-        const platform = navigator.platform;
+
+        // §3.3 ✱ — viewport, read on every collect() because a browser window resizes and a
+        // phone rotates; §3.1 keeps device state on the log-time side of the freeze. The
+        // *viewport*, not `screen.*`: that is the quantity CLS and LCP scale with. Shaped by
+        // the shared `adapters/viewport.ts`, so the key means the same thing native ships.
+        const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+        const viewport = viewportKeys(window.innerWidth ?? 0, window.innerHeight ?? 0, dpr);
 
         return {
             app: {
@@ -29,13 +36,15 @@ export class DeviceInfoTrackerWeb {
                 // Android placeholders
                 android_sdk: undefined,
                 android_release: undefined,
-                fingerprint: undefined,
                 hardware: undefined,
                 product: undefined,
 
                 // iOS placeholders
                 ios_system_name: undefined,
-                iosDeviceName: undefined,
+
+                // `cpu_abi` / `low_ram` are native-only (§3.3's `N`) — a browser exposes
+                // neither, and a fabricated value is worse than an absent key.
+                ...viewport,
             },
         };
     }

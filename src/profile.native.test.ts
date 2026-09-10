@@ -5,6 +5,8 @@ import type { TelemetryEvent } from "./core/telemetry";
 // the assertions are on the wire, not on any manager's private state.
 vi.mock("react-native", () => ({
   Platform: { OS: "android" },
+  Dimensions: { get: () => ({ width: 390, height: 844 }) },
+  PixelRatio: { get: () => 3 },
   AppState: { currentState: "active", addEventListener: () => {} },
 }));
 

@@ -12,6 +12,8 @@ const crash = async (t: any, data?: Record<string, any>) =>
 // store's write is a Promise, so the crash-loss window narrows here rather than closing.
 vi.mock("react-native", () => ({
   Platform: { OS: "android" },
+  Dimensions: { get: () => ({ width: 390, height: 844 }) },
+  PixelRatio: { get: () => 3 },
   AppState: { currentState: "active", addEventListener: () => {} },
 }));
 vi.mock("react-native-device-info", () => ({

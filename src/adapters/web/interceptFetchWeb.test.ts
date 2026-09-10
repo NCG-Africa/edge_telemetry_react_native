@@ -14,6 +14,9 @@ function fakeTelemetry(endpoint?: string) {
       // `views` is not optional on the real core: §4.5.2 books request_count and the settle
       // hold at *send*, so a double without it hides the very wiring these tests cover.
       views: { requestStarted: vi.fn(() => vi.fn()) },
+      // §3.1 — the interceptors freeze attribution at send; the fake need only hand
+      // back a shape, since the freeze is asserted on the wire in integration.*.test.ts.
+      snapshot: () => ({ viewId: "view_1_abc", sessionId: "session_1_abc", sessionStart: 0 }),
       // A real TraceManager, not a stub: §6.2 books the span at *send* too, and the
       // mint-vs-attach decision is exactly what a stub would paper over.
       trace: new TraceManager(),

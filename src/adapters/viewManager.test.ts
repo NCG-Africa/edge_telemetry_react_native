@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { ViewManager, UNKNOWN_VIEW_NAME } from "./viewManager";
+import { ViewManager, UNKNOWN_VIEW_NAME, MAX_RETIRED_VIEW_NAMES } from "./viewManager";
 
 // The name ladder (§4.5.1) in isolation. "Rank beats order" is the whole rule and it is the
 // one thing a later refactor can silently invert, so it is asserted rung by rung.
@@ -182,5 +182,49 @@ describe("ViewManager — onBoundary (§5.1)", () => {
     await vm.navigate("Cart", "route");
     expect(vm.id).not.toBe(home);
     expect(vm.name).toBe("Cart");
+  });
+});
+
+// §3.1 (#108) — `view.name` for a **frozen** `view.id`. A span-carrying row pins itself to
+// the view live at span start; the name is still resolved at log time, so this lookup is
+// what stops a row carrying a name that disagrees with its own id.
+describe("nameOf — §3.1's log-time lookup on a frozen view.id", () => {
+  it("returns the live view's current name, so a rung upgrade shows through", async () => {
+    const { vm } = manager();
+    await vm.navigate("cart", "route");
+    const frozen = vm.id;
+
+    await vm.navigate("Shopping cart", "explicit");   // upgrade: same id, better name
+    expect(vm.id).toBe(frozen);
+    expect(vm.nameOf(frozen)).toBe("Shopping cart");
+  });
+
+  it("returns a retired view's final name after a real navigation", async () => {
+    const { vm } = manager();
+    await vm.navigate("Cart", "route");
+    const cart = vm.id;
+
+    await vm.navigate("Checkout", "route");           // same rung, new name: a navigation
+    expect(vm.id).not.toBe(cart);
+    expect(vm.nameOf(cart)).toBe("Cart");
+    expect(vm.nameOf(vm.id)).toBe("Checkout");
+  });
+
+  it("degrades to the unknown literal for an id it never saw", () => {
+    const { vm } = manager();
+    expect(vm.nameOf("view_1_deadbeefdeadbeef")).toBe(UNKNOWN_VIEW_NAME);
+  });
+
+  it("keeps the last MAX_RETIRED_VIEW_NAMES retired names and evicts the oldest", async () => {
+    const { vm } = manager();
+    await vm.navigate("screen-0", "route");
+    const oldest = vm.id;
+
+    // One boundary past the bound, so `oldest` is the one entry that falls off the ring.
+    for (let i = 1; i <= MAX_RETIRED_VIEW_NAMES + 1; i++) await vm.navigate(`screen-${i}`, "route");
+
+    expect(vm.nameOf(oldest)).toBe(UNKNOWN_VIEW_NAME);
+    // and the ring still names everything inside the bound
+    expect(vm.nameOf(vm.id)).toBe(`screen-${MAX_RETIRED_VIEW_NAMES + 1}`);
   });
 });

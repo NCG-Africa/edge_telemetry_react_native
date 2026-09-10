@@ -57,6 +57,9 @@ export class NetworkTrackerWeb {
                 // own POST is excluded from settle for the same reason it is excluded from
                 // `http.request`: the SDK must not hold a view open with its own traffic.
                 const settled = isCollector ? undefined : telemetry.views.requestStarted(start);
+                // §3.1 — `session.id`, `session.start_time` and `view.id` frozen at send.
+                // No `at`: the row keeps the completion timestamp §4.4 gives it.
+                const snap = isCollector ? undefined : telemetry.snapshot();
                 // §6.3's Tier 1 plus §6.5's outcome ladder, captured at send for the same
                 // reason: the root live *now* is the parent, and a root minted here is this
                 // request's own (§6.2). `init.headers` *replaces* a Request's own headers
@@ -106,7 +109,7 @@ export class NetworkTrackerWeb {
                                 responseSize: contentLengthSize(response?.headers.get("content-length")),
                             }),
                             ...span?.(end),
-                        });
+                        }, snap);
                     }
                 }
             };

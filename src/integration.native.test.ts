@@ -7,6 +7,8 @@ import type { TelemetryEvent } from "./core/telemetry";
 const platform = vi.hoisted(() => ({ OS: "android" }));
 vi.mock("react-native", () => ({
   Platform: platform,
+  Dimensions: { get: () => ({ width: 390, height: 844 }) },
+  PixelRatio: { get: () => 3 },
   AppState: { currentState: "active", addEventListener: () => {} },
 }));
 
@@ -92,7 +94,7 @@ describe("createTelemetry (native) — Context keys are snake_case on the wire (
     expect(a["device.platform_version"]).toBe("14");
     expect(a["device.android_sdk"]).toBe("34");
     expect(a["device.android_release"]).toBe("14");
-    expect(Object.keys(a)).toContain("device.ios_system_name");   // undefined off-iOS
+    expect(Object.keys(a)).not.toContain("device.ios_system_name");   // #108 — omitted off-iOS
     expect(a["network.is_connected"]).toBe(true);
   });
 

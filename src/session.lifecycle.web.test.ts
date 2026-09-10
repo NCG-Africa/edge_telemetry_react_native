@@ -190,7 +190,7 @@ describe("#92 session continuity — resume across process death", () => {
     await t.flush();
 
     expect(attrsOf(sent, "session.started")[0]["session.reason"]).toBe("launch");
-    expect(attrsOf(sent, "custom_event")[0]["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}$/);
+    expect(attrsOf(sent, "custom_event")[0]["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_web$/);
   });
 });
 

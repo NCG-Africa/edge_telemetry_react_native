@@ -6,6 +6,63 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
 ### Added
 
+- **The Context block is frozen at its final 39-key shape** (#108, wire contract §3.3 / §3.4 /
+  §3.1). This is the integration point: every prior ticket contributed keys, this one makes the
+  block match the contract exactly and removes what should never have been there.
+  `src/context.web.test.ts` and `src/context.native.test.ts` assert the set **key by key on both
+  builds, present and omitted** — on this wire absent means "the SDK had nothing", so a key
+  shipped as `undefined` was itself a defect.
+
+  **New keys.** `device.cpu_abi` and `device.low_ram` (native only — "does this crash only on
+  cheap devices?"), and `device.screen_density` / `device.screen_width_px` /
+  `device.screen_height_px` / `device.orientation` on **both** builds, because CLS and LCP scale
+  with the viewport and orientation splits CLS, dwell and interactions alike. All four are read on
+  every event: a window resizes and a phone rotates mid-session.
+
+  **`user.id` is now the only `user.*` key on the Context block.** `user.name` / `.email` /
+  `.phone` / `.custom.*` moved to `user.profile.update` in #107; the six retired fields
+  (`fullName`, `firstName`, `lastName`, `avatar`, `createdAt`, `updatedAt`) have no wire key at
+  all.
+
+### Changed
+
+- ⚠ **`sdk.platform` is now `react-native-{ios|android|web}`**, not the constant `"react-native"`
+  (§3.3, §12's item 10). It joins Flutter's `flutter-{os}` shape, taking the column from three
+  conventions to two. **A saved filter on `sdk.platform = 'react-native'` returns zero rows** —
+  and a web-only or native-only query was not expressible at all before this. The domain is
+  `Platform.OS`-derived and is **not** a closed three-value enum: RN-Windows would emit
+  `react-native-windows`, and a `CHECK` on three values rejects it.
+
+- ⚠ **`session.id` gained its `_web` suffix on the web build** (§3.3, §12's item 13), so
+  `session_{ms}_{16hex}_{ios|android|web}` and `device.id` now follow one rule. A value-shape
+  change; nothing parses it.
+
+- **Attribution freezes at span start** (§3.1). A span-carrying row — `http.request`,
+  `ui.interaction` — now reports the `session.id`, `session.start_time` and `view.id` that were
+  live when the span **started**, not when it was emitted. §4.2's 4-hour cap can rotate a session
+  while a request is in flight, which used to put S1's trace on an S2 row. `view.name` still
+  resolves at **log time**, by lookup on the frozen `view.id`, so a row can never carry a name
+  that disagrees with its own id. Network, device state and `user.*` stay log-time on purpose.
+
+  ⚠ **`ui.interaction` no longer replays its snapshotted `view.name`.** A rung upgrade inside the
+  emit window renames the view *in place* (`view.id` never moves), and the row now shows the
+  upgraded name. The freeze is on the id and the timestamp.
+
+- **An `undefined` attribute value is dropped at the flattener.** Wire-neutral — the sender's
+  `JSON.stringify` already dropped it — but the in-memory bag now matches the wire, so
+  `beforeSend` is never handed a key that would not have shipped. ⚠ One behaviour change:
+  `log("x", { "device.model": undefined })` used to blank the key and now leaves the real value in
+  place, because the override never enters the bag.
+
+### Removed
+
+- ⚠ **`device.fingerprint` and `device.iosDeviceName` are gone outright** (§3.4). The device-info
+  adapter no longer calls `getFingerprint()` or `getDeviceName()` at all: a build string that
+  merges handsets — deleting it *repairs* device identity — and the user's own name for their own
+  phone, which is real PII with no column and no reader. Neither is collected any more.
+
+### Added
+
 - **The profile PII rides `user.profile.update` and nothing else** (#107, wire contract §4.10).
   `user.name` / `user.email` / `user.phone` / `user.custom.*` were on the Context block of
   **every** event, so a 10,000-event session put 10,000 copies of an email address on the wire

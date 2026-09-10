@@ -378,9 +378,10 @@ type TelemetryEvent = {
 ```
 
 Every record carries the flattened **Context block** in `attributes`: `app.*`, `device.*`,
-`network.*`, `session.*`, `device.id`, `user.id` (when set), and `sdk.*` (`sdk.platform = "react-native"`,
-`sdk.version`). This makes each record self-describing and joinable without correlating against
-separate context events.
+`network.*`, `session.*`, `device.id`, `user.id` (when set), `view.id` / `view.name`, and `sdk.*`
+(`sdk.platform = "react-native-{ios|android|web}"`, `sdk.version`). This makes each record
+self-describing and joinable without correlating against separate context events. It is frozen at
+**39 keys** (contract §3.3) — a key the SDK has nothing for is **omitted**, never sent as null.
 
 ---
 
@@ -391,11 +392,11 @@ device OS:
 
 ```
 device_{ms}_{16hex}_{ios|android|web}
-session_{ms}_{16hex}_{ios|android}
+session_{ms}_{16hex}_{ios|android|web}
 ```
 
-The **web build** omits the OS suffix on `session.id` (`device.platform = "web"` still rides as
-an attribute).
+Both ids follow the same rule on all three platforms. ⚠ `session.id` **gained** its `_web` suffix
+in v4 — the value shape changed; nothing parses it.
 
 **`device.id` is ours; `user.id` is yours.** `device.id` is minted once, persisted through the
 `Store` and never rotated — not by `identify()`, not by a user-id change, not by

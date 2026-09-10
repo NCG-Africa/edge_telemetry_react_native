@@ -20,7 +20,7 @@ const appState = vi.hoisted(() => {
     reset() { listeners.length = 0; appState.currentState = "active"; },
   };
 });
-vi.mock("react-native", () => ({ Platform: { OS: "ios" }, AppState: appState }));
+vi.mock("react-native", () => ({ Dimensions: { get: () => ({ width: 390, height: 844 }) }, PixelRatio: { get: () => 3 }, Platform: { OS: "ios" }, AppState: appState }));
 vi.mock("react-native-get-random-values", () => ({}));
 vi.mock("react-native-device-info", () => ({
   default: new Proxy({}, { get: () => async () => "x" }),
