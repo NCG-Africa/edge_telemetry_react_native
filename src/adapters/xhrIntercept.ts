@@ -1,4 +1,5 @@
 import { Telemetry } from "../core/telemetry";
+import type { LogSnapshot } from "../core/telemetry";
 import { buildHttpAttributes, contentLengthSize, isCollectorUrl } from "./httpAttributes";
 import type { TraceAttributes } from "./traceManager";
 import { TRACEPARENT } from "./traceHeader";
@@ -33,6 +34,13 @@ interface PendingRequest {
      * by `open()`, which per spec clears the author request headers anyway.
      */
     consumerTraceparent?: string;
+    /**
+     * §3.1's attribution freeze: `session.id`, `session.start_time` and `view.id` as they
+     * were at `send()`. The 4-hour cap can rotate a session *while this request is in
+     * flight*, which would otherwise put S1's trace on an S2 row. No `at` — the row still
+     * reports its completion timestamp (§4.4).
+     */
+    snap?: LogSnapshot;
 }
 
 interface PatchedXhr extends XMLHttpRequest {
@@ -92,6 +100,7 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
         // held open by the SDK's own traffic (§4.5.2).
         if (!isCollectorUrl(req.url, telemetry.getEndpoint?.())) {
             req.settled = telemetry.views.requestStarted(req.start);
+            req.snap = telemetry.snapshot();
             // Mints a `request` root when nothing is live, and extends the live one otherwise
             // (§6.2), and resolves §6.5's outcome ladder. Same gate as settle: the SDK's own
             // POST neither holds a view open, starts an action, nor carries an outcome.
@@ -135,7 +144,7 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
                         responseSize: contentLengthSize(this.getResponseHeader?.("content-length")),
                     }),
                     ...done.span?.(end),
-                });
+                }, done.snap);
             });
         }
 

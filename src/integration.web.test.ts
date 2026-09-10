@@ -41,10 +41,10 @@ describe("createTelemetry (web) — public API → wire", () => {
     expect(typeof e.timestamp).toBe("string");
 
     const a = e.attributes!;
-    expect(a["sdk.platform"]).toBe("react-native");
+    expect(a["sdk.platform"]).toBe("react-native-web");
     expect(a["sdk.version"]).toBe(PKG_VERSION);   // tracks package.json, not a pinned literal
-    // web build omits the OS id suffix (contract suffix is ios|android only)
-    expect(a["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}$/);
+    // v4 suffixes session.id on all three platforms (§3.3 / §12's item 13)
+    expect(a["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_web$/);
     expect(a["device.id"]).toMatch(/^device_\d+_[0-9a-f]{16}_web$/);
   });
 
@@ -120,10 +120,10 @@ describe("createTelemetry (web) — Context keys are snake_case on the wire (#88
     expect(a["app.build_number"]).toBe("42");
     expect(a["app.package_name"]).toBe("app.example.com");
     expect(a["device.platform_version"]).toBe("5.0 (Macintosh)");
-    // undefined on web, but present under the respelled key (JSON drops them on the wire)
-    expect(Object.keys(a)).toContain("device.android_sdk");
-    expect(Object.keys(a)).toContain("device.android_release");
-    expect(Object.keys(a)).toContain("device.ios_system_name");
+    // #108 — absent, not present-with-undefined: a key the SDK has nothing for is omitted
+    expect(Object.keys(a)).not.toContain("device.android_sdk");
+    expect(Object.keys(a)).not.toContain("device.android_release");
+    expect(Object.keys(a)).not.toContain("device.ios_system_name");
     expect(a["network.is_connected"]).toBe(true);
   });
 
@@ -182,14 +182,14 @@ describe("createTelemetry (web) — identity (#91)", () => {
     expect(second.last()["device.id"]).toBe(id);
   });
 
-  it("suffixes device.id with _web while session.id stays unsuffixed (§3.3)", async () => {
+  it("suffixes both device.id and session.id with _web (§3.3)", async () => {
     silenceConsole();
     const { t, last } = build(memoryStore());
 
     await emit(t);
     expect(last()["device.id"]).toMatch(/^device_\d+_[0-9a-f]{16}_web$/);
-    // session.id gains `_web` in v4, not here — it must not follow device.id by accident
-    expect(last()["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}$/);
+    // #108 — session.id gained `_web` in v4; the two ids now follow the same rule
+    expect(last()["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_web$/);
   });
 
   it("never rotates device.id — not on identify, not on a user-id change, not on clear", async () => {

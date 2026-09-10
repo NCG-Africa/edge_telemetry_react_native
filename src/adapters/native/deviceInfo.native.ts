@@ -1,5 +1,5 @@
 // adapters/native/deviceInfoNative.native.ts
-import { Platform } from "react-native";
+import { Dimensions, PixelRatio, Platform } from "react-native";
 import DeviceInfoLib from "react-native-device-info";
 import { Telemetry } from "../../core/telemetry";
 import { DeviceInfo } from "../../core/telemetry";
@@ -30,17 +30,25 @@ export class DeviceInfoTrackerNative {
         const model = (await DeviceInfoLib.getModel()) || "";
         const systemVersion = (await DeviceInfoLib.getSystemVersion()) || "";
         const systemName = (await DeviceInfoLib.getSystemName()) || ""; // iOS: "iOS", Android: "Android"
-        const deviceName = (await DeviceInfoLib.getDeviceName()) || "";
 
         // 🔹 Android-only fields
         const sdk = Platform.OS === "android" ? await DeviceInfoLib.getApiLevel() : undefined;
-        const fingerprint = Platform.OS === "android" ? await DeviceInfoLib.getFingerprint?.() : undefined;
         const hardware = Platform.OS === "android" ? await DeviceInfoLib.getHardware?.() : undefined;
         const product = Platform.OS === "android" ? await DeviceInfoLib.getProduct?.() : undefined;
 
         // 🔹 iOS-only fields
+        // ⚠ `getDeviceName()` — the user's own name for their phone — is deliberately NOT
+        // read any more (§3.4): real PII, no column, no reader. `getFingerprint()` went with
+        // it — a build string that merges handsets, which *repairs* device identity (§1.2).
         const iosSystemName = Platform.OS === "ios" ? systemName : undefined;
-        const iosDeviceName = Platform.OS === "ios" ? deviceName : undefined;
+
+        // 🔹 §3.3 ✱ — device capability (native only) and viewport (both builds).
+        const cpuAbi = (await DeviceInfoLib.supportedAbis?.())?.[0];
+        const lowRam = await DeviceInfoLib.isLowRamDevice?.();
+
+        // Read on every collect(), not cached: a device rotates mid-session, and §3.1 puts
+        // `device.orientation` and device state on the log-time side of the freeze.
+        const { width, height } = Dimensions.get("window");
 
         const info: DeviceInfo = {
             app: {
@@ -59,13 +67,19 @@ export class DeviceInfoTrackerNative {
                 // Android fields
                 android_sdk: sdk ? String(sdk) : undefined,
                 android_release: Platform.OS === "android" ? systemVersion : undefined,
-                fingerprint,
                 hardware,
                 product,
+                cpu_abi: cpuAbi,
+                low_ram: lowRam,
 
                 // iOS fields
                 ios_system_name: iosSystemName,
-                iosDeviceName,
+
+                // Viewport — both builds, never null (§3.3)
+                screen_density: PixelRatio.get(),
+                screen_width_px: Math.round(width * PixelRatio.get()),
+                screen_height_px: Math.round(height * PixelRatio.get()),
+                orientation: width > height ? "landscape" : "portrait",
             },
         };
 

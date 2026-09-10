@@ -16,7 +16,7 @@ const appState = vi.hoisted(() => {
     reset() { listeners.length = 0; appState.currentState = "active"; },
   };
 });
-vi.mock("react-native", () => ({ Platform: { OS: "ios" }, AppState: appState }));
+vi.mock("react-native", () => ({ Dimensions: { get: () => ({ width: 390, height: 844 }) }, PixelRatio: { get: () => 3 }, Platform: { OS: "ios" }, AppState: appState }));
 vi.mock("react-native-get-random-values", () => ({}));
 vi.mock("react-native-device-info", () => ({
   default: new Proxy({}, { get: () => async () => "x" }),
@@ -159,7 +159,7 @@ describe("#103 trackTap — native's only interaction producer (§4.6)", () => {
 });
 
 describe("#103 the mint/emit split (§4.6)", () => {
-  it("a tap that navigates carries the view it happened in and the mint timestamp", async () => {
+  it("a tap that navigates keeps its frozen view.id and mint timestamp, and takes the id's current name", async () => {
     const { t, sent } = await launch();
     const inst = await (t as any).instancePromise;
     const nav = navRef();
@@ -170,15 +170,19 @@ describe("#103 the mint/emit split (§4.6)", () => {
     const mintedAt = Date.now();
     const tap = (t as any).trackTap("checkout");
     // Same tick, before any microtask the emit could be riding: the host's own press
-    // handler navigates. `explicit` outranks `route`, so this re-stamps `view.name`
-    // synchronously — a snapshot taken after the await would read "Checkout".
+    // handler navigates. `explicit` outranks `route`, so this is a rung **upgrade** — it
+    // re-stamps `view.name` in place and leaves `view.id` alone (§4.5.1).
     void inst.enterView("Checkout", "explicit");
     vi.setSystemTime(mintedAt + 5000);
     await tap;
     await t.flush();
 
     const [row] = rowsOf(sent, "ui.interaction");
-    expect(row.attributes!["view.name"]).toBe("Home");
+    // ⚠ #108/§3.1 — the name is resolved at log time by lookup on the **frozen** id, so an
+    // upgrade inside the emit window shows through. It has to: the id never moved, and a row
+    // carrying "Home" against the id now named "Checkout" would disagree with itself. The
+    // freeze is on the id and the timestamp, which is what the mint/emit split is for.
+    expect(row.attributes!["view.name"]).toBe("Checkout");
     expect(row.timestamp).toBe(new Date(mintedAt).toISOString());
   });
 

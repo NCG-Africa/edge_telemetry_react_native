@@ -5,6 +5,8 @@ import type { TelemetryEvent } from "./core/telemetry";
 // and assert on the TelemetryEvent[] that reaches the injected Sender — keys, values and absence.
 vi.mock("react-native", () => ({
   Platform: { OS: "ios" },
+  Dimensions: { get: () => ({ width: 390, height: 844 }) },
+  PixelRatio: { get: () => 3 },
   AppState: { currentState: "active", addEventListener: () => {} },
 }));
 vi.mock("react-native-device-info", () => ({

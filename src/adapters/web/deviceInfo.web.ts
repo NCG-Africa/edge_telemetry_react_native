@@ -10,7 +10,15 @@ export class DeviceInfoTrackerWeb {
     // device.id is NOT collected here (#91): core self-mints and persists it via the Store.
     async collect(): Promise<DeviceInfo> {
         const ua = navigator.userAgent;
-        const platform = navigator.platform;
+
+        // §3.3 ✱ — viewport, read on every collect() because a browser window resizes and a
+        // phone rotates; §3.1 keeps device state on the log-time side of the freeze.
+        // CSS px x DPR, so the key means the same quantity as native's `Dimensions` x
+        // `PixelRatio`. ponytail: no `screen.orientation` read — the width/height compare is
+        // the same two values the successor keys already ship, and it needs no feature check.
+        const dpr = typeof devicePixelRatio === "number" ? devicePixelRatio : 1;
+        const w = window.innerWidth ?? 0;
+        const h = window.innerHeight ?? 0;
 
         return {
             app: {
@@ -29,13 +37,18 @@ export class DeviceInfoTrackerWeb {
                 // Android placeholders
                 android_sdk: undefined,
                 android_release: undefined,
-                fingerprint: undefined,
                 hardware: undefined,
                 product: undefined,
 
                 // iOS placeholders
                 ios_system_name: undefined,
-                iosDeviceName: undefined,
+
+                // `cpu_abi` / `low_ram` are native-only (§3.3's `N`) — a browser exposes
+                // neither, and a fabricated value is worse than an absent key.
+                screen_density: dpr,
+                screen_width_px: Math.round(w * dpr),
+                screen_height_px: Math.round(h * dpr),
+                orientation: w > h ? "landscape" : "portrait",
             },
         };
     }

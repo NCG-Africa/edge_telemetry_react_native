@@ -221,24 +221,72 @@ device.id              — SDK-minted, persisted (+ device.id_ephemeral: true wh
 session.sample_rate    — the rate this session was rolled at; every row of it carries it
 view.id                — `view_{ms}_{16hex}`; never spans a `session.id` and never spans a process
 view.name              — resolved at log time by lookup on the frozen `view.id`; `"unknown"` until named
-sdk.platform ("react-native"), sdk.version (package.json version)
+sdk.platform            `react-native-{ios|android|web}` — a framework-OS compound (§3.3)
+sdk.version (package.json version)
 sdk.hook_dropped / sdk.hook_failed  — beforeSend counters; separate on purpose
 sdk.events_dropped     — monotonic, process-lifetime; 0 until the first drop
 sdk.drop_reason        — omitted until a drop; queue_full | store_full | rejected
 app.*        name, version, build_number, package_name
 app.build_id           consumer-supplied symbolication join key; omitted when unset, never "" (§4.8)
 device.*     platform, platform_version, model, manufacturer, brand (+ OS-specific extras)
+device.cpu_abi / .low_ram          NATIVE ONLY — "does this crash only on cheap devices"
+device.screen_density / .screen_width_px / .screen_height_px / .orientation
+                       both builds, never null; CSS/dp x pixel-ratio on web and native alike
 network.*    type, is_connected
 ```
+
+**The block is frozen at §3.3's 39 keys (#108), and absence is the null discipline.** A key the
+SDK has nothing for is **omitted from the attribute bag itself**, not shipped as an `undefined`
+that `JSON.stringify` happens to drop — so `device.android_sdk` appears nowhere on a web row, and
+`beforeSend` is never handed a key that would not have shipped. `src/context.web.test.ts` and
+`src/context.native.test.ts` assert the set key-by-key, present *and* omitted, on both builds.
+
+**`device.fingerprint` and `device.iosDeviceName` are gone outright** (§3.4), along with the six
+retired `user.*` fields: a build string that merges handsets — deleting it *repairs* device
+identity — and the user's own name for their phone. Neither is collected any more; the
+device-info adapter no longer calls `getFingerprint()` or `getDeviceName()` at all.
+
+**`device.orientation`, `network.*` and device state stay log-time** (§3.1), because a request
+that failed when the network dropped is better described by the network at completion.
 
 Caller `data` is flattened dot-notation on top — so it can override any `app.*`, `device.*` or
 `network.*` key, but **not** the identity keys, which are assembled after it. Keep attribute
 values primitive.
 
+### The attribution freeze (§3.1)
+
+`Telemetry.snapshot()` + `LogSnapshot`, applied in `log()` after `collectContext()` so a caller's
+`data` can never forge it. A **span-carrying** row reports the identity live at **span start**:
+
+| Key | Resolved at |
+|---|---|
+| `session.id`, `session.start_time`, `view.id` | **span start (frozen)** |
+| `view.name` | **log time, by lookup on the frozen `view.id`** — `ViewManager.nameOf()` |
+| `network.*`, `device.orientation`, device state, `user.*` | log time |
+| `session.sequence`, `event.sequence` | log time — transmission ordinals, not attribution |
+
+Freezing `session.id` is not optional: §4.2's 4-hour cap can rotate a session **while a request is
+in flight**, which would otherwise put S1's trace on an S2 row and break the invariant §6.6 tells
+you to assert. Point events — `app.crash`, `custom_event`, `app_lifecycle`, `network_change`,
+`user.profile.update`, every metric — pass no snapshot, so the freeze is a no-op on them.
+
+**The mint/emit split and the freeze are one mechanism.** `ui.interaction` snapshots at the click
+(and overrides the row's `timestamp` with it, via `LogSnapshot.at`); `http.request` snapshots at
+**send** and leaves `at` unset, keeping the completion timestamp §4.4 gives it.
+
+⚠ **`view.name` is resolved, never replayed.** A rung upgrade inside the emit window renames the
+view *in place* — `view.id` never moves — so a deferred row shows the upgraded name. It has to:
+a row carrying `"Home"` against the id now named `"Checkout"` would disagree with itself, which is
+exactly what §3.1's lookup rule exists to prevent. **The freeze is on the id and the timestamp.**
+
+`ViewManager.nameOf(id)` reads the live view, then a **16-entry ring of retired names**. A span
+outliving 16 view boundaries degrades to `"unknown"` — which is what a never-named view reports
+anyway, and §4.5.2's 30 s settle cap has already given up on that request.
+
 ### ID formats
 
 ```
-session.id : session_{ms}_{16 hex}_{ios|android}   // suffix native only; web omits it
+session.id : session_{ms}_{16 hex}_{ios|android|web}
 device.id  : device_{ms}_{16 hex}_{ios|android|web}
 user.id    : whatever the consumer passes, truncated to 255 — never minted here
 ```
@@ -250,9 +298,9 @@ fallback** — `randomHex` throws with a reinstall instruction instead, because 
 persists forever is worse than refusing to mint one.
 
 The suffix comes from the entry's `platform` opt, never from the device-info adapter: the id is
-persisted forever and `collect()` can throw on first run. `session.id` keeps the narrower
-ios|android rule (§3.3 gives it `_web` in v4, not now) — that rule lives in
-`generateSessionId()`, so the two ids can diverge without either drifting by accident.
+persisted forever and `collect()` can throw on first run. ⚠ **`session.id` gained `_web` in v4**
+(#108, §3.3 / §12's item 13), so the two ids now follow one rule — a value-shape change on the
+web build, and nothing parses it.
 
 **`device.id` is SDK-owned, `user.id` is consumer-owned** — contract §3.2, and the split is the
 whole point. `device.id` is self-minted (never `getUniqueId()`, which carries two lifetimes on
@@ -1247,8 +1295,6 @@ above rather than defects.
   is share-of-device, not share-of-budget. iOS kills an app well below the device total.
 - **A device-info read that throws emits nothing**, so a sampler failing on every tick is
   indistinguishable from a build that never started one. There is no counter for it.
-- `sdk.platform` is the constant `"react-native"` on the web build too, while
-  `device.platform` is `"web"`.
 - Web navigation paths keep their query strings, so tokens and PII in query params ship as-is.
   (`http.request` itself carries no URL — see the `http.request` section.)
 - `flush()` sends **one** batch per call — it does not loop. At 50/30 s a large backlog still
@@ -1315,8 +1361,6 @@ above rather than defects.
 - No top-level `location` in the envelope, though the contract allows one.
 - `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`
   constructors still accept it as optional.
-- `session.id` still omits the `_web` suffix on the web build; contract §3.3 gives it one in
-  v4. `device.id` is already suffixed on all three platforms.
 - **`session.reason: "launch"` undercounts launches.** A resume emits no `session.started` at
   all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
   compensator and is not built — count launches from `app.start`, not from `session.reason`.
@@ -1437,11 +1481,6 @@ above rather than defects.
   native request means *an uninstrumented tap*, not *no action*.
 - An XHR `send()` that throws **synchronously** never reaches `loadend`, so a `request` root it
   minted lives out its 2 s window with no row describing it. Rare, and knowingly left.
-- **`view.id` is resolved at log time, not frozen at span start** (§3.1). Point events are
-  unaffected — they have no span — but an `http.request` that completes after a route change is
-  attributed to the view it *landed* in, and `view.request_count` therefore counts requests
-  completed in the view where §4.5.2 counts requests *started* in it. The freeze arrives with the
-  span/trace work (§6); there is no `trace.id` / `span.id` on the wire yet at all.
 - **A lower rung swallows its own boundary.** §4.5.1's "a lower rung arriving later does not
   overwrite a higher one" is implemented literally, so a host that calls `screenStart()` once and
   then relies on `attachNavigation` pins the view to that explicit name: route changes stop minting
@@ -1449,6 +1488,40 @@ above rather than defects.
   normally describe *one* navigation (the upgrade window), and §4.5 separately makes route change an
   unconditional boundary — the two readings conflict and it needs a contract ruling, not a local
   invention. Until then: call `screenStart()` per screen, or don't mix it with `attachNavigation`.
+
+- **`device.cpu_abi` is the *first* supported ABI, not the list.** `supportedAbis()[0]` is the
+  primary one — the answer to "is this a 32-bit device", which is what the key exists for — and a
+  comma-joined list would be a high-cardinality string nothing groups by. Flag it if the backend
+  wants the full list.
+- **`device.cpu_abi` and `device.low_ram` are absent on web** (§3.3's `N`). A browser exposes
+  neither, and `navigator.deviceMemory` is Chromium-only — the same browser-detection-wearing-a-
+  memory-label defect §5.2 deleted `performance.memory` for.
+- **The viewport keys are CSS/dp x pixel-ratio on both builds**, so they mean physical pixels and
+  are comparable across web and native. ⚠ Web reads `window.innerWidth/innerHeight` — the
+  *viewport*, not `screen.width` — so a desktop browser's value moves when the user resizes the
+  window mid-session. That is the quantity CLS and LCP actually scale with.
+- **`device.orientation` is derived from width vs height, not from `screen.orientation`.** A square
+  window reports `portrait`. The two values it compares are the two the successor keys already
+  ship, and it needs no feature check on either build.
+- **An `undefined` attribute value is now dropped at the flattener** rather than riding the bag to
+  be dropped by `JSON.stringify`. Wire-neutral — but a consumer passing
+  `log("x", { "device.model": undefined })` used to blank the key and now leaves the real
+  `device.model` in place, because the override never enters the bag.
+- **`sdk.platform` falls back to the bare `"react-native"`** for a direct `new Telemetry()` with no
+  entry-declared `platform`. That is the same gap `apiKey` and the allowlist already have: the
+  factory is the only supported construction path.
+- **The 39-key assertion is per-build, not per-row.** `context.web.test.ts` and
+  `context.native.test.ts` pin a clean anonymous `custom_event`; a row with a `buildId`, a
+  `user.id`, an ephemeral `device.id` or a drop booked carries more of the 39, which is what
+  "omitted until there is one" means. No test asserts a row can carry **all** 39 at once — several
+  are mutually exclusive by platform.
+- **`ViewManager.nameOf()` keeps 16 retired names.** A span that outlives 16 view boundaries
+  reports `"unknown"` rather than its view's real name. Bounded on purpose — an unbounded map is a
+  leak on a long session — and the settle cap (30 s) has already abandoned any request that old.
+- **A deferred row's `view.name` follows a rung upgrade** (§3.1's log-time lookup), so
+  `ui.interaction`'s pre-#108 behaviour of replaying the snapshotted name is gone. The row is still
+  pinned to the view it happened in by `view.id`; only the *name* moved, and it moved to the one
+  its own id now carries.
 
 ---
 

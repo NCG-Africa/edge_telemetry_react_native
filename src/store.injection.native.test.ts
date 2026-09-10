@@ -6,6 +6,8 @@ import { memoryStore } from "./core/memoryStore";
 // asymmetry against the web build is the point of the port (#89).
 vi.mock("react-native", () => ({
     Platform: { OS: "android" },
+  Dimensions: { get: () => ({ width: 390, height: 844 }) },
+  PixelRatio: { get: () => 3 },
     AppState: { currentState: "active", addEventListener: () => { } },
 }));
 

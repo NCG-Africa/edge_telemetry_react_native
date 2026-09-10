@@ -16,7 +16,11 @@ import { version as PKG_VERSION } from "../../package.json";
 export type { BeforeSend } from "./beforeSend";
 
 // v3 wire contract constants
-const SDK_PLATFORM = "react-native";   // framework identity; device OS lives in device.platform
+// §3.3 / §12's item 10 — `react-native-{Platform.OS}`, joining Flutter's `flutter-{os}` shape.
+// ⚠ NOT a closed three-value enum: RN-Windows emits `react-native-windows`. The bare
+// framework name survives only for a direct `new Telemetry()` with no entry-declared
+// platform, which is the same gap `apiKey` already has.
+const sdkPlatform = (platform?: string) => platform ? `react-native-${platform}` : "react-native";
 const SDK_VERSION = PKG_VERSION;       // sdk.version follows the published package version
 const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min of inactivity (iOS ADR-004)
 // New in v4 (§4.2). Removing the process-death boundary lets a backgrounded app's
@@ -161,11 +165,16 @@ const TIER_2_NAMES = new Set<string>(["app.crash", "app.error", "custom_event"])
  * navigates is booked against the view it opened.
  */
 export type LogSnapshot = {
-    /** Epoch ms of the click. Becomes the row's `timestamp`. */
-    at: number;
+    /**
+     * Epoch ms of the click. Becomes the row's `timestamp`. **Omitted by a span-carrying row
+     * that is not deferred** — an `http.request` freezes its *attribution* at send but still
+     * reports the completion time §4.4 gives it.
+     */
+    at?: number;
     viewId: string;
-    viewName: string;
     sessionId: string;
+    /** Epoch ms — `session.start_time` freezes with the id it belongs to (§3.1). */
+    sessionStart: number;
 };
 
 // Events carry `eventName`; metrics carry `metricName` + numeric `value` (v3 §"Event vs Metric").
@@ -260,11 +269,19 @@ export interface DeviceInfo {
         brand?: string;
         android_sdk?: string;
         android_release?: string;
-        fingerprint?: string;
         hardware?: string;
         product?: string;
         ios_system_name?: string;
-        iosDeviceName?: string;
+        // §3.3 ✱ — native only. "Does this crash only on cheap devices?"
+        cpu_abi?: string;
+        low_ram?: boolean;
+        // §3.3 ✱ — both builds, never null: CLS and LCP scale with the viewport, and
+        // `orientation` splits CLS, dwell and interactions. Read at log time, like
+        // `network.*`, because a device rotates mid-session (§3.1).
+        screen_density?: number;
+        screen_width_px?: number;
+        screen_height_px?: number;
+        orientation?: string;
     };
 }
 
@@ -622,9 +639,9 @@ export class Telemetry {
 
     private generateSessionId(): string {
         const base = `session_${Date.now()}_${randomHex(16)}`;
-        // §3.3 suffixes session.id with ios|android only — the web build gains `_web` in v4,
-        // not here. device.id is suffixed on all three, so the rule can't just be `platform`.
-        return this.isNativePlatform() ? `${base}_${this.platform}` : base;
+        // §3.3 / §12's item 13 — suffixed on all three platforms in v4; the web build gained
+        // `_web` here, so this is now the same rule `device.id` follows. Nothing parses it.
+        return this.platform ? `${base}_${this.platform}` : base;
     }
 
     public setSessionId(id: string) {
@@ -641,12 +658,12 @@ export class Telemetry {
      * moment the thing happened**, so a `log()` that lands after a route change or a session
      * rotation still books the click where it occurred.
      */
-    public snapshot(at: number = Date.now()): LogSnapshot {
+    public snapshot(at?: number): LogSnapshot {
         return {
             at,
             viewId: this.views.id,
-            viewName: this.views.name,
             sessionId: this.sessionId,
+            sessionStart: this.sessionStart,
         };
     }
 
@@ -1108,16 +1125,21 @@ export class Telemetry {
             if (isErrorName(eventName)) this.views.countError();
             else if (eventName === 'ui.interaction') this.views.countAction();
 
-            // §4.6's mint/emit split. `ui.interaction` is emitted up to a dead-click window
-            // *after* the click happened, so the row reports where and when the click was —
-            // not where the emit landed. Stamping emit time would attribute a navigating tap
-            // to **the view it opened**, silently inverting every "which screen frustrates
-            // users" query. Applied after `collectContext`, with the identity keys, so it is
-            // the SDK's snapshot and never a caller's `data`.
+            // §3.1's attribution freeze, and §4.6's mint/emit split — one mechanism. A
+            // span-carrying row reports the identity live at **span start**, not at emit:
+            // §4.2's 4-hour cap can rotate a session while a request is in flight, and a tap
+            // that navigates would otherwise be booked against the view it opened, silently
+            // inverting every "which screen frustrates users" query. Applied after
+            // `collectContext`, with the identity keys, so it is the SDK's snapshot and never
+            // a caller's `data`. Point events pass none and are unaffected.
             if (snapshot) {
                 attributes['view.id'] = snapshot.viewId;
-                attributes['view.name'] = snapshot.viewName;
+                // Resolved at log time by lookup on the *frozen* id (§3.1), never replayed
+                // from the snapshot: a rung upgrade between mint and emit renames the view
+                // in place, and a row must never carry a name that disagrees with its own id.
+                attributes['view.name'] = this.views.nameOf(snapshot.viewId);
                 attributes['session.id'] = snapshot.sessionId;
+                attributes['session.start_time'] = new Date(snapshot.sessionStart).toISOString();
             }
 
             this.enqueue({
@@ -1264,7 +1286,7 @@ export class Telemetry {
             ...(this.dropReason ? { 'sdk.drop_reason': this.dropReason } : {}),
             'sdk.hook_dropped': this.hookDropped,
             'sdk.hook_failed': this.hookFailed,
-            'sdk.platform': SDK_PLATFORM,
+            'sdk.platform': sdkPlatform(this.platform),
             'sdk.version': this.sdkVersion,
         };
 
@@ -1374,6 +1396,13 @@ export class Telemetry {
 
             const value = obj[key];
             const prefixedKey = prefix ? `${prefix}.${key}` : key;
+
+            // §3.3's null discipline — "absent means the SDK had nothing" (#108). An
+            // `undefined` value was already dropped by the sender's `JSON.stringify`, so
+            // this is wire-neutral; what it fixes is the in-memory bag, where
+            // `device.android_sdk: undefined` on a web row made the 39-key shape
+            // unassertable and handed `beforeSend` keys that never ship.
+            if (value === undefined) continue;
 
             // §4.10, #107 — the depth guard. Without it a cyclic value recursed until the
             // stack blew, *inside* the SDK, taking the host app's render tree with it. A

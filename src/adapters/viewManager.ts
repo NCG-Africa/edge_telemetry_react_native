@@ -71,6 +71,8 @@ export class ViewManager {
     private readonly activityListeners = new Set<() => void>();
     /** §5.1's boundary subscribers — the frame window, awaited before the successor mints. */
     private readonly boundaryListeners = new Set<(successorLoadType: ViewLoadType) => unknown>();
+    /** Retired `view.id` → final `view.name`, for `nameOf()`. Bounded; oldest evicted. */
+    private readonly retiredNames = new Map<string, string>();
 
     constructor(private telemetry: Emitter) {
         // A capability check, not a platform branch: RN has no `location`, and a
@@ -95,6 +97,21 @@ export class ViewManager {
     /** The two keys the Context block carries on every row. Name resolves at log time. */
     get id(): string { return this.view.id; }
     get name(): string { return this.view.name; }
+
+    /**
+     * §3.1 — `view.name` for a **frozen** `view.id`. A span-carrying row pins itself to the
+     * view live at span start, and its name is still resolved at log time, so an
+     * `http.request` that outlives a route change reports the departing view's *current*
+     * best name rather than a stale copy taken at send.
+     *
+     * ponytail: a 16-entry ring of retired names, not a full history. A span outliving 16
+     * view boundaries is a request the settle cap (30 s) already gave up on; it degrades to
+     * `"unknown"`, which is what a never-named view reports anyway.
+     */
+    nameOf(id: string): string {
+        if (id === this.view.id) return this.view.name;
+        return this.retiredNames.get(id) ?? UNKNOWN_VIEW_NAME;
+    }
 
     /**
      * The name ladder (§4.5.1), and the only path that mints a view from a *name*.
@@ -251,6 +268,10 @@ export class ViewManager {
         }
         const prev = this.view;
         const now = Date.now();
+        this.retiredNames.set(prev.id, prev.name);
+        if (this.retiredNames.size > 16) {
+            this.retiredNames.delete(this.retiredNames.keys().next().value as string);
+        }
         this.view = {
             id: mintViewId(),
             name: name ?? prev.name,

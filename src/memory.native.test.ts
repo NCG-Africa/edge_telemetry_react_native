@@ -17,6 +17,8 @@ const getTotalMemory = vi.fn<() => Promise<number>>();
 
 vi.mock("react-native", () => ({
   Platform: { OS: "android" },
+  Dimensions: { get: () => ({ width: 390, height: 844 }) },
+  PixelRatio: { get: () => 3 },
   AppState: { currentState: "active", addEventListener: () => {} },
 }));
 vi.mock("react-native-get-random-values", () => ({}));

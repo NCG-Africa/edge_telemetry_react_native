@@ -44,10 +44,11 @@ Reference; adding one needs backend sign-off.
 _Avoid_: event types, event registry
 
 **sdk.platform**:
-The framework identity — the constant `react-native` for this SDK, on both builds.
-Distinct from **device.platform**, the OS (`ios`/`android`/`web`), which also forms the
-`device.id`/`session.id` suffix on native.
-_Avoid_: conflating with device.platform or os
+The framework-OS compound — `react-native-ios` / `react-native-android` / `react-native-web`,
+joining Flutter's `flutter-{os}` shape. ⚠ **Not** a closed three-value enum: RN-Windows would
+emit `react-native-windows`. Distinct from **device.platform**, the bare OS
+(`ios`/`android`/`web`), which also forms the `device.id` / `session.id` suffix.
+_Avoid_: conflating with device.platform or os; the bare `react-native` (that was v3)
 
 **Web-only metric**:
 A metric only meaningful in a DOM/PerformanceObserver runtime (Web Vitals, `page_load`,

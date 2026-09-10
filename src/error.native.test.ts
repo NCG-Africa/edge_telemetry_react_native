@@ -6,6 +6,8 @@ import type { TelemetryEvent } from "./core/telemetry";
 const platform = vi.hoisted(() => ({ OS: "android" }));
 vi.mock("react-native", () => ({
   Platform: platform,
+  Dimensions: { get: () => ({ width: 390, height: 844 }) },
+  PixelRatio: { get: () => 3 },
   AppState: { currentState: "active", addEventListener: () => {} },
 }));
 
