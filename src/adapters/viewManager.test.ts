@@ -145,7 +145,7 @@ describe("ViewManager — onBoundary (§5.1)", () => {
     expect(vm.id).not.toBe(home);
   });
 
-  it("fires on every mint boundary and stops after unsubscribe", async () => {
+  it("fires on the route-change and background boundaries, and stops after unsubscribe", async () => {
     const { vm } = manager();
     let hits = 0;
     const off = vm.onBoundary(() => { hits++; });
@@ -155,11 +155,32 @@ describe("ViewManager — onBoundary (§5.1)", () => {
 
     await vm.navigate("Cart", "route");   // same rung, new name — a real navigation
     await vm.background();                // the background boundary
-    await vm.beginView("session_rotation");
-    expect(hits).toBe(3);
+    expect(hits).toBe(2);
 
     off();
     await vm.navigate("Checkout", "route");
-    expect(hits).toBe(3);
+    expect(hits).toBe(2);
+  });
+
+  // The new session.id is installed before the successor mints, so a row emitted here would
+  // pair it with the departing view.id — what §4.5's "view.id never spans a session.id" bars.
+  it("does not fire on the session_rotation boundary", async () => {
+    const { vm } = manager();
+    let hits = 0;
+    vm.onBoundary(() => { hits++; });
+
+    await vm.beginView("session_rotation");
+    expect(hits).toBe(0);
+  });
+
+  it("swallows a throwing subscriber rather than aborting the view mint", async () => {
+    const { vm } = manager();
+    await vm.navigate("Home", "route");
+    const home = vm.id;
+    vm.onBoundary(() => { throw new Error("frame window is broken"); });
+
+    await vm.navigate("Cart", "route");
+    expect(vm.id).not.toBe(home);
+    expect(vm.name).toBe("Cart");
   });
 });

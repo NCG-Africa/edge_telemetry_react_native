@@ -41,6 +41,13 @@ describe("aggregateFrames", () => {
         expect(attributes["frame.dropped_count"]).toBe(1);
     });
 
+    // The floor is p5, not the minimum: one artefact must not snap 60 Hz to 120 and double
+    // the dropped-frame count — the exact defect the measured key exists to fix.
+    it("shrugs off a spurious short delta in a 60 Hz stream", () => {
+        const deltas = [...Array(300).fill(1000 / 60), 4, 0.5];
+        expect(aggregateFrames(deltas, 5000, "raf").attributes["frame.target_fps"]).toBe(60);
+    });
+
     it("falls back to 60 when no positive delta was sampled", () => {
         expect(aggregateFrames([0, 0], 100, "raf").attributes["frame.target_fps"]).toBe(60);
     });

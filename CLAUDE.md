@@ -392,7 +392,9 @@ it always has. §4.0 says web should emit neither; closing that is a separate ch
 
 **`ViewManager.onBoundary()` is the view-boundary seam** (§5.1, #104). A subscriber is awaited
 inside `beginView` while the departing view is still current — that is what lets the frame window
-close on the screen the user is leaving rather than the one arriving.
+close on the screen the user is leaving rather than the one arriving. It fires on the route-change
+and background boundaries only; ⚠ **`session_rotation` is excluded**, and the Metrics section
+below says why.
 
 **The background boundary must be awaited before the flush.** `AppLifecycleEmitter.onState` returns
 a promise for exactly this reason: on native, backgrounding forces a `flush()` because the queue
@@ -766,9 +768,11 @@ mislabel the unit of the column the row lands in, and it is **omitted** for a na
 a consumer's own `recordMetric()` name has no unit the SDK can honestly claim.
 
 **`frame.target_fps` is measured, not assumed** — and `frame.target_hz` is gone. rAF cannot fire
-faster than the display, so the smallest positive delta in the window *is* the refresh interval; no
-new platform API is involved. It snaps to §5.1's `{60, 90, 120}`, which also absorbs a single
-sample's jitter. ⚠ **`frame.dropped_count` budgets against the measured rate**, so its values move on
+faster than the display, so the floor of the window's deltas *is* the refresh interval; no new
+platform API is involved. ⚠ The floor is the **5th percentile, not the minimum**: one spurious
+short delta would snap a 60 Hz device to 120 and double its `frame.dropped_count`, reintroducing
+the very defect the key exists to fix, while a real 120 Hz display produces short deltas by the
+hundred. It then snaps to §5.1's `{60, 90, 120}`, which absorbs what jitter is left. ⚠ **`frame.dropped_count` budgets against the measured rate**, so its values move on
 every 90/120 Hz device — v3's hardcoded 60 was simply wrong there, and this is a correction with a
 chart discontinuity, not a regression.
 
@@ -777,6 +781,12 @@ route change's dropped frames on the screen that was **leaving**. The seam is
 `ViewManager.onBoundary()`: subscribers are **awaited inside `beginView`, before the successor
 replaces the current view**, so the metric's Context block resolves to the departing `view.id`.
 ⚠ That ordering *is* the feature — fire it after the mint and the fix inverts into the bug.
+⚠ **It does not fire on the `session_rotation` boundary.** `newSession()` installs the new
+`session.id` before minting the successor, so a row emitted there would carry the new `session.id`
+with the departing `view.id` — exactly what §4.5's "`view.id` never spans a `session.id`" bars.
+Emitting *before* the rotation is worse: `logMetric` re-checks expiry, `lastActivity` is still
+stale, and the emit would rotate the session a second time. A throwing subscriber is **swallowed**
+— a broken frame window must not be able to abort view minting.
 Variable-length windows are why **`frame.window_duration_ms` always ships**: a p95 over an unknown
 sample count is uncomparable. An empty window emits nothing but still resets the clock, so the key
 always describes the samples it carries. Accepted cost: a fast route change emits a p95 over a thin
@@ -1129,6 +1139,10 @@ above rather than defects.
   discontinuity at the cutover.
 - **A fast route change emits a p95 over a thin sample.** That is the accepted cost of the
   boundary reset; `frame.window_duration_ms` is what makes those rows filterable.
+- **The frame window does not reset at the `session_rotation` boundary**, so at most one window
+  carries across a rotation — a session that ended by idleness or the 4-hour cap, whose last
+  window is ≤10 s. Resetting there would either pair a new `session.id` with the departing
+  `view.id` or rotate the session twice; both are worse than the residue.
 - **`metric.unit` is omitted for a name the SDK has no unit for** — a consumer's own
   `recordMetric()` name ships no unit rather than a guessed one.
 - The deprecated web `navigation` event still carries `location.pathname + search` raw, query

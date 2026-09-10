@@ -25,7 +25,6 @@ function harness() {
         /** Advance the clock by `ms` and run one rAF callback. */
         tick(ms: number) { now += ms; frame?.(); },
         hitBoundary() { return boundary!(); },
-        hasBoundary() { return boundary !== undefined; },
     };
 }
 
@@ -78,16 +77,17 @@ describe("FrameDropTracker", () => {
         expect(h.metrics[0].data["frame.window_duration_ms"]).toBe(16);
     });
 
-    it("subscribes once however often start() is called, and stop() unsubscribes", async () => {
+    it("is idempotent in full: a second start() adds neither a subscription nor a loop", async () => {
         const h = harness();
         const t = new FrameDropTracker(h.telemetry, 100000);
         await t.start();
         await t.start();
-        h.tick(16);
-        await h.hitBoundary();
-        expect(h.metrics).toHaveLength(1);           // not two
 
-        t.stop();
-        expect(h.hasBoundary()).toBe(false);
+        h.tick(16); h.tick(16);
+        await h.hitBoundary();
+        expect(h.metrics).toHaveLength(1);           // one subscription, not two
+        // Two rAF loops would each push a delta per vsync and double the sample count.
+        expect(h.metrics[0].data["frame.max_ms"]).toBe(16);
+        expect(h.metrics[0].data["frame.window_duration_ms"]).toBe(32);
     });
 });

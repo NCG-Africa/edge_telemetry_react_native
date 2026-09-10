@@ -8,7 +8,7 @@ import { aggregateFrames } from "./frameAggregate";
 /**
  * All this tracker needs of core. Structural, so it is testable without a `Telemetry`.
  */
-type Emitter = {
+type FrameEmitter = {
     logMetric(name: string, value: number, data?: Record<string, any>): unknown;
     views: { onBoundary(fn: () => unknown): () => void };
 };
@@ -17,13 +17,15 @@ export class FrameDropTracker {
     private lastFrameTime = performance.now();
     private windowStart = this.lastFrameTime;
     private deltas: number[] = [];
-    private unsubscribe?: () => void;
+    private started = false;
 
-    constructor(private telemetry: Emitter, private windowMs = 10000) { }
+    constructor(private telemetry: FrameEmitter, private windowMs = 10000) { }
 
+    /** Idempotent in full: a second call must not start a second rAF loop double-counting frames. */
     start(): Promise<void> {
-        // Idempotent: one subscription per instance however often start() is called.
-        this.unsubscribe ??= this.telemetry.views.onBoundary(() => this.emitWindow(performance.now()));
+        if (this.started) return Promise.resolve();
+        this.started = true;
+        this.telemetry.views.onBoundary(() => this.emitWindow(performance.now()));
 
         const loop = () => {
             const now = performance.now();
@@ -36,12 +38,6 @@ export class FrameDropTracker {
 
         requestAnimationFrame(loop);
         return Promise.resolve();
-    }
-
-    /** Stop feeding the boundary hook — a torn-down tracker must not keep the manager alive. */
-    stop(): void {
-        this.unsubscribe?.();
-        this.unsubscribe = undefined;
     }
 
     /**

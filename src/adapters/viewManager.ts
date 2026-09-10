@@ -167,6 +167,15 @@ export class ViewManager {
      * straddling a route change otherwise charges the departing screen's dropped frames to
      * the arriving one — backwards for the one query the metric exists to serve.
      *
+     * ⚠ **It does not fire on the `session_rotation` boundary**, and that is deliberate.
+     * `newSession()` installs the new `session.id` *before* minting the successor view, so a
+     * row emitted there would carry the new `session.id` with the departing `view.id` — the
+     * one thing §4.5's "`view.id` never spans a `session.id`" forbids. Emitting *before* the
+     * rotation instead is worse: `logMetric` re-checks session expiry, `lastActivity` is
+     * still stale at that point, and the emit would rotate the session a second time. The
+     * accepted residue is a frame window that carries across a rotation — at most one
+     * unflushed window, of a session that ended by idleness.
+     *
      * @returns an unsubscribe, so a torn-down subscriber does not keep the manager alive.
      */
     onBoundary(fn: () => unknown): () => void {
@@ -226,8 +235,14 @@ export class ViewManager {
      */
     async beginView(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): Promise<void> {
         this.notifyActivity();
-        // Awaited while `this.view` is still the departing one — see `onBoundary`.
-        for (const fn of this.boundaryListeners) await fn();
+        // Awaited while `this.view` is still the departing one — see `onBoundary` for why
+        // the session-rotation boundary is the one that does not fire. A subscriber that
+        // throws is swallowed: a broken frame window must not be able to abort view minting.
+        if (successorLoadType !== "session_rotation") {
+            for (const fn of this.boundaryListeners) {
+                try { await fn(); } catch { /* a subscriber's failure is not this view's */ }
+            }
+        }
         const prev = this.view;
         const now = Date.now();
         this.view = {

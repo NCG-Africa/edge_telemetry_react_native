@@ -21,14 +21,21 @@ const REFRESH_RATES = [60, 90, 120];
 
 /**
  * The refresh rate, **measured** rather than assumed (§5.1). rAF cannot fire faster than the
- * display, so the smallest positive delta in the window *is* the refresh interval — no new
- * platform API. Snapping to the three-value domain absorbs the jitter one sample carries.
+ * display, so the floor of the window's deltas *is* the refresh interval — no new platform
+ * API is involved.
+ *
+ * ⚠ The floor is the **5th percentile, not the minimum**. A single spurious short delta — a
+ * double-dispatched callback, a clock adjustment — would snap a 60 Hz device to 120 and double
+ * its `frame.dropped_count`, reintroducing the wrong-budget defect this key exists to fix. A
+ * real 120 Hz display produces short deltas by the hundred, so p5 finds them and one artefact
+ * cannot. Snapping to the three-value domain absorbs whatever jitter is left.
  *
  * ponytail: a window with no positive delta falls back to 60, which is also v3's constant.
  */
 function measureTargetFps(sorted: number[]): number {
-    const floor = sorted.find((d) => d > 0);
-    if (floor === undefined) return 60;
+    const positive = sorted.filter((d) => d > 0);
+    if (positive.length === 0) return 60;
+    const floor = positive[Math.ceil(0.05 * positive.length) - 1] ?? positive[0];
     const fps = 1000 / floor;
     return REFRESH_RATES.reduce((a, b) => (Math.abs(b - fps) < Math.abs(a - fps) ? b : a));
 }
