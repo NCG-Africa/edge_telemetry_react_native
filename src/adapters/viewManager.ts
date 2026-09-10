@@ -70,7 +70,7 @@ export class ViewManager {
     /** §4.6's aliveness subscribers. Empty on native and on a web build with no DOM. */
     private readonly activityListeners = new Set<() => void>();
     /** §5.1's boundary subscribers — the frame window, awaited before the successor mints. */
-    private readonly boundaryListeners = new Set<() => unknown>();
+    private readonly boundaryListeners = new Set<(successorLoadType: ViewLoadType) => unknown>();
 
     constructor(private telemetry: Emitter) {
         // A capability check, not a platform branch: RN has no `location`, and a
@@ -176,9 +176,15 @@ export class ViewManager {
      * accepted residue is a frame window that carries across a rotation — at most one
      * unflushed window, of a session that ended by idleness.
      *
+     * The successor's load type is handed to the subscriber so it can tell the two firing
+     * boundaries apart: `frame_render_time` wants both, while §5.3's running CLS/INP values
+     * want **`"resume"` — the background boundary — only**. Emitting a page-load-scoped vital
+     * at a soft navigation would ship a second row for the same page load and stamp it with
+     * a `view.id` that is not the initial view's.
+     *
      * @returns an unsubscribe, so a torn-down subscriber does not keep the manager alive.
      */
-    onBoundary(fn: () => unknown): () => void {
+    onBoundary(fn: (successorLoadType: ViewLoadType) => unknown): () => void {
         this.boundaryListeners.add(fn);
         return () => { this.boundaryListeners.delete(fn); };
     }
@@ -240,7 +246,7 @@ export class ViewManager {
         // throws is swallowed: a broken frame window must not be able to abort view minting.
         if (successorLoadType !== "session_rotation") {
             for (const fn of this.boundaryListeners) {
-                try { await fn(); } catch { /* a subscriber's failure is not this view's */ }
+                try { await fn(successorLoadType); } catch { /* a subscriber's failure is not this view's */ }
             }
         }
         const prev = this.view;
