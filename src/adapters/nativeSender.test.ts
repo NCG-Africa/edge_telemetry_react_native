@@ -85,7 +85,9 @@ describe("nativeSender — the offline queue through the Store port (#89)", () =
     const store = memoryStore({ async: true, unavailable: true });
     const sender = nativeSender("https://x/collect", "edge_k", store);
 
-    await expect(sender.onFailure!([event("app.crash")])).resolves.toBeUndefined();
+    // Resolves to the §9.4 drop count, and nothing the *cap* dropped: the store refused
+    // the whole write, which is not the same thing as evicting to fit.
+    await expect(sender.onFailure!([event("app.crash")])).resolves.toBe(0);
   });
 
   it("replayFailed() drains the queue and clears it on success", async () => {

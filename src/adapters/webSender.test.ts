@@ -83,7 +83,9 @@ describe("webSender — the offline queue through the Store port (#89)", () => {
     const store = memoryStore({ unavailable: true });
     const sender = webSender("https://x/collect", "edge_k", store);
 
-    await expect(sender.onFailure!([event("app.crash")])).resolves.toBeUndefined();
+    // Resolves to the §9.4 drop count, and nothing the *cap* dropped: the store refused
+    // the whole write, which is not the same thing as evicting to fit.
+    await expect(sender.onFailure!([event("app.crash")])).resolves.toBe(0);
   });
 
   it("replays the queue and clears it on success", async () => {

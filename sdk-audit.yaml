@@ -137,12 +137,15 @@ common_attributes:
   - {field: device.id_ephemeral, type: bool, unit: none, always_present: false, evidence: telemetry.ts:612}   # true only when the Store reported unavailable; omitted when false (#91)
   - {field: session.id, type: string, unit: none, always_present: true, evidence: telemetry.ts:615}
   - {field: session.start_time, type: string, unit: none, always_present: true, evidence: telemetry.ts:616}   # ISO 8601
-  - {field: session.sequence, type: int, unit: none, always_present: true, evidence: telemetry.ts:617}         # ++ per acknowledged batch
+  - {field: session.sequence, type: int, unit: none, always_present: true, evidence: telemetry.ts:938}         # ++ per acknowledged batch
+  - {field: event.sequence, type: int, unit: none, always_present: true, evidence: telemetry.ts:1032}          # per-session ordinal, stamped AFTER beforeSend; persisted with the session so a resume continues it. (session.id, event.sequence) is the backend dedup key; gaps = real loss, duplicates = replay (#94, contract 2.4)
   - {field: sdk.platform, type: string, unit: none, always_present: true, evidence: telemetry.ts:618}          # constant "react-native" (BOTH web & native)
   - {field: sdk.version, type: string, unit: none, always_present: true, evidence: telemetry.ts:619}           # package.json version
   - {field: session.sample_rate, type: float, unit: none, always_present: true, evidence: telemetry.ts:839}    # 0.0-1.0, the rate THIS session was rolled at (#93); absent => assume 1.0
-  - {field: sdk.hook_dropped, type: int, unit: none, always_present: true, evidence: telemetry.ts:840}         # monotonic; beforeSend returned null — the hook WORKING (#93)
-  - {field: sdk.hook_failed, type: int, unit: none, always_present: true, evidence: telemetry.ts:841}          # monotonic; beforeSend threw — the hook BROKEN (#93)
+  - {field: sdk.hook_dropped, type: int, unit: none, always_present: true, evidence: telemetry.ts:946}         # monotonic; beforeSend returned null — the hook WORKING (#93)
+  - {field: sdk.hook_failed, type: int, unit: none, always_present: true, evidence: telemetry.ts:947}          # monotonic; beforeSend threw — the hook BROKEN (#93)
+  - {field: sdk.events_dropped, type: int, unit: none, always_present: true, evidence: telemetry.ts:944}       # monotonic, process-lifetime (NOT reset by a session rotation); 0 until the first drop (#94)
+  - {field: sdk.drop_reason, type: string, unit: none, always_present: false, evidence: telemetry.ts:945}      # OMITTED until a drop occurs; domain queue_full|store_full|rejected — "rejected" has no producer yet (needs 4xx-drops-the-batch, #113)
   # --- device block (from DeviceInfo handler; present when collect() succeeds) ---
   - {field: app.name, type: string, unit: none, always_present: false, evidence: adapters/native/deviceInfo.native.ts:52 / web/deviceInfo.web.ts:16}
   - {field: app.version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:53}
@@ -187,9 +190,9 @@ session:
     session.reason=launch; an expired record is adopted, finalized under its OWN id and
     start_time, then rotated. evidence telemetry.ts:367-403
   persistence: >
-    telemetry_session = {id, start, lastActivity, sequence, eventCount, errorCount, sampled,
-    sampleRate}, written on every non-session event and on every acknowledged batch (so a resumed session does not restart
-    session.sequence at 0). Process death, tab close, hard reload and bfcache restore all resume.
+    telemetry_session = {id, start, lastActivity, sequence, eventSequence, eventCount, errorCount,
+    sampled, sampleRate}, written on every non-session event and on every acknowledged batch (so a resumed session does not restart
+    session.sequence or event.sequence at 0 — restarting either forges duplicate dedup keys). Process death, tab close, hard reload and bfcache restore all resume.
     On web the Store is localStorage, so the session is browser-wide and shared across tabs —
     intended (§4.2). evidence telemetry.ts:422-432, 658, 826
   idle_timeout: 30 min. SESSION_IDLE_MS = 30*60*1000 (telemetry.ts:13); checked in log() via expiryReason() — if now-lastActivity > 30min, rotateSession("idle"). session.* events and metrics don't count as activity. evidence telemetry.ts:409-414, 649-659
@@ -230,8 +233,10 @@ transport:
   serialization: json. buildBatch() => JSON.stringify({type:"telemetry_batch", timestamp, batch_size, events}). evidence src/adapters/batch.ts:5-12
   compression: none
   batching:
-    flush_interval: 10000 ms default (flushIntervalMs; <=0 disables timer). evidence telemetry.ts:186,204-206
-    max_batch_size: 2 events default (batchSize). flush() splices UP TO batchSize per send; flush auto-triggered when queue length >= batchSize. evidence telemetry.ts:185,515-516,634-638
+    flush_interval: 30000 ms default (flushIntervalMs; <=0 disables timer). Android's number, deliberately — these SDKs feed shared tables and a per-SDK cadence makes cross-platform arrival comparisons wrong (contract 9.4, #94). evidence telemetry.ts:325
+    max_batch_size: 50 events default (batchSize). flush() splices UP TO batchSize per send; flush auto-triggered when queue length >= batchSize. Also Android's number (contract 9.4, #94). evidence telemetry.ts:324
+    queue_cap: 500 events, drop-oldest, app.crash evicted LAST (evictIndex scans for the oldest non-crash; when every row is a crash the oldest crash goes rather than growing past the cap). Each eviction books sdk.events_dropped++ / sdk.drop_reason="queue_full". evidence telemetry.ts:26,41-44,1044-1049 (#94)
+    crash_path: an app.crash does NOT wait for the batch to fill — flushCrash() persists the WHOLE queue through the Store, reorders crashes to the front, then sends EXACTLY ONE batch. Not a drain: a dying process gets one round trip. The queue is left intact (most app.crash rows are non-fatal — a caught error or a console.error under the default captureConsole), so a successful send leaves a duplicate on disk to replay next launch; (session.id, event.sequence) is what makes that free. evidence telemetry.ts:871-903 (#94)
     flush_on_background: true (native only) — finalizeSession() awaits flush() on AppState background. evidence telemetry.ts:316, index.native.ts:93
   retry:
     strategy: native = exponential backoff 500*2^attempts + Math.random()*200 jitter (nativeSender.ts:44-46); web = linear attempts*500 (webSender.ts:45). Retry lives in the sender's send().
@@ -242,7 +247,8 @@ transport:
     durability_asymmetry: web persists SYNCHRONOUSLY inside onFailure() (webSender.ts:14-22), so the write lands before the promise settles — the unload-path crash window closes. Native awaits (nativeSender.ts:13-21), so it only narrows. This is why the port is not uniformly async.
     corrupt_payload: a half-written or non-array payload decodes to [] and the key is cleared on any hit, so junk is dropped once instead of being re-read every launch. Previously a bare JSON.parse that threw through replayFailed(). evidence adapters/failedEvents.ts decodeFailed, takeFailed in both senders
     unavailable_storage: reported by the port as {status:"unavailable"} and logged via debug.warn; never throws out of onFailure(). evidence nativeSender.ts:18-20, webSender.ts:19-21
-    caps: NONE — persisted array grows unbounded (append-only [...existing, ...events]); no size/count cap, no eviction. Capping needs sdk.events_dropped + sdk.drop_reason="store_full" (v4, backend sign-off). evidence adapters/failedEvents.ts encodeFailed
+    caps: 500 events AND 1 MB (UTF-8, measured on the encoded payload via TextEncoder), same drop-oldest / app.crash-evicted-last rule as the in-memory queue — encodeFailed() shares evictIndex() with core so the two queues can never disagree about what survives. encodeFailed returns {json, dropped}; both senders return `dropped` from onFailure() and core books it as sdk.events_dropped / sdk.drop_reason="store_full". Real numbers: Android caps AsyncStorage at 6 MB app-wide, web localStorage is the HOST APP's ~5 MB. evidence adapters/failedEvents.ts:29-72, webSender.ts:13-24, nativeSender.ts:16-28, telemetry.ts:1052-1056 (#94, contract 9.4)
+    replay_uncounted: a re-persist inside replayFailed() can also evict, and that count is NOT booked — it happens in the sender with no core instance in reach. Contract 3.7 already says these counters are lossy about their own loss; event.sequence gaps are the real coverage.
   sampling_or_throttling: >
     No event-level sampling, rate limiting, deduplication, or config flag found anywhere in
     event creation (log/logMetric), queueing, or send paths. Checked telemetry.ts, both senders,
@@ -250,8 +256,9 @@ transport:
     deltas are rolled up into one metric per 10s window (max/p95/dropped_count) rather than one
     event per frame (frameAggregate.ts:17-34). network_change and app_lifecycle emit only on
     transition (edge-triggered), not throttling. memory_usage is effectively single-shot (see
-    inconsistencies). Note: flush() only drains batchSize (2) events per call, so a burst can
-    lag behind, but events are queued not dropped.
+    inconsistencies). Note: flush() still only sends batchSize (50) events per call — it does
+    not loop — so a large backlog drains one batch per flush interval; contract 12.5's draining
+    flush() is a separate change. Events beyond the 500-event queue cap ARE now dropped (#94).
 
 # ============================================================
 # 5. Privacy & data handling
@@ -270,7 +277,7 @@ privacy:
     beforeSend(event) => event | null (#93, contract 3.6). Constructor-only on both builds — no
     runtime setter, because registering later leaves a window where session.started and the earliest
     requests have already been enqueued. Runs SYNCHRONOUSLY at ENQUEUE (core/beforeSend.ts, called
-    from Telemetry.enqueue at telemetry.ts:907), over events AND metrics: at enqueue so a failed send
+    from Telemetry.enqueue at telemetry.ts:1024), over events AND metrics: at enqueue so a failed send
     persists an already-scrubbed batch instead of writing PII to localStorage/AsyncStorage; sync
     because app.crash flushes during teardown. Three tiers, enforced by RE-STAMPING after the hook
     returns and never by throwing — Tier A immutable (type, eventName/metricName, timestamp,
@@ -287,7 +294,9 @@ privacy:
     row never reports its own drop — the same "lossy about their own loss" shape contract 3.7
     describes for sdk.events_dropped. Alerting on the number under-reports exactly when the hook
     is worst.
-    evidence core/beforeSend.ts, core/beforeSend.test.ts, telemetry.ts:905-916
+    event.sequence is stamped AFTER the hook (telemetry.ts:1032): a dropped row must not consume
+    an ordinal, or every scrub would read as real loss to the backend's gap detection (#94).
+    evidence core/beforeSend.ts, core/beforeSend.test.ts, telemetry.ts:1013-1038
   pii_risks: >
     HIGH surface. (1) email/phone/fullName/avatar sent plaintext once profile set.
     (2) http.url carries full URLs incl. query strings (tokens/PII in query params leak).
@@ -315,7 +324,7 @@ api:
       configurable to either shape, and memoryStore({unavailable:true}) is shared core's fallback
       when no store is injected. Consumers today: both senders' offline queue, and core's
       persisted device.id (#91), the resumable session record and the sticky sample decision that
-      rides in it (#92, #93). Still pending: capped offline store.
+      rides in it (#92, #93), and the capped offline store (#94).
       evidence core/store.ts, core/memoryStore.ts, adapters/web/store.web.ts,
       adapters/native/store.native.ts, telemetry.ts:169, index.web.ts / index.native.ts
   custom_event_api: "log(event: string, data?: Record<string, any>): Promise<void>"   # index.base.ts:21-24
@@ -347,8 +356,8 @@ features:
   anr-detection: {status: na, evidence: none, notes: "not implemented"}
   hang-detection: {status: na, evidence: none, notes: "not implemented"}
   frame-stats: {status: done, evidence: frameAggregate.ts + frameDrops*.ts, notes: "frame_render_time metric, p95/max/dropped per 10s window; rAF-based"}
-  batching: {status: done, evidence: telemetry.ts:634-638 + batch.ts, notes: "batchSize default 2, telemetry_batch envelope"}
-  offline-persistence: {status: partial, evidence: nativeSender.ts:9-12 + webSender.ts:9-13, notes: "AsyncStorage/localStorage replay, but UNBOUNDED — no cap or eviction"}
+  batching: {status: done, evidence: telemetry.ts:324-325 + batch.ts, notes: "batchSize default 50, flushIntervalMs 30000, 500-event queue cap, telemetry_batch envelope (#94)"}
+  offline-persistence: {status: done, evidence: adapters/failedEvents.ts:29-72 + nativeSender.ts:16-28 + webSender.ts:13-24, notes: "AsyncStorage/localStorage replay, capped at 500 events / 1 MB with app.crash evicted last (#94)"}
   retry-backoff: {status: done, evidence: nativeSender.ts:15-53 + webSender.ts:19-51, notes: "native exponential+jitter, web linear; 3 attempts"}
   no-sampling-guarantee: {status: done, evidence: "grep of full src — telemetry.ts, senders, adapters", notes: "no sampling/rate-limit/dedup; frame aggregation is the only rollup and it drops per-frame granularity by design"}
 
@@ -406,4 +415,4 @@ open_questions:
   - Should the web build report sdk.platform="web" instead of the hardcoded "react-native"?
   - Are the web-vitals allowlist entries a planned workstream or leftover scaffolding?
   - Backend contract: does the collector expect a top-level `location` in the telemetry_batch envelope? It is not sent.
-  - Offline store has no cap — intended, or a missing eviction policy for long-offline devices?
+  - RESOLVED (#94): the offline store now caps at 500 events / 1 MB with app.crash evicted last.
