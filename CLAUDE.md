@@ -112,6 +112,7 @@ type TelemetryOpts = {
   beforeSend?: BeforeSend;    // sync scrubbing hook, run at enqueue (see below)
   sessionSampleRate?: number; // 0.0-1.0, sticky per session; default 1
   traceHostAllowlist?: string[]; // bare hosts, exact, ports ignored; EMPTY by default (§6.4)
+  buildId?: string;         // app.build_id — symbolication join key; omitted when unset (§4.8)
 };
 ```
 
@@ -204,6 +205,7 @@ sdk.hook_dropped / sdk.hook_failed  — beforeSend counters; separate on purpose
 sdk.events_dropped     — monotonic, process-lifetime; 0 until the first drop
 sdk.drop_reason        — omitted until a drop; queue_full | store_full | rejected
 app.*        name, version, build_number, package_name
+app.build_id           consumer-supplied symbolication join key; omitted when unset, never "" (§4.8)
 device.*     platform, platform_version, model, manufacturer, brand (+ OS-specific extras)
 network.*    type, is_connected
 user.*       name/fullName/email/phone/avatar/custom.* — only when a profile is set
@@ -553,7 +555,7 @@ them** — the SDK's omitted-means-absent discipline is now universal.
 | `error.type` | from **`error.name` only, never `constructor.name`** — minification turns `class PaymentError` into `"a"`, refragmenting grouping on every deploy. Cap 255; un-named classes report `"Error"` |
 | `error.source` | 5 values: `global_handler`, `unhandled_rejection`, `cross_origin` (web), `console`, `reported` |
 | `error.message` | omitted when absent. Cap 1000 |
-| `error.stacktrace` | omitted when absent. Cap 2000, **tail-truncated on a frame boundary** |
+| `error.stacktrace` | omitted when absent. **Raw and byte-for-byte** under the cap. Cap 2000, **tail-truncated on a frame boundary** |
 | `error.fatal` | **native only, omitted on web** — always `false` on `app.error` |
 | `error.breadcrumbs` | **stringified** JSON array, **`app.crash` only** |
 
@@ -585,6 +587,45 @@ live root and correctly carries no trace keys at all.
 **`captureConsole` defaults off.** React's own dev-mode `console.warn` output was the dominant
 contributor to v3's crash count, which is what made "is my app crashing more this release?"
 unanswerable. Opted in, `console.error` becomes `app.error` and `console.warn` a breadcrumb.
+
+### Symbolication — `app.build_id` and the stack payload
+
+`adapters/crashCapture.ts` + `collectContext()` (§4.8, #101). The wire half only: the source-map
+build plugin and the resolve pipeline are backend/tooling work and explicitly out of scope.
+
+**`error.stacktrace` travels raw and byte-for-byte** — no normalization, no reformatting, no path
+rewriting, because `metro-symbolicate` consumes the engine's native format and any normalization
+breaks it. Structured `error.frames` was rejected on the record: the SDK would parse **three**
+formats (V8 `at fn (url:1:2)`, JSC `fn@url:1:2`, Hermes `at fn (address at bundle:1:2)`) and every
+parser bug becomes an app-store rollout.
+
+**The resolve key is `(app_id, device.platform, app.build_id)` — three parts.** A git SHA is
+identical for the iOS and Android builds of one commit while Metro's output is not, so a
+single-part key resolves an Android crash against the iOS map and produces frames that are
+**plausible and wrong**. `device.platform` is already on Context, so the second part is free.
+
+**`app.build_id` is consumer-supplied** — `createTelemetry({ buildId })`, constructor-only —
+**omitted when unset, never `""`**, and ⚠ **never derived from `app.version` + `app.build_number`,
+under any circumstances**. That fallback is correct for the majority, which is exactly what makes
+it dangerous: under Expo Updates or CodePush the native binary is unchanged, so it fetches the
+**wrong** map and resolves to plausible-wrong lines with nothing on the row marking them
+untrustworthy. **Absence is itself the signal.** The SDK has zero OTA awareness — no
+`expo-updates` or `code-push` dependency, peer or optional — so it cannot derive one honestly.
+
+It is assembled **with the identity keys**, after caller `data`, so a stray `log()` payload cannot
+shift which map a crash resolves against. Being `app.*` it is **already Tier A immutable** in
+`beforeSend` — the join key cannot be scrubbed away. `error.stacktrace` stays **Tier C**: a
+consumer with genuine PII in frames must be able to drop it, and that forfeit is theirs.
+
+⚠ **The SDK never assigns `Error.stackTraceLimit`.** RN sets it nowhere, so V8's default of **10
+frames** governs — not the 2000-char cap, which holds ~26 — and ten frames of an
+`unhandledrejection` can be entirely library internals. Raising it globally would be an invisible
+mutation of the consumer's runtime, making every `new Error()` in their app more expensive and
+unattributable to us. So `adviseStackTraceLimit()` says it **once per process, in dev only**, and
+the consumer writes the line. It fires from `buildErrorAttributes()` — the one chokepoint every
+captured stack passes through — rather than at init, so #23's *"construct → log → flush is silent
+by default"* still holds, and it is deliberately **not** behind the `debug()` gate: a consumer who
+has not wired this up is exactly the consumer who has not set `debug: true`.
 
 `view.error_count` and `sdk.error_count` count **both** names — a closed enumeration, not failed
 requests and not `console.warn`. Only `app.crash` gets the dedicated crash path (persist + one
@@ -789,7 +830,12 @@ ingest.
   **peer deps** (`device-info` optional). Web adapters must not import them.
 - Guard native-only globals (`ErrorUtils`, `AppState`) before use.
 - **No bare `console.log`.** All SDK-internal logging goes through `debug()` in
-  `core/debug.ts`, off unless `debug: true`.
+  `core/debug.ts`, off unless `debug: true`. **One carve-out, and it is closed**: a *config
+  wiring* diagnostic the consumer must see while building may write directly, gated on
+  `isDev()` from the same file and said **once per process** — §6.4's malformed-allowlist
+  report and §4.8's `Error.stackTraceLimit` advisory are the only two, because `debug: true`
+  is exactly what a consumer with a wiring mistake has not set. Anything that fires more than
+  once, or on a path a shipped app takes, goes through `debug()`.
 - A `Sender` implements `send()`, optionally `onFailure()` + `replayFailed()`. JSON only, via
   `buildBatch()`. No compression, no Protobuf.
 - Non-trivial logic leaves one runnable check behind — a small `*.test.ts` next to the file.
@@ -831,6 +877,13 @@ coordination.
 - The 2000-char `error.stacktrace` cap is a **tuning knob, not a contractual constant**, and may be
   tight for Hermes. The cut lands on a frame boundary because a mid-frame cut resolves to a
   *different, wrong* location rather than failing.
+- **`app.build_id` needs a backend column before it is useful** — it ships on the Context block
+  today, but a join key sitting in an attribute bag nothing queries is inert (§4.8's work-list
+  item 7). Symbolication itself is greenfield backend-side.
+- **The `Error.stackTraceLimit` advisory writes to the console outside the `debug()` gate** —
+  dev-only, once per process, and from the stack-capture chokepoint so #23's "construct → log →
+  flush is silent by default" still holds. It is the second of the two carve-outs the
+  Conventions bullet names, not an exception to it.
 - **`app.error` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
 - Crash capture is still JS-level, so **`error.fatal: true` means "`ErrorUtils` called it fatal"**,

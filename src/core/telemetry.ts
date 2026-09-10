@@ -267,6 +267,12 @@ type Opts = {
     // on upgrade, so nobody's CORS breaks until they opt in. Listing a host is the
     // consumer's assertion that that host's CORS config allows the `traceparent` header.
     traceHostAllowlist?: string[];
+    // §4.8's symbolication resolve key, third part of `(app_id, device.platform, app.build_id)`.
+    // Consumer-supplied — the SDK has zero OTA awareness and cannot derive one — omitted when
+    // unset, and **never** falls back to version + build_number: under Expo Updates or
+    // CodePush the binary is unchanged, so that fallback resolves against the wrong map and
+    // produces frames that are plausible and wrong, with nothing on the row marking them.
+    buildId?: string;
     // The deprecated native screen feeds — `navigation` and `screen.duration` (§4.11) — on
     // the ROUTE path. Defaults on, because shared core's v3 behaviour *is* the native one;
     // the web entry opts out, having never emitted `screen.duration` at all. It does not
@@ -365,6 +371,8 @@ export class Telemetry {
     private sampleRate: number;
     private sampled: boolean;
     private readonly beforeSend?: BeforeSend;
+    /** `app.build_id` (§4.8). Empty string is *not* a build id — it is an unset one. */
+    private readonly buildId?: string;
     private hookDropped = 0;             // sdk.hook_dropped — the hook working
     private hookFailed = 0;              // sdk.hook_failed  — the hook broken
 
@@ -393,6 +401,9 @@ export class Telemetry {
         this.platform = opts?.platform;   // set before id generation (suffix source)
         this.store = opts?.store ?? memoryStore({ unavailable: true });
         this.beforeSend = opts?.beforeSend;
+        // "Omitted when unset, never `\"\"`" (§4.8): an empty-string build id would reproduce
+        // §9.3's `rum_apps` collapse inside symbolication, where absence is itself the signal.
+        this.buildId = typeof opts?.buildId === "string" && opts.buildId !== "" ? opts.buildId : undefined;
         this.configuredSampleRate = normalizeSampleRate(opts?.sessionSampleRate);
         this.sampleRate = this.configuredSampleRate;
         // Rolled here so a bare `new Telemetry()` — no resumeOrStartSession() — is decided
@@ -1132,6 +1143,10 @@ export class Telemetry {
             ...this.flattenWithPrefix('', data || {}),
             // Identity keys land after caller data: `data` may override app./device./network.*
             // but must never override these (§3.3).
+            // With the identity keys, not with deviceInfo's `app.*`: it is the symbolication
+            // join key, so a stray `log()` payload must not be able to shift which map a
+            // crash resolves against.
+            ...(this.buildId ? { 'app.build_id': this.buildId } : {}),
             'device.id': deviceId,
             ...(this.deviceIdEphemeral ? { 'device.id_ephemeral': true } : {}),
             // Omitted entirely on anonymous traffic (§3.2) — no "", no placeholder.

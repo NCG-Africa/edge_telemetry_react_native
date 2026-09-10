@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { debug, setDebug } from "./debug";
+import { debug, setDebug, isDev } from "./debug";
 
 afterEach(() => { setDebug(false); vi.restoreAllMocks(); });
 
@@ -39,5 +39,30 @@ describe("debug gate", () => {
     setDebug(false);
     debug.log("silent again");
     expect(log).not.toHaveBeenCalled();
+  });
+});
+
+describe("isDev — the gate for dev-only config diagnostics (not the debug gate)", () => {
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("trusts RN's __DEV__ boolean over anything else", () => {
+    vi.stubGlobal("__DEV__", true);
+    expect(isDev()).toBe(true);
+
+    vi.stubGlobal("__DEV__", false);
+    expect(isDev()).toBe(false);   // even though NODE_ENV is "test" under vitest
+  });
+
+  it("falls back to NODE_ENV where __DEV__ does not exist, and production is not dev", () => {
+    vi.stubGlobal("__DEV__", undefined);
+    vi.stubGlobal("process", { env: { NODE_ENV: "production" } });
+    expect(isDev()).toBe(false);
+
+    vi.stubGlobal("process", { env: { NODE_ENV: "development" } });
+    expect(isDev()).toBe(true);
+
+    // No signal at all: not dev, so a diagnostic stays quiet rather than guessing.
+    vi.stubGlobal("process", { env: {} });
+    expect(isDev()).toBe(false);
   });
 });

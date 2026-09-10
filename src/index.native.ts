@@ -30,6 +30,8 @@ export class TelemetryNative extends TelemetryBase {
         sessionSampleRate?: number;
         // §6.4/#99 — bare hosts, exact match, ports ignored, empty by default.
         traceHostAllowlist?: string[];
+        // §4.8 — symbolication resolve key. Omitted when unset, never `""`, never derived.
+        buildId?: string;
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -78,6 +80,7 @@ export class TelemetryNative extends TelemetryBase {
                 beforeSend: opts?.beforeSend,
                 sessionSampleRate: opts?.sessionSampleRate,
                 traceHostAllowlist: opts?.traceHostAllowlist,
+                buildId: opts?.buildId,
             });
 
             // 🔄 recover failed events right after init

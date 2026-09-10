@@ -8,7 +8,7 @@
 // is a sentence a consumer must be able to state during a security review, so it is enforced
 // by there being no other header name anywhere in this file.
 
-import { debug } from "../core/debug";
+import { debug, isDev } from "../core/debug";
 
 /** Lowercase on purpose: header names are compared case-insensitively (§6.4). */
 export const TRACEPARENT = "traceparent";
@@ -23,18 +23,10 @@ export type TraceOutcome =
     | "injected_expired"
     | "injected_unattributed";
 
-/**
- * `__DEV__` on RN, `NODE_ENV` elsewhere. A malformed allowlist entry throws here and is
- * dropped in production (§6.4) — a stated divergence from Android's unconditional `require`,
- * because a RUM SDK crashing a shipped banking app over a config typo is the one failure
- * worse than no tracing at all.
- */
-function isDev(): boolean {
-    const dev = (globalThis as any).__DEV__;
-    if (typeof dev === "boolean") return dev;
-    const env = (globalThis as any).process?.env?.NODE_ENV;
-    return env !== undefined && env !== "production";
-}
+// A malformed allowlist entry throws in dev and is dropped in production (§6.4) — a stated
+// divergence from Android's unconditional `require`, because a RUM SDK crashing a shipped
+// banking app over a config typo is the one failure worse than no tracing at all. `isDev`
+// itself lives in core/debug, shared with §4.8's stackTraceLimit advisory.
 
 /**
  * A **bare host**: no scheme, no path, no port, no wildcard. Ports are ignored by matching

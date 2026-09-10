@@ -13,12 +13,13 @@ function silenceConsole() {
   vi.spyOn(console, "error").mockImplementation(() => {});
 }
 
-function harness() {
+function harness(extra: Record<string, any> = {}) {
   const sent: TelemetryEvent[] = [];
   const t = createTelemetry({
     apiKey: "edge_k", endpoint: "https://x/telemetry",
     sender: { send: async (e: TelemetryEvent[]) => { sent.push(...e); } },
     batchSize: 500, flushIntervalMs: 0,
+    ...extra,
   });
   return { t, sent };
 }
@@ -172,5 +173,44 @@ describe("captureConsole defaults off (§4.7)", () => {
 
     expect(sent.some((e) => e.eventName === "app.error")).toBe(false);
     expect(sent.some((e) => e.eventName === "app.crash")).toBe(false);
+  });
+});
+
+describe("app.build_id — §4.8's symbolication resolve key", () => {
+  it("rides the Context block of every row when set", async () => {
+    silenceConsole();
+    const { t, sent } = harness({ buildId: "9f2c1ab" });
+    await settle(t);
+
+    await t.captureError(new Error("boom"));
+    await t.log("navigation");
+    await t.flush();
+
+    expect(sent.length).toBeGreaterThan(1);
+    expect(sent.every((e) => e.attributes!["app.build_id"] === "9f2c1ab")).toBe(true);
+  });
+
+  it("is omitted when unset and when empty — never `\"\"`, never derived from version + build_number", async () => {
+    silenceConsole();
+    for (const extra of [{}, { buildId: "" }]) {
+      const { t, sent } = harness(extra);
+      await settle(t);
+      await t.captureError(new Error("boom"));
+      await t.flush();
+
+      // Absence is itself the signal (§4.8): no `""`, and nothing derived in its place.
+      expect("app.build_id" in attrsOf(sent, "app.error")).toBe(false);
+    }
+  });
+
+  it("cannot be shifted by a caller's log() payload — a wrong resolve key symbolicates wrong", async () => {
+    silenceConsole();
+    const { t, sent } = harness({ buildId: "real" });
+    await settle(t);
+
+    await t.log("navigation", { "app.build_id": "forged" });
+    await t.flush();
+
+    expect(attrsOf(sent, "navigation")["app.build_id"]).toBe("real");
   });
 });

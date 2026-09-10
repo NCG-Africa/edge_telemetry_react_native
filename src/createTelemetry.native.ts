@@ -22,6 +22,10 @@ export type TelemetryOpts = {
     // upgrade. Listing a host asserts that host's CORS allows `traceparent`; a malformed
     // entry throws in dev and is dropped in production.
     traceHostAllowlist?: string[];
+    // §4.8 — the symbolication resolve key. A git SHA or CI run number; consumer-supplied
+    // (the SDK has zero OTA awareness), **omitted when unset, never `""`**, and never
+    // derived from app.version + app.build_number under any circumstances.
+    buildId?: string;
 };
 
 // Deliberately loose: `apiKey` is the *credential*, and under AUTH_MODE=jwt it is

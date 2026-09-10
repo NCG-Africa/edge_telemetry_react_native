@@ -20,6 +20,11 @@ vi.mock("react-native-device-info", () => ({
     getModel: async () => "Pixel 8",
     getSystemVersion: async () => "14",
     getSystemName: async () => "Android",
+    getDeviceName: async () => "Pixel 8",
+    getApiLevel: async () => 34,
+    getFingerprint: async () => "google/panther",
+    getHardware: async () => "panther",
+    getProduct: async () => "panther",
   },
 }));
 
@@ -40,13 +45,14 @@ function silenceConsole() {
   vi.spyOn(console, "error").mockImplementation(() => {});
 }
 
-async function harness() {
+async function harness(extra: Record<string, any> = {}) {
   const { createTelemetry } = await import("./createTelemetry.native");
   const sent: TelemetryEvent[] = [];
   const t = createTelemetry({
     apiKey: "edge_k", endpoint: "https://x/telemetry",
     sender: { send: async (e: TelemetryEvent[]) => { sent.push(...e); } },
     batchSize: 500, flushIntervalMs: 0,
+    ...extra,
   });
   return { t, sent };
 }
@@ -156,5 +162,52 @@ describe("captureError on native (§4.7)", () => {
     // The web build omits the key entirely (see error.web.test.ts).
     expect(err["error.fatal"]).toBe(false);
     expect(sent.some((e) => e.eventName === "app.crash")).toBe(false);
+  });
+});
+
+describe("app.build_id and the stackTraceLimit advisory on native (§4.8)", () => {
+  it("ships app.build_id on every row when set, and omits it when unset", async () => {
+    silenceConsole();
+    const withId = await harness({ buildId: "ci-4471" });
+    await settle(withId.t);
+    await withId.t.captureError(new Error("boom"));
+    await withId.t.flush();
+    expect(withId.sent.every((e) => e.attributes!["app.build_id"] === "ci-4471")).toBe(true);
+
+    const without = await harness();
+    await settle(without.t);
+    await without.t.captureError(new Error("boom"));
+    await without.t.flush();
+    const a = without.sent.find((e) => e.eventName === "app.error")!.attributes!;
+    expect("app.build_id" in a).toBe(false);
+    // Present and deliberately unused: no fallback to version + build_number, ever.
+    expect(a["app.version"]).toBe("2.3.4");
+    expect(a["app.build_number"]).toBe("77");
+  });
+
+  it("never assigns Error.stackTraceLimit — driving the public API end to end", async () => {
+    silenceConsole();
+    const before = Error.stackTraceLimit;
+    let assigned = false;
+    Object.defineProperty(Error, "stackTraceLimit", {
+      configurable: true,
+      get: () => before,
+      set: () => { assigned = true; },
+    });
+
+    try {
+      let handler: ((e: any, fatal?: boolean) => void) | undefined;
+      g.ErrorUtils = { setGlobalHandler: (h: any) => { handler = h; }, getGlobalHandler: () => undefined };
+
+      const { t } = await harness();
+      await settle(t);
+      handler!(new Error("boom"), true);
+      await t.captureError(new Error("handled"));
+      await t.flush();
+
+      expect(assigned).toBe(false);
+    } finally {
+      Object.defineProperty(Error, "stackTraceLimit", { configurable: true, writable: true, value: before });
+    }
   });
 });

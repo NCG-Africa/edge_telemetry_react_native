@@ -162,6 +162,35 @@ try {
 > `COUNT(event_name='app.crash') / sessions` is a crash-free rate with no `WHERE` clause to
 > forget. `log("app.crash", …)` is routed to `app.error` instead of manufacturing a crash row.
 
+#### Making crashes symbolicatable — two lines you write
+
+RN ships every crash stack minified, so each frame reads as a single letter. Two wiring steps
+fix that, and the SDK does neither on your behalf:
+
+```typescript
+Error.stackTraceLimit = 50;             // in your entry file, before createTelemetry()
+
+const telemetry = createTelemetry({
+  apiKey: "edge_xxxxxxxx",
+  endpoint: "https://collector.example.com/telemetry",
+  buildId: process.env.GIT_SHA,         // ships as `app.build_id`
+});
+```
+
+- **`Error.stackTraceLimit`** — the engine default is **10 frames**, well short of the SDK's
+  2000-char stack cap (~26 frames), and ten frames of a rejected promise can be entirely library
+  internals. The SDK **never assigns it**: raising it globally makes every `new Error()` in your
+  app more expensive, invisibly. In dev it warns once, then leaves it to you.
+- **`buildId`** — the symbolication join key, resolved as
+  `(app, device.platform, app.build_id)`. A git SHA or CI run number. It is **omitted when unset
+  and never derived from `app.version` + `app.build_number`** — under Expo Updates or CodePush
+  the binary is unchanged, so a derived key would resolve against the wrong source map and give
+  you frames that are plausible and wrong. Skip it and crashes stay unsymbolicated, which is at
+  least honest.
+
+`error.stacktrace` ships **raw and byte-for-byte** so `metro-symbolicate` can consume it; over
+the cap the tail is dropped on a frame boundary and marked `… [truncated]`.
+
 > **Allowlist note:** only the allowlisted event names reach the backend as-is. Any other name
 > you pass to `log()` is shipped as `custom_event` with your original name in
 > `attributes["event.name"]` — so custom events are preserved, not dropped.

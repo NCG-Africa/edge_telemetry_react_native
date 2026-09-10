@@ -333,6 +333,24 @@ describe("v3 wire contract — metric shape", () => {
     expect(m.attributes!["session.id"]).toBeDefined();
     expect(m.attributes!["memory.unit"]).toBe("MB");
   });
+
+  it("carries app.build_id on a metric too — the join key is not event-only (§4.8)", async () => {
+    const sent: TelemetryEvent[] = [];
+    const sender = { send: vi.fn(async (e: TelemetryEvent[]) => { sent.push(...e); }) };
+
+    const t = new Telemetry({
+      sender, batchSize: 10, flushIntervalMs: 0, buildId: "9f2c1ab",
+      deviceInfoHandler: deviceHandler() as any,
+      networkInfoHandler: networkHandler() as any,
+    });
+
+    await t.logMetric("memory_usage", 128);
+    await t.log("navigation");
+    await t.flush();
+
+    expect(sent).toHaveLength(2);
+    expect(sent.every((e) => e.attributes!["app.build_id"] === "9f2c1ab")).toBe(true);
+  });
 });
 
 describe("navigation route changes", () => {
