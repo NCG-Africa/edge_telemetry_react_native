@@ -55,7 +55,7 @@ const mintSpanId = () => randomHex(16);
 export class TraceManager {
     private root?: Root;
     /** Kept whether or not it is still the carrier: `app.start` reports it at any age. */
-    private readonly launch: Root;
+    private launch: Root;
 
     /**
      * @param launchStartMs what `app.start` reports as `span.start_time` — and **neither
@@ -132,6 +132,26 @@ export class TraceManager {
      */
     clear(): void {
         this.root = undefined;
+    }
+
+    /**
+     * Retire the launch root and mint a replacement, keeping the *reported* launch time —
+     * the process really did start then. For a session rotation that lands **before**
+     * `app.start`, which is the expired-record cold launch and therefore §4.3's most common
+     * path of all.
+     *
+     * Clearing alone would not do: `app.start` reports the launch root at any age, so its
+     * root row would ship under the **new** session while the initial `view` it fathered
+     * shipped under the **old** one. `trace.id` would span a `session.id` (§6.6, invariant 2)
+     * and `GROUP BY rum.action.id` would never reassemble the launch envelope. Re-minting
+     * keeps the retired trace wholly inside the retired session.
+     *
+     * ⚠ The retired trace then has children and no root row — the initial `view` row is a
+     * rootless child. That is the same condition process death already produces by design
+     * (a killed view emits nothing), and it is the cheaper of the two wrongs.
+     */
+    restartLaunchRoot(): void {
+        this.launch = this.mint("launch", Date.now(), this.launch.spanStartMs);
     }
 
     /** Join the live root, or mint one of `mintAs`. A span's *start* extends the root. */

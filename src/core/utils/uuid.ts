@@ -1,7 +1,8 @@
 // Platform-agnostic id generator. The web/native split was byte-identical, so it's gone.
 
 /**
- * Wire-contract ids carry a 16-hex-char (64-bit) random segment (§3.3).
+ * Wire-contract ids carry a 16-hex-char (64-bit) random segment (§3.3) — except W3C
+ * `trace.id`, which is 32 (§6.1). The length is the caller's; the entropy source is not.
  *
  * Entropy is `crypto.getRandomValues`, not `Math.random()` (#91): `device.id` is now
  * persisted, so a collision is *permanent* — two handsets merge into one device row and

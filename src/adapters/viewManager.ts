@@ -14,6 +14,7 @@
 
 import { randomHex } from "../core/utils/uuid";
 import { NetworkSettle } from "./loadingTime";
+import type { TraceAttributes } from "./traceManager";
 
 /** §4.5.1's ladder. `none` is the literal `"unknown"` name, not an absent one. */
 export type ViewNameSource = "explicit" | "route" | "url" | "none";
@@ -33,7 +34,7 @@ export const UNKNOWN_VIEW_NAME = "unknown";
  */
 type Emitter = {
     log(name: string, data?: Record<string, any>): unknown;
-    trace?: { viewSpan(entryAt: number): Record<string, string | number> };
+    trace?: { viewSpan(entryAt: number): TraceAttributes };
 };
 
 type View = {
@@ -54,7 +55,7 @@ type View = {
     // §6.3's Tier 1 keys, captured at view **entry**: a `view` row parents to the root that
     // was live when the screen opened, not the one live when the user left it. Held here
     // rather than read at exit precisely so the later root cannot claim it.
-    span: Record<string, string | number>;
+    span: TraceAttributes;
 };
 
 /** `view_{ms}_{16hex}` (§3.3). No platform suffix — a view never leaves its process. */

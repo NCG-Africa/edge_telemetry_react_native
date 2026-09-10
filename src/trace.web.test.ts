@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { createTelemetry } from "./createTelemetry.web";
 import type { TelemetryEvent } from "./core/telemetry";
 import { memoryStore } from "./core/memoryStore";
+import { SESSION_KEY } from "./core/telemetry";
 import type { SyncStore } from "./core/store";
 
 // #98 — trace and span core observed the only way that matters: the public API in, the
@@ -389,6 +390,46 @@ describe("#98 §6.6's invariants, asserted directly", () => {
     }
     expect(bySession.size).toBeGreaterThan(1);
     for (const sessions of bySession.values()) expect(sessions.size).toBe(1);
+  });
+
+  it("holds across the expired-record cold launch — §4.3's most common relaunch path", async () => {
+    // A record older than the idle window: hydration adopts it, emits the departing `view`
+    // and `session.finalized` under the OLD session, then starts a fresh one — all *before*
+    // `app.start` ships. Merely clearing the carrier there would leave the launch root's row
+    // in the new session and the initial `view` it fathered in the old one.
+    const now = Date.now();
+    const store = memoryStore({
+      seed: {
+        [SESSION_KEY]: JSON.stringify({
+          id: "session_1_aaaaaaaaaaaaaaaa", start: now - 90 * MIN, lastActivity: now - 60 * MIN,
+          sequence: 3, eventSequence: 42, eventCount: 42, errorCount: 0,
+          sampled: true, sampleRate: 1,
+        }),
+      },
+    });
+    const { t, sent } = launch(store);
+    await settle();
+    await t.flush();
+
+    // The rotation really did happen on this path.
+    expect(sent.map((e) => e.eventName)).toContain("session.finalized");
+
+    const bySession = new Map<string, Set<string>>();
+    for (const e of sent) {
+      const trace = e.attributes!["trace.id"];
+      if (!trace) continue;
+      const set = bySession.get(trace) ?? new Set<string>();
+      set.add(e.attributes!["session.id"]);
+      bySession.set(trace, set);
+    }
+    for (const sessions of bySession.values()) expect(sessions.size).toBe(1);
+
+    // …and `app.start`'s root row sits in the same session as the view it fathered.
+    const start = one(sent, "app.start");
+    const successor = attrsOf(sent, "view").find((v) => v["view.load_type"] === "session_rotation");
+    expect(start["trace.root_type"]).toBe("launch");
+    expect(successor).toBeUndefined();   // the successor exits later, not in this batch
+    expect(start["session.id"]).not.toBe("session_1_aaaaaaaaaaaaaaaa");
   });
 
   it("rum.action.id MAY span a view.id — an action outlives the screen it started on", async () => {

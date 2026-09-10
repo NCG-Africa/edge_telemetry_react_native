@@ -1,5 +1,6 @@
 import { Telemetry } from "../core/telemetry";
 import { buildHttpAttributes, contentLengthSize, isCollectorUrl } from "./httpAttributes";
+import type { TraceAttributes } from "./traceManager";
 
 // Double-patching is the exact defect #95 exists to kill: two patches mean two `loadend`
 // listeners and two `http.request` events per call. `trackNetworkRequests()` is public and the
@@ -23,7 +24,7 @@ interface PendingRequest {
      * `span.start_time` is the send. Called at `loadend` to stamp `span.duration_ms` off
      * the same pair of timestamps `http.duration_ms` uses.
      */
-    span?: (endedAt: number) => Record<string, string | number>;
+    span?: (endedAt: number) => TraceAttributes;
 }
 
 interface PatchedXhr extends XMLHttpRequest {

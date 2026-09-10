@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { TelemetryEvent } from "./core/telemetry";
 import { memoryStore } from "./core/memoryStore";
+import { SESSION_KEY } from "./core/telemetry";
 import type { Store } from "./core/store";
 
 // #98 native mirror of trace.web.test.ts. Platform APIs are module-stubbed; the assertions
@@ -258,6 +259,37 @@ describe("#98 native — the carrier's boundaries", () => {
     }
     expect(bySession.size).toBeGreaterThan(1);
     for (const sessions of bySession.values()) expect(sessions.size).toBe(1);
+  });
+
+  it("holds across the expired-record cold launch — §4.3's most common relaunch path", async () => {
+    // Hydration adopts the stale record, emits the departing `view` and `session.finalized`
+    // under the OLD session and starts a fresh one — all before `app.start` ships.
+    const now = Date.now();
+    const store = memoryStore({
+      async: true,
+      seed: {
+        [SESSION_KEY]: JSON.stringify({
+          id: "session_1_aaaaaaaaaaaaaaaa_ios", start: now - 90 * MIN, lastActivity: now - 60 * MIN,
+          sequence: 3, eventSequence: 42, eventCount: 42, errorCount: 0,
+          sampled: true, sampleRate: 1,
+        }),
+      },
+    });
+    const { t, sent } = await launch(store);
+    await t.flush();
+
+    expect(sent.map((e) => e.eventName)).toContain("session.finalized");
+
+    const bySession = new Map<string, Set<string>>();
+    for (const e of sent) {
+      const trace = e.attributes!["trace.id"];
+      if (!trace) continue;
+      const set = bySession.get(trace) ?? new Set<string>();
+      set.add(e.attributes!["session.id"]);
+      bySession.set(trace, set);
+    }
+    for (const sessions of bySession.values()) expect(sessions.size).toBe(1);
+    expect(one(sent, "app.start")["session.id"]).not.toBe("session_1_aaaaaaaaaaaaaaaa_ios");
   });
 
   it("rum.action.id MAY span a view.id — an action outlives the screen it started on", async () => {

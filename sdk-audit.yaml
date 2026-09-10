@@ -46,8 +46,16 @@ events:
       dropped on ingest, and it is already in ALLOWED_NAMES, so it is being emitted.
       It is also §6.2's launch root, minted in the Telemetry constructor (before ViewManager, so
       the initial view parents to it and a web hard load is never `navigation`).
-      evidence src/core/telemetry.ts (emitAppStart); src/adapters/traceManager.ts
-    payload_fields: []   # the trace keys below are its whole payload
+      evidence src/core/telemetry.ts emitAppStart(); src/adapters/traceManager.ts:78-80
+      (launchRootAttributes), :168-177 (spanKeys)
+    payload_fields:
+      # §6 Tier 1, and the whole payload: `app.start` carries no keys of its own.
+      - {field: trace.id, type: string, unit: none, always_present: true}                  # 32 lowercase hex, W3C
+      - {field: span.id, type: string, unit: none, always_present: true}                   # 16 lowercase hex
+      - {field: rum.action.id, type: string, unit: none, always_present: true}             # == span.id: this IS the root
+      - {field: trace.root_type, type: string, unit: none, always_present: true}           # always "launch"
+      - {field: span.start_time, type: string, unit: none, always_present: true}           # ISO 8601; performance.timeOrigin on web, initialize() on native — NOT the same interval
+      # parent.span.id is ABSENT (a root) and span.duration_ms is ABSENT (roots derive theirs).
 
   - name: app_lifecycle
     trigger: foreground/background transition — native RN AppState, web document visibilitychange. Only on a state CHANGE. evidence src/adapters/appLifecycle.ts:16-23
@@ -577,6 +585,15 @@ inconsistencies_and_surprises: >
   28. #98: an XHR `send()` that throws synchronously never reaches loadend, so a `request` root it
       minted lives out its 2 s idle window with no row describing it. Rare; the fix is a discard
       sibling on the finisher if the orphan ratio ever justifies one.
+  29b. #98: `app.start.js_ready_ms` (contract 4.3) is NOT built — the event ships with only its
+      Tier 1 trace keys. The marker is known only when the platform publishes it, and on web
+      that is the `load` event, long after `app.start`. Shipping it means either delaying
+      `app.start` — and with it the launch root the initial view parents to — or shipping a key
+      that is near-always absent on web. Needs a ruling.
+  29c. #98: on an expired-record cold launch the rotation RE-MINTS the launch root (rather than
+      just clearing the carrier) so trace.id cannot span a session.id. Cost: the retired trace
+      keeps one child — the initial `view` row under the old session — and no root row. Same
+      condition process death already produces; the alternative broke contract 6.6 invariant 2.
   29. #98: header injection is NOT here. `traceHostAllowlist`, the `traceparent` header and
       `traceparent.outcome`'s seven values are #99 — so ids are stamped locally and nothing
       crosses the wire to a third party yet.

@@ -685,7 +685,13 @@ export class Telemetry {
         // `trace.id` never spans a `session.id` (§6.6, invariant 2) — dropped before the
         // successor view mints, so that view starts a fresh `navigation` root rather than
         // extending an action from the retired session.
-        this.trace.clear();
+        //
+        // Before `app.start` has shipped, dropping is not enough: it reports the launch root
+        // at any age, so its root row would land in the new session while the initial `view`
+        // it fathered landed in the old one. That is the expired-record cold launch — §4.3's
+        // most common path — so the launch root is re-minted instead of merely cleared.
+        if (this.appStartEmitted) this.trace.clear();
+        else this.trace.restartLaunchRoot();
         // After the new session.id is in place and before the first row of it is emitted:
         // `view.id` never spans a `session.id` (§4.5). rotateSession() has already emitted
         // the departing view's `view` event under the *old* id.

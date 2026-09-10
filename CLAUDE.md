@@ -724,6 +724,15 @@ coordination.
   string included. `http.request` and `view.name` are both clean; this feed is not.
 - **`app.start` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
+- **`app.start.js_ready_ms` (§4.3) is not built.** #98 mints the event as §6.2's launch root;
+  the payload key needs a ruling first. The marker is only known when the platform publishes
+  it — on web that is the `load` event, which arrives *long after* `app.start` — so shipping
+  it means either delaying `app.start` (and with it the launch root, which the initial view
+  parents to) or shipping a key that is near-always absent on web. Neither is a local call.
+- **An expired-record cold launch leaves the retired launch trace rootless.** The rotation
+  re-mints the launch root so `trace.id` cannot span a `session.id`, which means the initial
+  `view` row — emitted under the *old* session — is a child of a root whose row never ships.
+  Same condition process death already produces; the alternative broke the invariant.
 - `trace.root_type = interaction` has **no producer**: §6.2's tap root arrives with #102/#103.
   Until then `user.interaction` is trace-free and a tap starts no action.
 - Header injection is **not built**: `traceHostAllowlist`, the `traceparent` header and
