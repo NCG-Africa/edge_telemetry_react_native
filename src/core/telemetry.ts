@@ -339,7 +339,8 @@ export class Telemetry {
     public readonly trace: TraceManager;
     // The web click tracker, parked here so `trackInteractions()` is idempotent: a second
     // call must reuse this tracker rather than add a second capture-phase listener (#102).
-    // Untyped and unset on native, which has no producer until #103.
+    // Untyped and unset on native, whose producer is the public `trackTap(name)` (#103) and
+    // needs no tracker here — its only state is a rage window, held by TelemetryNative.
     public webInteractions?: { start(): void };
     private readonly deprecatedScreenFeeds: boolean;
     // last-known screen; best-effort context for the deprecated screen feeds (#33)
