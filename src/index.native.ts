@@ -2,6 +2,7 @@
 import { TelemetryBase } from "./index.base";
 import { debug, setDebug } from "./core/debug";
 import type { Store } from "./core/store";
+import type { BeforeSend } from "./core/beforeSend";
 
 export { createTelemetry, type TelemetryOpts } from "./createTelemetry.native";
 
@@ -9,6 +10,9 @@ export { createTelemetry, type TelemetryOpts } from "./createTelemetry.native";
 // and so the in-memory fake is available outside the test tree.
 export type { Store, SyncStore, AsyncStore, StoreRead, StoreWrite } from "./core/store";
 export { memoryStore, type MemoryStoreOpts } from "./core/memoryStore";
+
+// The scrubbing hook (#93) — public so a consumer can type their beforeSend.
+export type { BeforeSend } from "./core/beforeSend";
 
 export class TelemetryNative extends TelemetryBase {
     constructor(opts?: {
@@ -20,6 +24,10 @@ export class TelemetryNative extends TelemetryBase {
         captureConsole?: boolean;
         debug?: boolean;
         store?: Store;   // either shape: the native path awaits
+        // Constructor-only (§3.6). No runtime setter: registering later leaves a window
+        // where session.started and the earliest requests have already been enqueued.
+        beforeSend?: BeforeSend;
+        sessionSampleRate?: number;
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -65,6 +73,8 @@ export class TelemetryNative extends TelemetryBase {
                 deviceInfoHandler: deviceInfoTrackerNative,
                 networkInfoHandler: networkInfoTrackerNative,
                 store,
+                beforeSend: opts?.beforeSend,
+                sessionSampleRate: opts?.sessionSampleRate,
             });
 
             // 🔄 recover failed events right after init

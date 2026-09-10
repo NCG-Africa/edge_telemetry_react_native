@@ -2,6 +2,7 @@
 import { TelemetryBase } from "./index.base";
 import { debug, setDebug } from "./core/debug";
 import type { SyncStore } from "./core/store";
+import type { BeforeSend } from "./core/beforeSend";
 
 export { createTelemetry, type TelemetryOpts } from "./createTelemetry.web";
 
@@ -9,6 +10,9 @@ export { createTelemetry, type TelemetryOpts } from "./createTelemetry.web";
 // and so the in-memory fake is available outside the test tree.
 export type { Store, SyncStore, AsyncStore, StoreRead, StoreWrite } from "./core/store";
 export { memoryStore, type MemoryStoreOpts } from "./core/memoryStore";
+
+// The scrubbing hook (#93) — public so a consumer can type their beforeSend.
+export type { BeforeSend } from "./core/beforeSend";
 
 export class TelemetryWeb extends TelemetryBase {
     constructor(opts?: {
@@ -20,6 +24,10 @@ export class TelemetryWeb extends TelemetryBase {
         captureConsole?: boolean;
         debug?: boolean;
         store?: SyncStore;   // sync only: the web build's guarantee depends on it
+        // Constructor-only (§3.6). No runtime setter: registering later leaves a window
+        // where session.started and the earliest requests have already been enqueued.
+        beforeSend?: BeforeSend;
+        sessionSampleRate?: number;
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -52,6 +60,8 @@ export class TelemetryWeb extends TelemetryBase {
                 deviceInfoHandler: deviceInfoTrackerWeb,
                 networkInfoHandler: networkInfoTrackerWeb,
                 store,
+                beforeSend: opts?.beforeSend,
+                sessionSampleRate: opts?.sessionSampleRate,
             });
 
             // Resume or start the session before the instance is visible (#92). On web the

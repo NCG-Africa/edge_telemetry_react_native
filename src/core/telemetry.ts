@@ -5,7 +5,10 @@ import { BreadcrumbBuffer } from "./breadcrumbs";
 import { randomHex } from "./utils/uuid";
 import type { Store } from "./store";
 import { memoryStore } from "./memoryStore";
+import { applyBeforeSend, type BeforeSend } from "./beforeSend";
 import { version as PKG_VERSION } from "../../package.json";
+
+export type { BeforeSend } from "./beforeSend";
 
 // v3 wire contract constants
 const SDK_PLATFORM = "react-native";   // framework identity; device OS lives in device.platform
@@ -36,6 +39,12 @@ type PersistedSession = {
     sequence: number;
     eventCount: number;
     errorCount: number;
+    // The sticky sample decision and the rate it was rolled at (§3.6). Both travel with
+    // the session, because a resume is not a rotation — re-rolling on relaunch produces
+    // a half-sampled session, and shipping the *current* config rate on a session rolled
+    // at the old one makes every extrapolation off it wrong.
+    sampled: boolean;
+    sampleRate: number;
 };
 
 /** What hydration decided, so the emitting half stays free of storage concerns. */
@@ -173,7 +182,27 @@ type Opts = {
     deviceInfoHandler?: DeviceInfoHandler;
     networkInfoHandler?: NetworkInfoHandler;
     store?: Store;              // persisted state port (#89); defaulted per build by the entry
+    // Constructor-only (§3.6). A runtime setter leaves a window between init and
+    // registration where session.started, the launch root and the early http.requests
+    // all land — that window is the reason, and it is not negotiable.
+    beforeSend?: BeforeSend;
+    sessionSampleRate?: number; // 0.0-1.0, sticky per session; default 1 (send everything)
 };
+
+/**
+ * A bad rate must not silently mute a deployment: `Math.random() < NaN` is always false,
+ * so an unvalidated `undefined`-shaped value would sample every session out and look
+ * exactly like a dead collector. Out of range means "the consumer meant something", and
+ * the only safe reading of that is 1.
+ */
+function normalizeSampleRate(rate: number | undefined): number {
+    if (rate === undefined) return 1;
+    if (typeof rate !== "number" || !Number.isFinite(rate) || rate < 0 || rate > 1) {
+        debug.warn(`Telemetry: sessionSampleRate must be a number in [0,1] — got ${rate}; using 1`);
+        return 1;
+    }
+    return rate;
+}
 
 /**
  * Telemetry core: queueing, batching, retries, auto-replay and session/user management.
@@ -231,6 +260,17 @@ export class Telemetry {
     private sessionEventCount = 0;       // events this session (journey summary)
     private errorCount = 0;              // app.crash count this session (sdk.error_count)
 
+    // Sampling and scrubbing (#93, §3.6). `configuredSampleRate` is what the constructor
+    // was given and what every rotation re-rolls at; `sampleRate` is what *this* session
+    // was rolled at and what ships as session.sample_rate, so a consumer retuning
+    // mid-quarter can't retroactively mis-scale a session already in flight.
+    private readonly configuredSampleRate: number;
+    private sampleRate: number;
+    private sampled: boolean;
+    private readonly beforeSend?: BeforeSend;
+    private hookDropped = 0;             // sdk.hook_dropped — the hook working
+    private hookFailed = 0;              // sdk.hook_failed  — the hook broken
+
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
         this.batchSize = opts?.batchSize ?? 2;
@@ -238,6 +278,12 @@ export class Telemetry {
         this.endpoint = opts?.endpoint;
         this.platform = opts?.platform;   // set before id generation (suffix source)
         this.store = opts?.store ?? memoryStore({ unavailable: true });
+        this.beforeSend = opts?.beforeSend;
+        this.configuredSampleRate = normalizeSampleRate(opts?.sessionSampleRate);
+        this.sampleRate = this.configuredSampleRate;
+        // Rolled here so a bare `new Telemetry()` — no resumeOrStartSession() — is decided
+        // too. hydrateSession() overwrites it when a durable record says otherwise.
+        this.sampled = this.rollSample();
 
         // start a session
         this.sessionId = opts?.sessionId ?? this.generateSessionId();
@@ -326,6 +372,19 @@ export class Telemetry {
     }
 
 
+    /**
+     * The per-session sample roll (§3.6). Never per-event: per-event sampling punches
+     * holes that desynchronise the per-view counters by a random factor per view.
+     *
+     * `Math.random()` is deliberate here where `randomHex` refuses it — this decides one
+     * boolean that dies with the session, not an id that persists forever, and a biased
+     * PRNG costs a fraction of a percent of sample accuracy rather than a permanent
+     * identity collision.
+     */
+    private rollSample(): boolean {
+        return Math.random() < this.sampleRate;
+    }
+
     private generateSessionId(): string {
         const base = `session_${Date.now()}_${randomHex(16)}`;
         // §3.3 suffixes session.id with ios|android only — the web build gains `_web` in v4,
@@ -411,6 +470,13 @@ export class Telemetry {
         this.sessionSequence = saved.sequence ?? 0;
         this.sessionEventCount = saved.eventCount ?? 0;
         this.errorCount = saved.errorCount ?? 0;
+        // A resume is not a rotation: the decision and the rate it was rolled at are
+        // adopted as-is, so a relaunch can't half-sample a session. A record written
+        // before this field existed reads as `undefined` and keeps the fresh roll.
+        if (typeof saved.sampled === "boolean") {
+            this.sampled = saved.sampled;
+            this.sampleRate = typeof saved.sampleRate === "number" ? saved.sampleRate : this.sampleRate;
+        }
 
         const reason = this.expiryReason(Date.now());
         return reason ? { kind: "expired", reason } : { kind: "resumed" };
@@ -445,6 +511,8 @@ export class Telemetry {
             sequence: this.sessionSequence,
             eventCount: this.sessionEventCount,
             errorCount: this.errorCount,
+            sampled: this.sampled,
+            sampleRate: this.sampleRate,
         };
         const write = await this.store.set(SESSION_KEY, JSON.stringify(record));
         // Same first-class `unavailable` path as the read: nothing to retry and nothing to
@@ -485,6 +553,10 @@ export class Telemetry {
         this.sessionSequence = 0;
         this.sessionEventCount = 0;
         this.errorCount = 0;
+        // Re-rolled at the *configured* rate, not the retired session's — the previous
+        // session may have been resumed from a record written under an older config.
+        this.sampleRate = this.configuredSampleRate;
+        this.sampled = this.rollSample();
         await this.startSession(reason);
     }
 
@@ -680,31 +752,36 @@ export class Telemetry {
             activity = true;
         }
 
-        // v3 allowlist: unknown names ship as custom_event, original kept as event.name
-        const isAllowed = ALLOWED_NAMES.has(name);
-        const eventName = isAllowed ? name : 'custom_event';
+        // A sampled-out session sends nothing at all — not a skeleton record, and
+        // crashes are no exception (§3.6): 100% of crashes over 10% of sessions makes
+        // the unfiltered crash-free query read 10x too high with no WHERE to repair it.
+        // The boundary bookkeeping above still runs, so the rotation that re-rolls the
+        // decision still happens on schedule.
+        if (this.sampled) {
+            // v3 allowlist: unknown names ship as custom_event, original kept as event.name
+            const isAllowed = ALLOWED_NAMES.has(name);
+            const eventName = isAllowed ? name : 'custom_event';
 
-        const attributes = await this.collectContext(data);
-        if (!isAllowed) attributes['event.name'] = name;
+            const attributes = await this.collectContext(data);
+            if (!isAllowed) attributes['event.name'] = name;
 
-        // app.crash carries the trail of prior actions; other events extend the trail.
-        if (eventName === 'app.crash') {
-            attributes['crash.breadcrumbs'] = this.breadcrumbs.toJSON();
-        } else {
-            this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
+            // app.crash carries the trail of prior actions; other events extend the trail.
+            if (eventName === 'app.crash') {
+                attributes['crash.breadcrumbs'] = this.breadcrumbs.toJSON();
+            } else {
+                this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
+            }
+
+            this.enqueue({
+                type: 'event',
+                eventName,
+                timestamp: new Date().toISOString(),
+                attributes,
+            });
+
+            debug.log("Telemetry queued event:", name, "Queue size:", this.queue.length);
+            debug.log("Event attributes:", attributes);
         }
-
-        const e: TelemetryEvent = {
-            type: 'event',
-            eventName,
-            timestamp: new Date().toISOString(),
-            attributes,
-        };
-
-        this.queue.push(e);
-
-        debug.log("Telemetry queued event:", name, "Queue size:", this.queue.length);
-        debug.log("Event attributes:", attributes);
 
         // After the enqueue, never before it: the durable record is for the *next* process,
         // and on native this is an AsyncStorage round-trip that must not sit in front of the
@@ -757,6 +834,11 @@ export class Telemetry {
             'session.id': this.sessionId,
             'session.start_time': new Date(this.sessionStart).toISOString(),
             'session.sequence': this.sessionSequence,
+            // Extrapolation is arithmetic when the rate is on the row: it survives a
+            // consumer retuning mid-quarter, which config-in-a-spreadsheet does not.
+            'session.sample_rate': this.sampleRate,
+            'sdk.hook_dropped': this.hookDropped,
+            'sdk.hook_failed': this.hookFailed,
             'sdk.platform': SDK_PLATFORM,
             'sdk.version': this.sdkVersion,
         };
@@ -797,20 +879,38 @@ export class Telemetry {
         const reason = this.expiryReason(Date.now());
         if (reason) await this.rotateSession(reason);
 
+        if (!this.sampled) return;
+
         const attributes = await this.collectContext(data);
 
-        const m: TelemetryEvent = {
+        this.enqueue({
             type: 'metric',
             metricName,
             value,
             timestamp: new Date().toISOString(),
             attributes,
-        };
-
-        this.queue.push(m);
+        });
         if (this.queue.length >= this.batchSize) {
             void this.flush();
         }
+    }
+
+    /**
+     * The single enqueue point, so `beforeSend` cannot be bypassed by a future emit path,
+     * and so the hook runs *before* the queue — which is what keeps scrubbed fields off
+     * disk when a send fails and the batch is persisted (§3.6).
+     *
+     * The two counters are separate on purpose: "my volume is down 40%" has to
+     * distinguish *my rule is too broad* from *my rule is crashing*, and one merged
+     * counter answers neither.
+     */
+    private enqueue(e: TelemetryEvent) {
+        if (!this.beforeSend) { this.queue.push(e); return; }
+
+        const outcome = applyBeforeSend(e, this.beforeSend);
+        if (outcome.kind === "failed") { this.hookFailed++; return; }
+        if (outcome.kind === "dropped") { this.hookDropped++; return; }
+        this.queue.push(outcome.event);
     }
 
     private flattenWithPrefix(prefix: string, obj: Record<string, any>): Record<string, any> {
