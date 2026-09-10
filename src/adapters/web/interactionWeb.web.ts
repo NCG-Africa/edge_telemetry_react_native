@@ -5,10 +5,11 @@
 // dead-click detection at the source, and it is what makes `unnamed` vs `surface` readable
 // as "an instrumentation gap" vs "someone tapped whitespace".
 
-import type { Telemetry } from "../../core/telemetry";
+import type { LogSnapshot, Telemetry } from "../../core/telemetry";
 import { debug } from "../../core/debug";
 import { QUIET_WINDOW_MS } from "../loadingTime";
 import {
+    RAGE_WINDOW_MS,
     RageTracker,
     isDeadClickExempt,
     resolveUiName,
@@ -17,13 +18,23 @@ import {
 
 /**
  * ⚠ The dead-click window **is** §4.5.2's quiet window — one named constant, not a second
- * literal `1000`. If one moves, both move.
+ * literal `1000`. If one moves, both move. (`RAGE_WINDOW_MS` is deliberately *not* bound to
+ * it: §4.6 states the same number for rage, but tuning network settle must not retune rage.)
  */
 const DEAD_CLICK_WINDOW_MS = QUIET_WINDOW_MS;
 
+/** One click whose dead-click window is still open. */
+type Pending = {
+    attrs: Record<string, any>;
+    snapshot: LogSnapshot;
+    /** The aliveness reading at mint; unchanged when the window closes means dead. */
+    tick: number;
+    timer: ReturnType<typeof setTimeout>;
+};
+
 export class InteractionTrackerWeb {
     private started = false;
-    private readonly rage = new RageTracker(QUIET_WINDOW_MS);
+    private readonly rage = new RageTracker(RAGE_WINDOW_MS);
 
     /**
      * Monotonic aliveness counter. A DOM mutation, a request start or a view mint bumps it;
@@ -32,10 +43,8 @@ export class InteractionTrackerWeb {
      * moved backwards.
      */
     private aliveTick = 0;
-    /** How many dead-click windows are open — the observer runs only while this is > 0. */
-    private pending = 0;
+    private readonly pending = new Set<Pending>();
     private observer?: MutationObserver;
-    private unsubscribeActivity?: () => void;
 
     constructor(private telemetry: Telemetry) {}
 
@@ -48,11 +57,24 @@ export class InteractionTrackerWeb {
         this.started = true;
         // Capture phase: the mint has to happen before the host's own handler navigates,
         // because the snapshot it takes is the whole point of §4.6's mint/emit split.
-        document.addEventListener("click", (e) => this.onClick(e as MouseEvent), true);
-        this.unsubscribeActivity = this.telemetry.views.onActivity(() => { this.aliveTick++; });
+        document.addEventListener("click", (e) => this.onClick(e), true);
+
+        // A same-tab `<a href>` or a form submit unloads the document while its dead-click
+        // window is still open, and an unemitted row also orphans the interaction root its
+        // children already joined. Both edges drain what is pending — `pagehide` covers the
+        // unload and the bfcache freeze, `visibilitychange` covers a tab switch and is the
+        // edge mobile Safari actually fires.
+        if (typeof window !== "undefined") {
+            window.addEventListener?.("pagehide", () => this.drainPending());
+        }
+        document.addEventListener("visibilitychange", () => {
+            if (document.visibilityState === "hidden") this.drainPending();
+        });
+
+        this.telemetry.views.onActivity(() => { this.aliveTick++; });
     }
 
-    private onClick(e: MouseEvent): void {
+    private onClick(e: Event): void {
         const at = Date.now();
         const path = pathOf(e);
         const resolution = resolveUiName(path, { pointerCursor: hasPointerCursor(path[0]) });
@@ -61,6 +83,7 @@ export class InteractionTrackerWeb {
         const snapshot = this.telemetry.snapshot(at);
         // §6.2: **every** click mints an interaction root, live carrier or not.
         const span = this.telemetry.trace.interactionSpan(at);
+        const mouse = e as MouseEvent;
 
         const attrs: Record<string, any> = {
             ...span,
@@ -68,9 +91,10 @@ export class InteractionTrackerWeb {
             "ui.target": resolution.target,
             "ui.name_source": resolution.nameSource,
             "ui.tag": resolution.tag,
-            // Viewport pixels. `clientX/Y` is absent on a synthetic/keyboard-driven click.
-            "ui.x": Math.round(e.clientX ?? 0),
-            "ui.y": Math.round(e.clientY ?? 0),
+            // Viewport pixels. `clientX/Y` is absent on a synthetic or keyboard-driven click,
+            // and §4.6 types both as never-null, so there is no honest way to omit them.
+            "ui.x": Math.round(mouse.clientX ?? 0),
+            "ui.y": Math.round(mouse.clientY ?? 0),
             // Absent means false, deliberately asymmetric with `ui.dead` (§4.6).
             ...(this.rage.record(resolution.node, at) ? { "ui.rage": true } : {}),
         };
@@ -86,18 +110,36 @@ export class InteractionTrackerWeb {
     }
 
     /** Arm one dead-click window and emit when it closes. */
-    private watchForDeath(attrs: Record<string, any>, snapshot: ReturnType<Telemetry["snapshot"]>): void {
-        const tick = this.aliveTick;
-        this.pending++;
+    private watchForDeath(attrs: Record<string, any>, snapshot: LogSnapshot): void {
+        const entry: Pending = {
+            attrs,
+            snapshot,
+            tick: this.aliveTick,
+            timer: setTimeout(() => {
+                this.pending.delete(entry);
+                if (this.pending.size === 0) this.disconnectObserver();
+                this.emit({ ...attrs, "ui.dead": this.aliveTick === entry.tick }, snapshot);
+            }, DEAD_CLICK_WINDOW_MS),
+        };
+        this.pending.add(entry);
         this.connectObserver();
-        setTimeout(() => {
-            this.pending--;
-            if (this.pending === 0) this.disconnectObserver();
-            this.emit({ ...attrs, "ui.dead": this.aliveTick === tick }, snapshot);
-        }, DEAD_CLICK_WINDOW_MS);
     }
 
-    private emit(attrs: Record<string, any>, snapshot: ReturnType<Telemetry["snapshot"]>): void {
+    /**
+     * Emit every open window **now**, with `ui.dead` **omitted** — the window never closed,
+     * so it was not evaluated, which is exactly what its absence means (§4.6). Inventing a
+     * verdict from a partial window is the false accusation the key is built to avoid.
+     */
+    private drainPending(): void {
+        for (const entry of this.pending) {
+            clearTimeout(entry.timer);
+            this.emit(entry.attrs, entry.snapshot);
+        }
+        this.pending.clear();
+        this.disconnectObserver();
+    }
+
+    private emit(attrs: Record<string, any>, snapshot: LogSnapshot): void {
         void Promise.resolve(this.telemetry.log("ui.interaction", attrs, snapshot))
             .catch((err: unknown) => debug.warn("Web ui.interaction failed:", err));
     }
@@ -113,9 +155,10 @@ export class InteractionTrackerWeb {
      * flip is a response.
      */
     private connectObserver(): void {
-        if (this.observer || !this.canObserve() || typeof document === "undefined") return;
+        const root = typeof document === "undefined" ? undefined : document.documentElement;
+        if (this.observer || !this.canObserve() || !root) return;
         this.observer = new MutationObserver(() => { this.aliveTick++; });
-        this.observer.observe(document.documentElement ?? (document as any), {
+        this.observer.observe(root, {
             subtree: true,
             childList: true,
             attributes: true,
@@ -127,13 +170,6 @@ export class InteractionTrackerWeb {
         this.observer?.disconnect();
         this.observer = undefined;
     }
-
-    /** Test/teardown seam: stop observing and unsubscribe. The click listener is permanent. */
-    stop(): void {
-        this.disconnectObserver();
-        this.unsubscribeActivity?.();
-        this.unsubscribeActivity = undefined;
-    }
 }
 
 /**
@@ -141,14 +177,14 @@ export class InteractionTrackerWeb {
  * role. Falls back to the parent chain where the event has no `composedPath` (older
  * browsers, and every synthetic event a test hands in).
  */
-function pathOf(e: MouseEvent): UiElement[] {
-    const composed = (e as any).composedPath?.();
-    if (Array.isArray(composed) && composed.length > 0) return composed as UiElement[];
+function pathOf(e: Event): UiElement[] {
+    const composed = typeof e.composedPath === "function" ? e.composedPath() : undefined;
+    if (Array.isArray(composed) && composed.length > 0) return composed as unknown as UiElement[];
     const path: UiElement[] = [];
-    let node: any = e.target;
+    let node = e.target as (Node & UiElement) | null;
     while (node) {
         path.push(node);
-        node = node.parentElement ?? node.parentNode;
+        node = ((node as any).parentElement ?? node.parentNode) as (Node & UiElement) | null;
     }
     return path;
 }
@@ -161,7 +197,7 @@ function pathOf(e: MouseEvent): UiElement[] {
 function hasPointerCursor(el: UiElement | undefined): boolean {
     if (!el || typeof getComputedStyle === "undefined") return false;
     try {
-        return getComputedStyle(el as any)?.cursor === "pointer";
+        return getComputedStyle(el as unknown as Element)?.cursor === "pointer";
     } catch {
         return false;
     }

@@ -337,6 +337,10 @@ export class Telemetry {
     // mints and the tier key builders. Public for the same reason `views` is — the
     // interceptors, the lifecycle adapter and ViewManager all read it, synchronously.
     public readonly trace: TraceManager;
+    // The web click tracker, parked here so `trackInteractions()` is idempotent: a second
+    // call must reuse this tracker rather than add a second capture-phase listener (#102).
+    // Untyped and unset on native, which has no producer until #103.
+    public webInteractions?: { start(): void };
     private readonly deprecatedScreenFeeds: boolean;
     // last-known screen; best-effort context for the deprecated screen feeds (#33)
     public currentScreen?: string;

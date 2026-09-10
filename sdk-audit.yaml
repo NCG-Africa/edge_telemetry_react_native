@@ -204,7 +204,7 @@ events:
       - {field: ui.x, type: int, unit: px, always_present: true}                          # viewport px
       - {field: ui.y, type: int, unit: px, always_present: true}                          # viewport px
       - {field: ui.dead, type: bool, unit: none, always_present: false}                   # OMITTED when not evaluated (non-actionable, text entry, download/_blank, no MutationObserver). WEB ONLY
-      - {field: ui.rage, type: bool, unit: none, always_present: false}                   # OMITTED when false. One flag per burst, on the crossing click
+      - {field: ui.rage, type: bool, unit: none, always_present: false}                   # OMITTED when false. One flag per burst, on the crossing click. Window is RAGE_WINDOW_MS — 1000ms, same number as the quiet window but deliberately NOT the same constant
       # §6 Tier 1, captured at the click's MINT (contract 6.2). EVERY click mints an
       # `interaction` root — the one unconditional mint in the table — so span.id == rum.action.id
       # and there is never a parent.span.id or a span.duration_ms on this row.
@@ -765,6 +765,14 @@ inconsistencies_and_surprises: >
       view.id / view.name / session.id are snapshotted at the click and replayed through
       Telemetry.log()'s third argument. Stamping emit time would attribute a navigating tap to
       THE VIEW IT OPENED, silently inverting every "which screen frustrates users" query.
+  56b. #102 OPEN, backend-owned: contract 4.6's KEY TABLE caps ui.target at 64 with Null? never,
+      while its PROSE and #102's acceptance criteria exempt rung 1 ("passes through
+      unnormalized"). RN ships the exemption — an author must be able to predict the value they
+      set. Flag if the column is a hard 64.
+  56c. #102: the deferred row survives a hard navigation via a pagehide + visibilitychange drain
+      that emits with ui.dead OMITTED (the window never closed, so it was not evaluated). But
+      Telemetry.log() is async, so a document unloading inside that microtask still loses the
+      row — the same residue the crash path documents (see 2). Awaiting harder does not fix it.
   56. #102: ERROR CLICK spends no key. It is the join — a ui.interaction whose rum.action.id
       appears on an app.crash / app.error row WHERE trace.root_type = 'interaction'. The
       root_type filter is not optional; without it the signal absorbs launch and route-change

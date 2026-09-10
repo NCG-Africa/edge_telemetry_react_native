@@ -62,6 +62,15 @@ describe("resolveUiName — the five-rung ladder", () => {
         expect(r.nameSource).toBe("edge_action");
     });
 
+    it("rung 1 reports the *click's* actionability, not the labelled wrapper's", () => {
+        // An explicit name on a role-less wrapper around a real control must still be
+        // judged for `ui.dead` — that is the population §4.6 most wants judged.
+        const wrapper = el("div", { "data-edge-action-name": "pay" });
+        expect(resolveUiName([el("button", {}, "Pay"), wrapper]).actionable).toBe(true);
+        // No control anywhere in the path: nothing to judge.
+        expect(resolveUiName([el("span"), wrapper]).actionable).toBe(false);
+    });
+
     it("rung 1 works on a role-less element and is not capped by the 64-char rule", () => {
         const long = "X".repeat(200);
         const r = resolveUiName([el("div", { "data-edge-action-name": long })]);
@@ -120,6 +129,12 @@ describe("isDeadClickExempt", () => {
     it("judges an ordinary button and same-tab link", () => {
         expect(isDeadClickExempt(el("button"))).toBe(false);
         expect(isDeadClickExempt(el("a", { href: "/x" }))).toBe(false);
+    });
+
+    it("does not exempt `contenteditable=\"false\"` — that is an ordinary element", () => {
+        expect(isDeadClickExempt(el("div", { contenteditable: "false" }))).toBe(false);
+        expect(isDeadClickExempt(el("div", { contenteditable: "" }))).toBe(true);
+        expect(isDeadClickExempt(el("div", { contenteditable: "true" }))).toBe(true);
     });
 });
 

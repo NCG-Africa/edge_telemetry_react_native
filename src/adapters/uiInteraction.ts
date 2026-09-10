@@ -60,7 +60,7 @@ export function isActionable(el: UiElement | undefined | null): boolean {
         case "a":
             return attr(el, "href") != null;
         case "input":
-            return ACTIONABLE_INPUT_TYPES.has((attr(el, "type") ?? "").trim().toLowerCase());
+            return ACTIONABLE_INPUT_TYPES.has(inputType(el));
         default:
             return false;
     }
@@ -73,10 +73,13 @@ export function isActionable(el: UiElement | undefined | null): boolean {
  */
 export function isDeadClickExempt(el: UiElement | undefined | null): boolean {
     if (!el) return true;
-    if (attr(el, "contenteditable") != null) return true;
+    // `contenteditable="false"` is an ordinary element and must stay judgeable; the empty
+    // string and `"true"` are both the editable form.
+    const editable = attr(el, "contenteditable")?.trim().toLowerCase();
+    if (editable != null && editable !== "false") return true;
     const tag = tagOf(el);
     if (tag === "textarea" || tag === "select") return true;
-    if (tag === "input" && !ACTIONABLE_INPUT_TYPES.has((attr(el, "type") ?? "text").trim().toLowerCase())) return true;
+    if (tag === "input" && !ACTIONABLE_INPUT_TYPES.has(inputType(el))) return true;
     if (tag === "a" && (attr(el, "download") != null || attr(el, "target") === "_blank")) return true;
     return false;
 }
@@ -132,15 +135,18 @@ export function resolveUiName(
     opts: { pointerCursor?: boolean } = {},
 ): UiNameResolution {
     const target = path[0];
+    const host = path.find(isActionable);
 
     for (const el of path) {
         const explicit = attr(el, "data-edge-action-name");
         if (explicit && explicit.trim() !== "") {
-            return { target: explicit, nameSource: "edge_action", tag: tagOf(el), node: el, actionable: isActionable(el) };
+            // `actionable` reports the **click**, not the attribute-bearing element: a
+            // `data-edge-action-name` on a role-less wrapper around a real `<button>` must
+            // still be judged for `ui.dead`. That is the population §4.6 most wants judged.
+            return { target: explicit, nameSource: "edge_action", tag: tagOf(el), node: el, actionable: host !== undefined };
         }
     }
 
-    const host = path.find(isActionable);
     if (!host) {
         // Role-less. A pointer cursor still says "someone built a control here" (§4.6).
         return {
@@ -167,8 +173,16 @@ export function resolveUiName(
     return { target: UI_UNNAMED, nameSource: "none", tag: tagOf(host), node: host, actionable: true };
 }
 
-/** §4.6's threshold. The window itself is §4.5.2's `QUIET_WINDOW_MS`, passed in by the caller. */
+/** §4.6's threshold: **≥3** clicks inside the window. */
 export const RAGE_CLICK_THRESHOLD = 3;
+
+/**
+ * §4.6 states the same 1000 ms as the dead-click window, but the two are **not the same
+ * constant** and must not be bound: the dead-click window is §4.5.2's `QUIET_WINDOW_MS`
+ * because the contract says so, and retuning network settle must not silently retune what
+ * counts as user frustration.
+ */
+export const RAGE_WINDOW_MS = 1000;
 
 /**
  * ≥3 clicks within a sliding window **on the same live element node**, flagged **once per
@@ -206,6 +220,11 @@ export class RageTracker {
         this.flagged = true;
         return true;
     }
+}
+
+/** `<input>` with no `type` is a text field — the attribute defaults, the DOM does not. */
+function inputType(el: UiElement): string {
+    return (attr(el, "type") ?? "text").trim().toLowerCase();
 }
 
 function attr(el: UiElement | undefined | null, name: string): string | null {

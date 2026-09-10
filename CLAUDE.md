@@ -978,6 +978,14 @@ coordination.
   direction §4.6 requires; the alternative is a false accusation.
 - **`ui.dead` is omitted, not false, where there is no `MutationObserver`.** The row still ships
   with every other key — absence means "not evaluated", exactly as it does for the exempt cases.
+- **§4.6's key table caps `ui.target` at 64 while its prose exempts rung 1.** The issue's
+  acceptance criteria say `data-edge-action-name` ships "unnormalized and uncapped", so that is
+  what ships. Flag it if the backend column is a hard 64.
+- **A hard navigation drains open dead-click windows, but `log()` is still async.** `pagehide`
+  and `visibilitychange: hidden` emit every pending row with `ui.dead` **omitted** — the window
+  never closed, so it was not evaluated. The enqueue itself is a promise, so a document that
+  unloads inside that microtask still loses the row; the same residue the crash path documents,
+  and awaiting harder does not change it.
 - **`ui.x` / `ui.y` are `0` on a synthetic or keyboard-driven click**, where `clientX`/`clientY`
   are absent. §4.6 types both as never-null, so there is no honest way to omit them; a keyboard
   activation is genuinely at no viewport coordinate.

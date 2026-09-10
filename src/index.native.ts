@@ -217,5 +217,4 @@ export class TelemetryNative extends TelemetryBase {
     // number with no public API resolving it — so it could not tell a tap on a button from a
     // tap on padding, and every row it emitted was an un-nameable one. §4.6 makes native
     // **explicit-only**: #103 restores taps as a public `trackTap(name)`.
-
 }

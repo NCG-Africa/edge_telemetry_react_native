@@ -22,10 +22,20 @@ function installDom(opts: { pointerCursor?: boolean } = {}) {
     const clickHandlers: Array<(e: any) => void> = [];
     const observers: Array<{ cb: () => void; connected: boolean }> = [];
 
+    const visibilityHandlers: Array<() => void> = [];
+    const pagehideHandlers: Array<() => void> = [];
+
     g.document = {
         documentElement: { nodeType: 1 },
         visibilityState: "visible",
-        addEventListener: (type: string, cb: any) => { if (type === "click") clickHandlers.push(cb); },
+        addEventListener: (type: string, cb: any) => {
+            if (type === "click") clickHandlers.push(cb);
+            if (type === "visibilitychange") visibilityHandlers.push(cb);
+        },
+        removeEventListener: () => { },
+    };
+    g.window = {
+        addEventListener: (type: string, cb: any) => { if (type === "pagehide") pagehideHandlers.push(cb); },
         removeEventListener: () => { },
     };
     g.MutationObserver = class {
@@ -42,6 +52,9 @@ function installDom(opts: { pointerCursor?: boolean } = {}) {
         },
         /** Fire every live observer, i.e. "the app responded to the click". */
         mutate: () => observers.filter(o => o.connected).forEach(o => o.cb()),
+        /** A same-tab link unloading the document while a window is still open. */
+        pagehide: () => pagehideHandlers.forEach(h => h()),
+        hide: () => { g.document.visibilityState = "hidden"; visibilityHandlers.forEach(h => h()); },
         get attached() { return clickHandlers.length; },
     };
 }
@@ -87,6 +100,21 @@ afterEach(() => {
 });
 
 describe("ui.interaction (web) — the wire (§4.6)", () => {
+    it("attaches exactly one click listener however often trackInteractions() is called", async () => {
+        silenceConsole();
+        const dom = installDom();
+        const { t, sent } = harness();
+        await settle(t);
+        await (t as any).trackInteractions();
+        await (t as any).trackInteractions();
+        expect(dom.attached).toBe(1);
+
+        dom.click([el("button", {}, "Buy")]);
+        await vi.advanceTimersByTimeAsync(1000);
+        await t.flush();
+        expect(clicks(sent)).toHaveLength(1);   // one row, not three
+    });
+
     it("emits the eight keys, with `ui.tag` from the resolved element", async () => {
         silenceConsole();
         const dom = installDom();
@@ -243,6 +271,40 @@ describe("ui.interaction (web) — the wire (§4.6)", () => {
         await t.flush();
 
         expect(clicks(sent).some(r => "ui.rage" in r.attributes!)).toBe(false);
+    });
+});
+
+describe("the deferred row survives the page it was clicked on", () => {
+    it("drains open windows on pagehide, with `ui.dead` omitted — the window never closed", async () => {
+        silenceConsole();
+        const dom = installDom();
+        const { t, sent } = harness();
+        await settle(t);
+
+        // A same-tab <a href>: the host navigates and the document unloads mid-window.
+        dom.click([el("a", { href: "/cart" }, "Go to cart")]);
+        dom.pagehide();
+        await vi.advanceTimersByTimeAsync(0);   // let the enqueue's own microtasks run
+        await t.flush();
+
+        const rows = clicks(sent);
+        expect(rows).toHaveLength(1);                       // the row is NOT lost
+        expect(rows[0].attributes!["ui.target"]).toBe("go_to_cart");
+        expect("ui.dead" in rows[0].attributes!).toBe(false);   // not evaluated, so absent
+    });
+
+    it("does not double-emit when the timer would also have fired", async () => {
+        silenceConsole();
+        const dom = installDom();
+        const { t, sent } = harness();
+        await settle(t);
+
+        dom.click([el("button", {}, "Retry")]);
+        dom.hide();
+        await vi.advanceTimersByTimeAsync(2000);
+        await t.flush();
+
+        expect(clicks(sent)).toHaveLength(1);
     });
 });
 

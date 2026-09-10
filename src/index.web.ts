@@ -199,7 +199,10 @@ export class TelemetryWeb extends TelemetryBase {
     async trackInteractions() {
         const { InteractionTrackerWeb } = await import("./adapters/web/interactionWeb.web");
         const inst = await this.instancePromise;
-        new InteractionTrackerWeb(inst).start();
+        // One tracker per core instance, like the XHR patch: `start()`'s own guard is
+        // per-tracker, so constructing a fresh one on a second call would add a second
+        // capture-phase listener and double every `ui.interaction` row.
+        (inst.webInteractions ??= new InteractionTrackerWeb(inst)).start();
     }
 
     async autoTrackNavigation() {
