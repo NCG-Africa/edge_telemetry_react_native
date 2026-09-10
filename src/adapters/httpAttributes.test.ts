@@ -87,9 +87,24 @@ describe("buildHttpAttributes — contract §4.4", () => {
         expect(a["http.route"]).toBe("/api/accounts/{id}");
     });
 
-    it("uppercases http.method", () => {
+    it("resolves a relative URL against the page where there is one — §4.4 omits host on NATIVE", () => {
+        const g = globalThis as any;
+        g.location = { href: "https://app.example.com:8443/dashboard" };
+        try {
+            const a = buildHttpAttributes({ ...base, url: "/api/accounts/123" });
+            expect(a["http.host"]).toBe("app.example.com:8443");
+            expect(a["http.route"]).toBe("/api/accounts/{id}");
+        } finally {
+            delete g.location;
+        }
+    });
+
+    it("uppercases http.method without inventing one", () => {
         expect(buildHttpAttributes({ ...base, url: "/x", method: "post" })["http.method"]).toBe("POST");
-        expect(buildHttpAttributes({ ...base, url: "/x", method: "" })["http.method"]).toBe("GET");
+        expect(buildHttpAttributes({ ...base, url: "/x", method: "patch" })["http.method"]).toBe("PATCH");
+        // §9.5 authorises a case change, not a fabricated verb — fetch's GET default belongs
+        // to fetch's caller, where it is a real observation.
+        expect(buildHttpAttributes({ ...base, url: "/x", method: "" })["http.method"]).toBe("");
     });
 
     it("reports status 0 as a failure without inventing a discriminator", () => {
@@ -108,17 +123,35 @@ describe("buildHttpAttributes — contract §4.4", () => {
         expect(size(new Uint8Array(9))).toBe(9);
         expect(size(new Uint32Array(4))).toBe(16);           // byteLength, not element count
         expect(size(new Blob(["abcd"]))).toBe(4);
+        expect(size(new URLSearchParams({ a: "1", b: "é" }))).toBe(utf8Bytes("a=1&b=%C3%A9"));
     });
 
-    it("omits http.request_size for FormData, streams and no body — never 0", () => {
-        const size = (requestBody: unknown) =>
+    it("leaves the body readable by the caller afterwards", async () => {
+        const blob = new Blob(["abcd"]);
+        const params = new URLSearchParams({ a: "1" });
+        const buf = new Uint8Array([1, 2, 3]);
+
+        buildHttpAttributes({ ...base, url: "/x", requestBody: blob });
+        buildHttpAttributes({ ...base, url: "/x", requestBody: params });
+        buildHttpAttributes({ ...base, url: "/x", requestBody: buf });
+
+        // measuring must never consume — draining a consumer's body is the worse bug
+        expect(await blob.text()).toBe("abcd");
+        expect(params.toString()).toBe("a=1");
+        expect(Array.from(buf)).toEqual([1, 2, 3]);
+    });
+
+    it("omits http.request_size for FormData, streams and no body — and never ships 0", () => {
+        const attrs = (requestBody: unknown) =>
             buildHttpAttributes({ ...base, url: "/x", requestBody });
 
-        expect("http.request_size" in size(new FormData())).toBe(false);
-        expect("http.request_size" in size(undefined)).toBe(false);
-        expect("http.request_size" in size(null)).toBe(false);
-        expect("http.request_size" in size(new ReadableStream())).toBe(false);
-        expect(size("")["http.request_size"]).toBe(0);       // an empty string body IS measured
+        expect("http.request_size" in attrs(new FormData())).toBe(false);
+        expect("http.request_size" in attrs(undefined)).toBe(false);
+        expect("http.request_size" in attrs(null)).toBe(false);
+        expect("http.request_size" in attrs(new ReadableStream())).toBe(false);
+        // §4.4's two null disciplines differ: request_size is "never 0", response_size ships one
+        expect("http.request_size" in attrs("")).toBe(false);
+        expect("http.request_size" in attrs(new ArrayBuffer(0))).toBe(false);
     });
 
     it("ships a real response size of 0 but omits an unmeasurable one", () => {

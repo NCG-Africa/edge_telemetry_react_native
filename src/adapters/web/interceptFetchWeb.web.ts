@@ -1,6 +1,6 @@
 // interceptHttp.web.ts
 import { Telemetry } from "../../core/telemetry";
-import { buildHttpAttributes } from "../httpAttributes";
+import { buildHttpAttributes, contentLengthSize, isCollectorUrl } from "../httpAttributes";
 import { patchXHR } from "../xhrIntercept";
 
 /**
@@ -51,19 +51,15 @@ export class NetworkTrackerWeb {
                     const url = typeof input === "string" ? input : input.toString();
 
                     // Invariant: an http.request never describes the SDK's own collector POST.
-                    const endpoint = telemetry.getEndpoint?.();
-                    if (!(endpoint && url.startsWith(endpoint))) {
-                        // absent content-length → omitted; a real "0" ships
-                        const len = response ? response.headers.get("content-length") : null;
-
+                    if (!isCollectorUrl(url, telemetry.getEndpoint?.())) {
                         telemetry.log("http.request", buildHttpAttributes({
                             url,
-                            method: init?.method ?? "GET",
+                            method: init?.method ?? "GET",   // fetch's own default, a real observation
                             statusCode: response?.status ?? 0,
                             durationMs: end - start,
                             error,
                             requestBody: init?.body,
-                            responseSize: len == null || len === "" ? undefined : Number(len),
+                            responseSize: contentLengthSize(response?.headers.get("content-length")),
                         }));
                     }
                 }

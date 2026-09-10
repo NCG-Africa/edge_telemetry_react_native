@@ -98,6 +98,29 @@ describe("native http.request on the wire (#95)", () => {
     expect(wire).not.toContain("token=abc");
   });
 
+  it("ships one http.request for an axios-shaped raw XHR call too", async () => {
+    silenceConsole();
+    installRNHttp(201);
+    const sent: TelemetryEvent[] = [];
+    const t = await makeTelemetry({ send: async (e: TelemetryEvent[]) => { sent.push(...e); } });
+
+    // axios on RN goes through XMLHttpRequest directly — the same chokepoint, no fetch involved
+    const x = new g.XMLHttpRequest();
+    x.open("PUT", "https://api.example.com/v2/orders/9/items");
+    x.send('{"qty":2}');
+    await tick();
+    await t.flush();
+
+    const http = sent.filter((e) => e.eventName === "http.request");
+    expect(http).toHaveLength(1);
+    const a = http[0].attributes!;
+    expect(a["http.method"]).toBe("PUT");
+    expect(a["http.host"]).toBe("api.example.com");
+    expect(a["http.route"]).toBe("/v2/orders/{id}/items");   // /v2/ survives the carve-out
+    expect(a["http.request_size"]).toBe(9);
+    expect("http.url" in a).toBe(false);
+  });
+
   it("never emits an http.request describing the collector endpoint", async () => {
     silenceConsole();
     installRNHttp(200);

@@ -52,19 +52,37 @@ export function requestBodySize(body: unknown): number | undefined {
     if (body instanceof ArrayBuffer) return body.byteLength;
     if (ArrayBuffer.isView(body)) return body.byteLength;              // TypedArray | DataView
     if (typeof Blob !== "undefined" && body instanceof Blob) return body.size;
+    if (typeof URLSearchParams !== "undefined" && body instanceof URLSearchParams) {
+        return utf8Bytes(body.toString());   // serialising a copy, not draining the body
+    }
     return undefined;
 }
 
-// host keeps the port (deliberately unlike §6.4's trace gate); omitted on a relative URL.
+// host keeps the port, deliberately unlike §6.4's trace gate. §4.4 omits it on a *native*
+// relative URL specifically: a browser resolves `/api/x` against the page, and RN has no
+// `location` to resolve against — a capability check, not a platform branch.
 function splitUrl(url: string): { host?: string; path: string } {
+    const base = (globalThis as any).location?.href;
     try {
-        const u = new URL(url);
+        const u = base ? new URL(url, base) : new URL(url);
         return { host: u.host, path: u.pathname };
     } catch {
         // native relative URL: no host to report, but the path is still routable
         const path = url.split("#")[0].split("?")[0];
         return { path: path.startsWith("/") ? path : "/" + path };
     }
+}
+
+/** `content-length` → a response size. Absent or unparseable → undefined, so the key is omitted. */
+export function contentLengthSize(header: string | null | undefined): number | undefined {
+    if (header == null || header === "") return undefined;
+    const n = Number(header);
+    return Number.isFinite(n) ? n : undefined;
+}
+
+/** The #95 invariant, in one place: an `http.request` never describes the collector POST. */
+export function isCollectorUrl(url: string, endpoint: string | undefined): boolean {
+    return !!endpoint && url.startsWith(endpoint);
 }
 
 export function buildHttpAttributes(args: {
@@ -80,8 +98,10 @@ export function buildHttpAttributes(args: {
     const { host, path } = splitUrl(url);
 
     const attrs: Record<string, any> = {
-        // uppercased here, reporting-only — the forwarded request is never touched (§9.5)
-        "http.method": String(method || "GET").toUpperCase(),
+        // uppercased here, reporting-only — the forwarded request is never touched (§9.5).
+        // Not defaulted: §9.5 authorises a case change, never inventing a verb. `fetch`'s own
+        // GET default is applied by its caller, where it is a real observation.
+        "http.method": String(method).toUpperCase(),
         "http.status_code": statusCode,   // 0 = never got a response: DNS/TLS/timeout/abort
         "http.duration_ms": durationMs,
         "http.success": !error && statusCode >= 200 && statusCode < 400,
@@ -89,9 +109,10 @@ export function buildHttpAttributes(args: {
     };
     if (host) attrs["http.host"] = host;
 
+    // §4.4's two null disciplines differ on purpose, so do not unify them:
+    // request_size is "omitted when unmeasurable, never 0"; response_size ships a real 0.
     const reqSize = requestBodySize(requestBody);
-    if (reqSize !== undefined) attrs["http.request_size"] = reqSize;
-    // omitted when unmeasurable, but a real 0 ships
+    if (reqSize) attrs["http.request_size"] = reqSize;
     if (typeof responseSize === "number" && Number.isFinite(responseSize)) {
         attrs["http.response_size"] = responseSize;
     }

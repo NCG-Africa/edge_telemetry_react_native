@@ -63,16 +63,16 @@ events:
       XMLHttpRequest only on native — RN's global.fetch IS XHR underneath, so patching both would emit two
       events per fetch(); the one chokepoint catches fetch and axios (#95, contract 4.4). Web patches fetch
       AND XHR, because browser fetch is native and not XHR-backed. Skips the SDK's own collector POST on
-      every path. evidence src/adapters/httpAttributes.ts:76-104; src/adapters/xhrIntercept.ts:14-50;
-      native interceptFetchNative.native.ts:18-22; web interceptFetchWeb.web.ts:34-73
+      every path. evidence src/adapters/httpAttributes.ts:88-121; src/adapters/xhrIntercept.ts:32-83;
+      native interceptHttpNative.native.ts:18-22; web interceptFetchWeb.web.ts:34-69
     payload_fields:
-      - {field: http.method, type: string, unit: none, always_present: true}              # UPPERCASED in the shared builder (#95); the forwarded request is untouched
+      - {field: http.method, type: string, unit: none, always_present: true}              # UPPERCASED in the shared builder (#95); never fabricated, and the forwarded request is untouched
       - {field: http.status_code, type: int, unit: none, always_present: true}            # 0 = never got a response: DNS/TLS/timeout/abort. Never folded into 5xx
       - {field: http.duration_ms, type: int, unit: ms, always_present: true}
       - {field: http.success, type: bool, unit: none, always_present: true}               # !error && 200<=status<400
       - {field: http.route, type: string, unit: none, always_present: true}               # normalized template, contract 4.4.1; "/" when the path is empty
-      - {field: http.host, type: string, unit: none, always_present: false}               # keeps the port; omitted on a native relative URL
-      - {field: http.request_size, type: int, unit: bytes, always_present: false}         # true UTF-8 bytes; ArrayBuffer/TypedArray byteLength; Blob size. Omitted (never 0) for FormData/streams/no body
+      - {field: http.host, type: string, unit: none, always_present: false}               # keeps the port; omitted only on a NATIVE relative URL — web resolves against location.href (httpAttributes.ts:64-75)
+      - {field: http.request_size, type: int, unit: bytes, always_present: false}         # true UTF-8 bytes (also URLSearchParams); ArrayBuffer/TypedArray byteLength; Blob size. Omitted for FormData/streams/no body AND for a measured 0 — contract 4.4 says "never 0", unlike response_size
       - {field: http.response_size, type: int, unit: bytes, always_present: false}        # from content-length; omitted when the header is absent, but a real 0 ships
     removed_fields:
       - {field: http.url, removed_in: "#95", why: "the identifier lives in the path, so query-stripping did not address the threat — contract 9.1"}
@@ -277,7 +277,7 @@ privacy:
     replaced by http.host (with port, omitted on a relative URL) and http.route, a template normalized SDK-side
     per contract 4.4.1 — nothing raw ever leaves the device and the processor never re-derives. Residue: an
     all-alpha slug such as /accounts/savings survives as itself. STILL UNSANITISED: web navigation captures
-    window.location.pathname+search with the query string retained. evidence httpAttributes.ts:20-33,76-104,
+    window.location.pathname+search with the query string retained. evidence httpAttributes.ts:14-33,64-75,88-121,
     navigationWeb.web.ts:42
   user_identifiers: >
     Auto: session.id; device.id ("device_{ms}_{16hex}_{ios|android|web}", SDK-minted and
@@ -363,7 +363,7 @@ features:
   view-tracking: {status: done, evidence: screenTiming.ts + navigationTracker.ts, notes: "navigation (route + screenStart) and screen.duration events"}
   error-capture: {status: done, evidence: crashCapture.ts + crashHandler.web.ts/crashHandlerNative.native.ts, notes: "JS errors, unhandled rejections, console.error/warn -> app.crash"}
   crash-capture: {status: partial, evidence: crashHandlerNative.native.ts:15-25, notes: "JS-level only (ErrorUtils/window.onerror). No native iOS/Android signal/ANR crash capture. crash.fatal only on native ErrorUtils path"}
-  network-capture: {status: done, evidence: interceptFetchNative.native.ts + interceptFetchWeb.web.ts, notes: "fetch both platforms; XHR web only; bodies not sent, sizes only"}
+  network-capture: {status: done, evidence: interceptHttpNative.native.ts + interceptFetchWeb.web.ts + xhrIntercept.ts, notes: "XHR only on native (fetch IS XHR there, so axios is covered); fetch+XHR on web; bodies never read, sizes only"}
   custom-events: {status: done, evidence: telemetry.ts:474-520, notes: "log(); non-allowlisted names remapped to custom_event + event.name"}
   web-vitals: {status: planned, evidence: telemetry.ts:19-21, notes: "LCP/FCP/CLS/INP/TTFB/page_load/resource_timing/long_task allowlisted but NO emitter exists"}
   app-start: {status: na, evidence: none, notes: "no app-start/cold-start timing event found. §4.3 makes it the compensator for #92's resume-without-session.started — see inconsistency 11"}

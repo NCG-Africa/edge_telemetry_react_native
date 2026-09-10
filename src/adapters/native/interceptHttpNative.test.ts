@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { NetworkTrackerNative } from "./interceptFetchNative.native";
+import { NetworkTrackerNative } from "./interceptHttpNative.native";
 
 // Native is XHR-only (#95): RN's global.fetch IS XMLHttpRequest underneath, so this suite
 // drives requests the way the runtime does — through the XHR prototype — and asserts one
@@ -144,6 +144,47 @@ describe("NetworkTrackerNative — XHR-only chokepoint (#95)", () => {
         await g.fetch("https://api.example.com/v1/users", { method: "GET" });
 
         expect(calls).toHaveLength(1);
+    });
+
+    it("emits one event per send when an XHR instance is reused", async () => {
+        installFakeXHR(200);
+        const { telemetry, calls } = fakeTelemetry();
+
+        await new NetworkTrackerNative(telemetry).start();
+        // reusing an XHR is legal; a listener added per send() would emit N events on the Nth
+        const x = new g.XMLHttpRequest();
+        x.open("GET", "https://api.example.com/first");
+        x.send();
+        x.open("GET", "https://api.example.com/second/7");
+        x.send();
+        x.open("GET", "https://api.example.com/third");
+        x.send();
+
+        expect(calls).toHaveLength(3);
+        expect(calls.map((c) => c.data["http.route"])).toEqual(["/first", "/second/{id}", "/third"]);
+    });
+
+    it("forwards open() and send() arguments untouched", async () => {
+        const XHR = installFakeXHR(200);
+        const seen: any[] = [];
+        XHR.prototype.open = function (this: any, ...args: any[]) { seen.push(["open", ...args]); };
+        XHR.prototype.send = function (this: any, ...args: any[]) {
+            seen.push(["send", ...args]);
+            (this._l["loadend"] || []).forEach((cb: any) => cb());
+        };
+        const { telemetry, calls } = fakeTelemetry();
+
+        await new NetworkTrackerNative(telemetry).start();
+        const x = new g.XMLHttpRequest();
+        x.open("post", "https://api.example.com/v1/pay", true, "user", "pw");
+        x.send("body");
+
+        expect(seen).toEqual([
+            ["open", "post", "https://api.example.com/v1/pay", true, "user", "pw"],
+            ["send", "body"],
+        ]);
+        // reporting-only: the wire says POST, the forwarded request still says "post"
+        expect(calls[0].data["http.method"]).toBe("POST");
     });
 
     it("stop() restores the original prototype", async () => {

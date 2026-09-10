@@ -51,6 +51,7 @@ src/
 │   ├── crashCapture.ts    ← shared crash normalisation → app.crash
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
+│   │                        idempotent, and one listener per instance — see below
 │   ├── frameAggregate.ts  ← rAF deltas → one frame_render_time metric per 10s window
 │   ├── interaction.ts     ← user.interaction tap emitter
 │   ├── networkChange.ts   ← edge-triggered network_change emitter
@@ -242,7 +243,9 @@ of** the XHR one, because browser `fetch` is native and not XHR-backed. The XHR 
 
 **`http.url` and `http.path` are removed outright** (§9.1) — not query-stripped. The identifier
 lives in the *path*, so stripping `?token=…` while shipping `/accounts/GB29-…` raw fixes nothing.
-`http.host` (keeps the port; omitted on a native relative URL) and `http.route` replace them.
+`http.host` (keeps the port) and `http.route` replace them. §4.4 omits the host on a **native**
+relative URL specifically — a browser resolves `/api/x` against the page, so `splitUrl()` passes
+`location.href` as the base when there is one. That is a capability check, not a platform branch.
 
 `http.route` is normalized **SDK-side only** — nothing raw leaves the device and the processor
 never re-derives. The rule is §4.4.1 verbatim, in `normalizeRoute()`: a segment is a variable if
@@ -252,10 +255,13 @@ cardinality guard** — a client-side rolling collapse would make one row mean d
 different phones. Accepted residue: `/accounts/savings` survives as itself.
 
 `http.request_size` is **true UTF-8 bytes**, and measures everything measurable *without
-consuming the body*: strings by byte count, `ArrayBuffer`/`TypedArray` by `byteLength`, `Blob` by
-`size`. `FormData` and streams are **omitted** — draining a consumer's request body is a worse
-bug than a missing key. `http.response_size` is omitted when `content-length` is absent, but a
-real `0` ships. `http.method` is uppercased in the shared builder, **reporting only** — the
+consuming the body*: strings and `URLSearchParams` by byte count, `ArrayBuffer`/`TypedArray` by
+`byteLength`, `Blob` by `size`. `FormData` and streams are **omitted** — draining a consumer's
+request body is a worse bug than a missing key.
+
+⚠ **The two size keys have deliberately opposite null disciplines and must not be unified.**
+`http.request_size` is *"omitted when unmeasurable, **never 0**"*, so a zero-length body ships no
+key at all; `http.response_size` omits an absent `content-length` but **ships a real `0`**. `http.method` is uppercased in the shared builder, **reporting only** — the
 forwarded request is never touched. `http.status_code` is **`0`** on transport failure (DNS, TLS,
 timeout, cancellation) with no invented discriminator, so those stop folding into 5xx.
 
