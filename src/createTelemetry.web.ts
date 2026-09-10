@@ -1,6 +1,8 @@
 import { TelemetryWeb } from "./index.web";
 import type { SyncStore } from "./core/store";
 import type { BeforeSend } from "./core/beforeSend";
+import { normalizeAllowlist } from "./adapters/traceHeader";
+import { setDebug } from "./core/debug";
 
 export type TelemetryOpts = {
     apiKey: string;             // required credential; must start with "edge_" (API key or JWT, #90)
@@ -14,6 +16,11 @@ export type TelemetryOpts = {
     // Constructor-only (§3.6) — there is deliberately no runtime setter for either.
     beforeSend?: BeforeSend;      // sync scrubbing hook, run at enqueue over events and metrics
     sessionSampleRate?: number;   // 0.0-1.0, sticky per session, re-rolled at rotation; default 1
+    // §6.4/#99. Bare hosts, exact match, **ports ignored** (a deliberate mismatch with
+    // `http.host`, which keeps the port — do not join them). Empty by default: v4 is dark on
+    // upgrade. Listing a host asserts that host's CORS allows `traceparent`; a malformed
+    // entry throws in dev and is dropped in production.
+    traceHostAllowlist?: string[];
 };
 
 // Deliberately loose: `apiKey` is the *credential*, and under AUTH_MODE=jwt it is
@@ -33,5 +40,14 @@ export function assertApiKey(apiKey?: string) {
  */
 export function createTelemetry(opts: TelemetryOpts) {
     assertApiKey(opts?.apiKey);
+    // §6.4's dev throw has to happen *here*, synchronously: the core Telemetry is built
+    // inside `instancePromise`, which deliberately never rethrows, so a throw down there
+    // would be a silently rejected promise instead of the loud config error dev asks for.
+    // In production it drops the bad entry and reports through debug() — which is why the
+    // gate has to be open first: the entry ctor's own setDebug() runs *after* this line, so
+    // without this the production report would be a guaranteed no-op even with debug: true.
+    // It runs again in TraceManager, where it is idempotent.
+    setDebug(opts?.debug ?? false);
+    normalizeAllowlist(opts?.traceHostAllowlist);
     return new TelemetryWeb(opts);
 }

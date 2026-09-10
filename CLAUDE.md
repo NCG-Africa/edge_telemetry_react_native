@@ -51,7 +51,8 @@ src/
 │   ├── crashCapture.ts    ← shared crash normalisation → app.crash
 │   ├── viewManager.ts     ← the View entity: view.id/view.name, the `view` event, the ladder
 │   ├── loadingTime.ts     ← shared network-settle: view.loading_time + the 4-value outcome
-│   ├── traceManager.ts    ← §6 trace/span: the live-root carrier, three roots, three tiers
+│   ├── traceManager.ts    ← §6 trace/span: carrier, three roots, three tiers, the outcome ladder
+│   ├── traceHeader.ts     ← §6.4/§6.5 pure half: allowlist, `traceparent` parse/format, header I/O
 │   ├── navigationRef.ts   ← React Navigation ref listener, shared (getCurrentRoute works on web)
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
@@ -110,6 +111,7 @@ type TelemetryOpts = {
   store?: Store;            // override the default platform Store (see below)
   beforeSend?: BeforeSend;    // sync scrubbing hook, run at enqueue (see below)
   sessionSampleRate?: number; // 0.0-1.0, sticky per session; default 1
+  traceHostAllowlist?: string[]; // bare hosts, exact, ports ignored; EMPTY by default (§6.4)
 };
 ```
 
@@ -377,10 +379,10 @@ Firing the flush on the next line sends the batch before the row is enqueued.
 
 ### Trace and span
 
-`adapters/traceManager.ts`, shared by both builds (§6, #98). It owns the live-root **carrier**,
-root minting, and the key builders for the three tiers. Header injection is **not** here —
-`traceHostAllowlist`, the `traceparent` header and its seven-value outcome are #99, so ids are
-stamped locally and nothing crosses the wire to a third party yet.
+`adapters/traceManager.ts`, shared by both builds (§6, #98/#99). It owns the live-root
+**carrier**, root minting, the key builders for the three tiers, and §6.5's outcome ladder.
+`adapters/traceHeader.ts` is the pure half — allowlist normalization, `traceparent`
+parse/format and header reading — so both builds cannot drift on the rules.
 
 **`rum.action.id` is the root's `span.id`**: `== span.id` on a root, `== parent.span.id` on a
 child. That identity is the single thing that makes an action's envelope one `GROUP BY` instead of
@@ -441,6 +443,85 @@ span a `view.id`, and §6.6 states the absence of a third invariant rather than 
 hierarchy. An action genuinely outlives its view — a root minted in A, a route change to B that
 *extends* it, and B's mount fetch as a child of an A-minted root: one `rum.action.id`, two
 `view.id`s, every row correct.
+
+#### Header injection — `traceHostAllowlist` and the outcome ladder
+
+**Tracing is dark by default** (§6.4): `traceHostAllowlist` is **empty**, so upgrading to v4
+cannot break a consumer's network calls on day one. It is **constructor-only**, bare hosts,
+**exact match**, punycode-normalized, and **ports are ignored** — ⚠ a deliberate mismatch with
+`http.host`, which keeps the port. **Do not join them.** No wildcards, no regexes, no
+predicates, no same-origin exemption: listing a host is the consumer's assertion that *that
+host's* CORS config allows the header, and you cannot make that assertion over a pattern.
+
+A **malformed entry throws in `__DEV__` and is dropped in production**, reported through
+`debug()` — so it is silent unless the consumer passed `debug: true`, like every other
+SDK-internal diagnostic. A RUM SDK crashing a shipped banking app over a config typo is the one
+failure worse than no tracing.
+The throw is raised in the **synchronous `createTelemetry()` factory**, not in core: core is
+built inside `instancePromise`, which deliberately never rethrows, so a throw there would be a
+silently rejected promise instead of the loud config error dev is asking for.
+
+**`traceparent` only. No `b3`, no `tracestate`, ever.** The SDK **reads exactly one header
+name** (case-insensitively, for exactly one purpose — a presence check) and **writes exactly
+one header name**. That is a sentence a consumer must be able to state during a security
+review. Every extra header is another line the customer's server team must add to
+`Access-Control-Allow-Headers`, and a *partial* CORS config is worse than none.
+
+⚠ **The failure signature to hand a customer:** *"our app broke after we enabled tracing"*
+means `Access-Control-Allow-Headers: traceparent` is missing on that host, not that the SDK is
+broken. Adding the header also converts previously-*simple* cross-origin GETs into preflighted
+ones — set `Access-Control-Max-Age`.
+
+**Never-strip**: the SDK never removes or rewrites a header it did not add. Ownership is a
+**per-request presence flag set at the consumer's write time** — the `setRequestHeader` patch
+on XHR, `init.headers`/`Request.headers` on fetch — **never inferred from the value's shape**,
+because an SDK-minted and a consumer-minted `traceparent` are byte-identical by construction.
+The fetch path forwards a **copy** of the headers, so the consumer's `Request`/`Headers` object
+is never mutated.
+
+**No retry-without-the-header and no preflight probe**, both declined on the record: a rejected
+preflight and a dead server are the same `TypeError`, so retrying would **double-send a
+non-idempotent POST** — a tracing feature must not be able to double-charge a card. A
+*consumer's own* retry re-enters the patch and gets a **fresh `span.id`**: each attempt is its
+own `http.request`, so each attempt is its own span.
+
+**`traceparent.outcome` — 7 values, precedence is table order, absent means not traced.**
+
+| # | Value | Fires when |
+|---|---|---|
+| 1 | `skipped_off_allowlist` | an allowlist exists and this host is not on it |
+| 2 | `skipped_no_cors` | **fetch-only** — `mode` is a concept XHR cannot express, so no platform branch is needed |
+| 3 | `skipped_consumer_set` | consumer header present and **unparseable** |
+| 4 | `adopted` | consumer header present and **valid** |
+| 5 | `injected_attributed` | a live root was joined |
+| 6 | `injected_expired` | the carrier had aged out — context lost |
+| 7 | `injected_unattributed` | there was no carrier at all — no action |
+
+`injected_unwired` is **dropped** relative to Android and must not come back: it exists there
+because `instrument(client)` is a wiring step a consumer can get wrong, and **both RN builds
+patch the transport in the constructor**. A permanently-zero bucket is eventually read as
+healthy.
+
+**Every skip still stamps local ids with no wire header** — that is what makes *"missing DB
+join ⇒ header stripped in transit"* computable. **`adopted` is the exception**: the row mirrors
+the consumer's ids (`span.id` is the foreign parent-id, §6.1), omits `parent.span.id` and
+`trace.root_type`, and **leaves the carrier untouched** — extending a local root off a request
+reporting foreign ids would attribute their action to ours.
+
+⚠ **An unsampled session injects no header at all** — not a `flags=00` id. Sampling stays
+session-level; the injected flags byte is always `01`.
+
+`session.started` carries **`sdk.trace_allowlist_size`** (§4.1) — **count only, never the
+hosts**, so a zero tells "nobody opted in" apart from "the header is being stripped" without
+shipping a customer's internal hostnames.
+
+⚠ Per the fetch spec a **non-empty `init` resets a `Request`'s `referrer` and `referrerPolicy`**.
+The web patch carries both across when the consumer passed none, so adding our header is not a
+behaviour change the SDK was never entitled to make.
+
+`injected_expired` vs `injected_unattributed` is decided by reading the carrier field **before**
+`liveRoot()` drops an expired root. That is the split §6.5 asks the backend to keep as
+`injected_unattributed_context_lost` / `_no_action`.
 
 ### The Store port
 
@@ -733,10 +814,21 @@ coordination.
   re-mints the launch root so `trace.id` cannot span a `session.id`, which means the initial
   `view` row — emitted under the *old* session — is a child of a root whose row never ships.
   Same condition process death already produces; the alternative broke the invariant.
+- **With an empty `traceHostAllowlist` (the default) no `traceparent.outcome` ships at all**,
+  rather than stamping `skipped_off_allowlist` on every row of every consumer who never opted
+  in. "Absent means not traced" is §6.5's own wording and a consumer with no allowlist is not
+  traced; the rung stays reachable the moment an allowlist exists and a host is off it. A
+  literal reading of the ladder would fire rung 1 — flag it if the backend wants the constant.
+- **`skipped_consumer_set` is not final.** §0.3/§6.5 record a backend-owned open question:
+  the live enum's `injected_inbound_malformed` says *inject over a malformed inbound header*,
+  never-strip says *skip*. RN ships the skip. Population is 0 rows either way; the other six
+  rungs are settled.
+- A **direct `new TelemetryWeb()` / `new TelemetryNative()` skips the allowlist validation**,
+  the same gap `apiKey` already has — both are only enforced in the factory.
+- `traceparent.outcome` is **not** on §3.6's Tier A list, so `beforeSend` can delete or rewrite
+  it (Tier C) — same status as `trace.root_type`, `span.start_time` and `span.duration_ms`.
 - `trace.root_type = interaction` has **no producer**: §6.2's tap root arrives with #102/#103.
   Until then `user.interaction` is trace-free and a tap starts no action.
-- Header injection is **not built**: `traceHostAllowlist`, the `traceparent` header and
-  `traceparent.outcome`'s seven values are #99. Ids are stamped locally; nothing leaves the device.
 - An XHR `send()` that throws **synchronously** never reaches `loadend`, so a `request` root it
   minted lives out its 2 s window with no row describing it. Rare, and knowingly left.
 - **`view.id` is resolved at log time, not frozen at span start** (§3.1). Point events are

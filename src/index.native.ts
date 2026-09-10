@@ -28,6 +28,8 @@ export class TelemetryNative extends TelemetryBase {
         // where session.started and the earliest requests have already been enqueued.
         beforeSend?: BeforeSend;
         sessionSampleRate?: number;
+        // §6.4/#99 — bare hosts, exact match, ports ignored, empty by default.
+        traceHostAllowlist?: string[];
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -75,6 +77,7 @@ export class TelemetryNative extends TelemetryBase {
                 store,
                 beforeSend: opts?.beforeSend,
                 sessionSampleRate: opts?.sessionSampleRate,
+                traceHostAllowlist: opts?.traceHostAllowlist,
             });
 
             // 🔄 recover failed events right after init
