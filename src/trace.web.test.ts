@@ -5,6 +5,12 @@ import { memoryStore } from "./core/memoryStore";
 import { SESSION_KEY } from "./core/telemetry";
 import type { SyncStore } from "./core/store";
 
+// §4.7 removes the public path to `app.crash` (#100), so a test that needs one drives the
+// same core the platform crash handler drives.
+const crash = async (t: any, data?: Record<string, any>) =>
+  (await (t as any).instancePromise).log("app.crash", data);
+
+
 // #98 — trace and span core observed the only way that matters: the public API in, the
 // injected Sender's TelemetryEvent[] out. Names, keys, values and **absence**, since §6.1's
 // null discipline is "absent means the SDK had nothing". Nothing reaches into TraceManager.
@@ -225,7 +231,7 @@ describe("#98 the three tiers (§6.3)", () => {
   it("Tier 2 annotates without occupying a span, and never mints", async () => {
     const { t, sent } = launch();
     await settle();
-    await t.log("app.crash", { "crash.message": "boom" });
+    await crash(t, { "error.message": "boom" });
     await t.log("checkout_started", { cart: 42 });   // → custom_event
     await t.flush();
 
@@ -246,7 +252,7 @@ describe("#98 the three tiers (§6.3)", () => {
     const { t, sent } = launch();
     await settle();
     vi.setSystemTime(Date.now() + 5000);
-    await t.log("app.crash", { "crash.message": "boom" });
+    await crash(t, { "error.message": "boom" });
     await t.flush();
 
     const a = one(sent, "app.crash");

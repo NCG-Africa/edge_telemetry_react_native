@@ -4,6 +4,12 @@ import { memoryStore } from "./core/memoryStore";
 import { SESSION_KEY } from "./core/telemetry";
 import type { Store } from "./core/store";
 
+// §4.7 removes the public path to `app.crash` (#100), so a test that needs one drives the
+// same core the platform crash handler drives.
+const crash = async (t: any, data?: Record<string, any>) =>
+  (await (t as any).instancePromise).log("app.crash", data);
+
+
 // #98 native mirror of trace.web.test.ts. Platform APIs are module-stubbed; the assertions
 // are on the TelemetryEvent[] that reaches the injected Sender, never on manager internals.
 
@@ -189,7 +195,7 @@ describe("#98 native — the three roots", () => {
 describe("#98 native — the three tiers", () => {
   it("Tier 2 annotates without a span; Tier 3 carries no trace key at all", async () => {
     const { t, sent } = await launch();
-    await t.log("app.crash", { "crash.message": "boom" });
+    await crash(t, { "error.message": "boom" });
     await t.log("checkout_started");                 // → custom_event
     const inst = await (t as any).instancePromise;
     await inst.logMetric("frame_render_time", 16);

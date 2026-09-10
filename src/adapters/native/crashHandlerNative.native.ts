@@ -1,33 +1,32 @@
 import { Telemetry } from "../../core/telemetry";
-import { buildCrashAttributes, captureConsole } from "../crashCapture";
+import { buildErrorAttributes, captureConsole } from "../crashCapture";
 
 export type CrashHandlerOptions = { captureConsole?: boolean };
 
 export class CrashHandlerNative {
     constructor(private telemetry: Telemetry) { }
 
-    // Funnels JS errors, unhandled rejections and (opt-out) console.error/warn into one
-    // `app.crash` stream keyed by `crash.cause`. Console capture defaults on (opt-out). #28
+    // JS errors and unhandled rejections become `app.crash`; console.error becomes
+    // `app.error` and console.warn a breadcrumb, both opt-in (default off). §4.7, #100
     attach(options: CrashHandlerOptions = {}): Promise<void> {
-        const { captureConsole: consoleEnabled = true } = options;
+        const { captureConsole: consoleEnabled = false } = options;
         return new Promise((resolve, reject) => {
             try {
                 if (typeof ErrorUtils !== "undefined" && ErrorUtils.setGlobalHandler) {
                     const defaultHandler = ErrorUtils.getGlobalHandler?.();
                     ErrorUtils.setGlobalHandler((error: any, isFatal?: boolean) => {
-                        this.telemetry.log("app.crash", buildCrashAttributes("Error", {
-                            message: error?.message,
-                            stacktrace: error?.stack,
-                            fatal: isFatal,
+                        // `error.fatal` is native-only — the web build never passes it (§4.7).
+                        this.telemetry.log("app.crash", buildErrorAttributes("global_handler", error, {
+                            fatal: !!isFatal,
                         }));
                         if (defaultHandler) defaultHandler(error, isFatal);   // keep RN red screen in dev
                     });
                 }
 
                 const onRejection = (event: any) => {
-                    this.telemetry.log("app.crash", buildCrashAttributes("UnhandledRejection", {
-                        message: event?.reason?.message ?? "Unhandled Promise Rejection",
-                        stacktrace: event?.reason?.stack,
+                    this.telemetry.log("app.crash", buildErrorAttributes("unhandled_rejection", event?.reason, {
+                        fallbackMessage: "Unhandled Promise Rejection",
+                        fatal: false,
                     }));
                 };
 

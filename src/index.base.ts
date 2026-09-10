@@ -22,6 +22,17 @@ export abstract class TelemetryBase {
 
     async log(event: string, data?: Record<string, any>) {
         const inst = await this.instancePromise;
+        // §4.7 — **there is no public path to `app.crash`.** It is the one name an unfiltered
+        // `COUNT(event_name='app.crash') / sessions` is read from, so a consumer's own code
+        // must not be able to manufacture rows in it. Routed to `app.error` rather than
+        // dropped: a reported error is data, it just isn't a crash. (#100)
+        if (event === "app.crash") {
+            debug.warn("app.crash is SDK-owned (§4.7); routing to app.error — use captureError()");
+            // The whole bag still rides as context; this only decides which key gets promoted
+            // to `error.message`. `crash.message` is here for v3 callers the rename stranded.
+            const message = data?.["error.message"] ?? data?.["message"] ?? data?.["crash.message"];
+            return inst.captureError(message, data);
+        }
         return inst.log(event, data);
     }
 
@@ -49,6 +60,16 @@ export abstract class TelemetryBase {
         const inst = await this.instancePromise;
         const { NavigationRefTracker } = await import("./adapters/navigationRef");
         new NavigationRefTracker(inst).attach(navigationRef);
+    }
+
+    /**
+     * §4.7 — report a handled error as `app.error`. Accepts `unknown`, so a `catch` block
+     * that received a string or an axios rejection object needs no narrowing first.
+     * There is no public path to `app.crash`, by design (#100).
+     */
+    async captureError(error: unknown, context?: Record<string, any>) {
+        const inst = await this.instancePromise;
+        return inst.captureError(error, context);
     }
 
     async trackErrors(options?: { captureConsole?: boolean }) {
