@@ -72,12 +72,16 @@ export class TelemetryNative extends TelemetryBase {
                 debug.warn("Native replay failed:", err);
             });
 
+            // Resume or start the session before the instance is visible (#92), so
+            // session.started can never land behind the host app's first event.
+            // Never rethrown into instancePromise: finalizeSession() flushes, flush() rethrows on a
+            // dead collector, and a rejected instancePromise would brick every public method for the
+            // life of the process. Hydration has already run; only the emission is lost.
+            await telemetry.resumeOrStartSession()
+                .catch(err => debug.warn("Native session resume failed:", err));
+
             return telemetry;
         })();
-
-        // session.started on init; AppState drives background→finalize, foreground→new session (#29)
-        this.startSessionOnInit().catch(err => debug.warn("Native startSession failed:", err));
-        this.attachAppState().catch(err => debug.warn("Native AppState attach failed:", err));
 
         // app_lifecycle on foreground/background (#30)
         this.attachAppLifecycle().catch(err => {
@@ -99,34 +103,23 @@ export class TelemetryNative extends TelemetryBase {
         });
     }
 
-    private async startSessionOnInit() {
-        const inst = await this.instancePromise;
-        await inst.startSession();
-    }
-
-    // Background → finalize (immediate flush). Foreground after background → fresh session. (#29)
-    private async attachAppState() {
-        const { AppState } = await import("react-native") as any;
-        const inst = await this.instancePromise;
-        let prev: string = AppState.currentState;
-        AppState.addEventListener("change", (next: string) => {
-            if (next === "background") {
-                inst.finalizeSession().catch((e: any) => debug.warn("finalizeSession failed:", e));
-            } else if (next === "active" && prev === "background") {
-                inst.newSession().catch((e: any) => debug.warn("newSession failed:", e));
-            }
-            prev = next;
-        });
-    }
-
-    // app_lifecycle on foreground/background via RN AppState (#30)
+    // app_lifecycle on foreground/background via RN AppState (#30).
+    //
+    // §4.2: neither build rotates on a lifecycle transition — parity with web is reached by
+    // *deleting* the old background→finalize / foreground→newSession pair, not by adding it
+    // to web. Backgrounding still forces a flush, because the process is now most likely to
+    // be killed and the queue only lives in memory.
     async attachAppLifecycle() {
         const { AppState } = await import("react-native") as any;
         const inst = await this.instancePromise;
         const { AppLifecycleEmitter } = await import("./adapters/appLifecycle");
         const emitter = new AppLifecycleEmitter(inst);
         emitter.onState(AppState.currentState === "active");   // seed current state
-        AppState.addEventListener("change", (next: string) => emitter.onState(next === "active"));
+        AppState.addEventListener("change", (next: string) => {
+            const isActive = next === "active";
+            emitter.onState(isActive);
+            if (!isActive) inst.flush().catch((e: any) => debug.warn("background flush failed:", e));
+        });
     }
 
     async getDeviceInfo() {

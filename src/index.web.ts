@@ -54,11 +54,17 @@ export class TelemetryWeb extends TelemetryBase {
                 store,
             });
 
+            // Resume or start the session before the instance is visible (#92). On web the
+            // Store is localStorage, so a hard reload, a bfcache restore and a second tab
+            // all resume the same session.
+            // Never rethrown into instancePromise: finalizeSession() flushes, flush() rethrows on a
+            // dead collector, and a rejected instancePromise would brick every public method for the
+            // life of the process. Hydration has already run; only the emission is lost.
+            await telemetry.resumeOrStartSession()
+                .catch(err => debug.warn("Web session resume failed:", err));
+
             return telemetry;
         })();
-
-        // session.started on init (#29). Background/foreground via AppState is native-only.
-        this.startSessionOnInit().catch(err => debug.warn("Web startSession failed:", err));
 
         this.trackErrors({ captureConsole: opts?.captureConsole }).catch(err => {
             debug.warn("Web trackErrors failed:", err);
@@ -79,6 +85,25 @@ export class TelemetryWeb extends TelemetryBase {
         this.attachAppLifecycle().catch(err => {
             debug.log("Web attachAppLifecycle errors", err);
         });
+        this.attachBfcacheRestore().catch(err => {
+            debug.log("Web attachBfcacheRestore errors", err);
+        });
+    }
+
+    /**
+     * A bfcache restore resumes a frozen JS context, so the in-memory session survives on its
+     * own — but the freeze can have outlasted the idle window, and a sibling tab may have
+     * rotated the shared localStorage record while this one was suspended. Re-running the
+     * init decision against the Store is what reconciles both (#92, §4.2).
+     */
+    private async attachBfcacheRestore() {
+        if (typeof window === "undefined") return;
+        const inst = await this.instancePromise;
+        window.addEventListener("pageshow", (e: PageTransitionEvent) => {
+            if (!e.persisted) return;   // an ordinary load already ran this at init
+            inst.resumeOrStartSession()
+                .catch((err: any) => debug.warn("Web bfcache session resume failed:", err));
+        });
     }
 
     // app_lifecycle on tab visibility change — web equivalent of native AppState (#30)
@@ -98,11 +123,6 @@ export class TelemetryWeb extends TelemetryBase {
         const inst = await this.instancePromise;
         const crashHandler = new CrashHandler(inst);
         return inst.trackErrors(crashHandler, options);
-    }
-
-    private async startSessionOnInit() {
-        const inst = await this.instancePromise;
-        await inst.startSession();
     }
 
     async trackFrameDrops() {

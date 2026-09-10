@@ -175,7 +175,7 @@ block.
 are no standalone `device_info` / `network_info` events in v3.
 
 ```
-session.id, session.start_time (ISO), session.sequence
+session.id, session.start_time (ISO), session.sequence   — all three survive a relaunch (§4.2)
 user.id                — only when the consumer supplied one; omitted on anonymous traffic
 device.id              — SDK-minted, persisted (+ device.id_ephemeral: true when storage failed)
 sdk.platform ("react-native"), sdk.version (package.json version)
@@ -225,8 +225,9 @@ traffic growth.
 ### The Store port
 
 Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
-interface with **no React Native import** — v4 moves `device.id`, session resume, the sticky
-sample rate and the capped offline store into shared core, which cannot reach AsyncStorage.
+interface with **no React Native import** — v4 moved `device.id` and session resume into shared
+core, and the sticky sample rate and capped offline store follow, none of which can reach
+AsyncStorage.
 
 **The sync/async split is load-bearing, not an implementation detail.** `SyncStore`
 (`adapters/web/store.web.ts`, `localStorage`) has finished its read when `get()` returns;
@@ -248,6 +249,52 @@ implementation — a production-shaped seam, not a test-only affordance — conf
 build's shape. A direct `new Telemetry()` with no injected store falls back to
 `memoryStore({ unavailable: true })`, so shared core never has to special-case a missing one.
 
+### Session lifecycle
+
+Two boundaries and nothing else (§4.2). **Neither build rotates on a lifecycle transition** —
+the native `background → finalize` / `foreground → newSession` pair was deleted to reach parity
+with web, not mirrored onto it. Backgrounding on native still forces a `flush()`, because the
+queue only lives in memory and that is when the process is most likely to be killed.
+
+| Boundary | Rule |
+|---|---|
+| Idle | 30 min since the last non-session event → `rotateSession("idle")` |
+| Maximum length | 4 h since `session.start` → `rotateSession("max_duration")` |
+
+Both are checked lazily, in `log()` and again at init. Idle is tested first: a long session that
+also went quiet ended because the user left.
+
+The session record — `{id, start, lastActivity, sequence, eventCount, errorCount}` — is written
+through the `Store` under `telemetry_session` on every non-session event and every acknowledged
+batch. So **process death, tab close, hard reload and bfcache restore all resume** the session
+when the gap is inside the idle window, and on web the record is `localStorage`, hence
+browser-wide and shared across tabs. That is intended.
+
+Each entry `await`s `resumeOrStartSession()` *inside* `instancePromise`, so `session.started` can
+never land behind the host app's first event. It resolves one of three ways:
+
+- record inside the window → **resume silently**. A resumed session must **not** re-emit
+  `session.started`, or `COUNT(session.started)` stops equalling session count (§4.1).
+- no record, corrupt record, or `unavailable` → fresh session, `session.reason: "launch"`.
+- expired record → adopt it, emit `session.finalized` **under the old `session.id` and
+  `session.start_time`**, then start a fresh one carrying the same reason.
+
+On web a `pageshow` with `persisted: true` re-runs the same decision, because a bfcache freeze
+can outlast the idle window and a sibling tab may have rotated the shared record meanwhile. That
+re-entry is idempotent: when storage has nothing to say it keeps the live session rather than
+re-announcing one that never ended.
+
+Metrics are samples, not user actions: they never refresh `lastActivity`, but they *are* checked
+against both boundaries — otherwise a backgrounded app sampling memory would ship forever under a
+session that expired hours ago, which is the exact thing the 4-hour cap exists to stop.
+
+`session.reason` ships on both: 3 values on `session.started` (`launch|idle|max_duration`), 2 on
+`session.finalized` (`idle|max_duration`). `session.finalized` keeps `duration_ms` and
+`event_count` even though the backend discards and derives both — the event survives as the
+carrier for `session.reason` and `sdk.error_count`. `duration_ms` is stamped from `lastActivity`,
+never `now`, so a lazily-detected rotation reports 2 minutes of use and not the 6 idle hours that
+followed it.
+
 ### Event allowlist
 
 `ALLOWED_NAMES` in `core/telemetry.ts`. Anything else is rewritten to `custom_event` with
@@ -255,7 +302,7 @@ the original name as `event.name`. Currently emitted:
 
 | Event | Trigger |
 |---|---|
-| `session.started` / `session.finalized` | init, 30-min idle rotation, background (native) |
+| `session.started` / `session.finalized` | init (unless the session resumes), 30-min idle rotation, 4-hour cap |
 | `app_lifecycle` | foreground/background transition |
 | `navigation` | route change or `screenStart()` |
 | `screen.duration` | `screenEnd()` |
@@ -331,6 +378,16 @@ coordination.
   constructors still accept it as optional.
 - `session.id` still omits the `_web` suffix on the web build; contract §3.3 gives it one in
   v4. `device.id` is already suffixed on all three platforms.
+- **`session.reason: "launch"` undercounts launches.** A resume emits no `session.started` at
+  all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
+  compensator and is not built — count launches from `app.start`, not from `session.reason`.
+- Session state is read at init and on a web bfcache restore, **not live-synced**. Two tabs
+  open at once share the `localStorage` record but keep their own in-memory `lastActivity`, so
+  they can diverge and both finalize the same `session.id`. A `storage`-event listener would
+  close it.
+- A `Store` reporting `unavailable` means the session can't be resumed, so every launch mints
+  one. There is no `session.id_ephemeral` to mark that population — but the same store failed
+  the `device.id` round-trip, so those events already carry `device.id_ephemeral: true`.
 - Crash capture is JS-level only — no native signal/ANR/hang capture.
 - `index.base.ts` `trackErrors()` imports the **native** crash handler in shared code; the
   web build resolves it at runtime and rejects.

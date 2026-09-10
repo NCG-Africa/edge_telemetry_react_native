@@ -11,9 +11,38 @@ import { version as PKG_VERSION } from "../../package.json";
 const SDK_PLATFORM = "react-native";   // framework identity; device OS lives in device.platform
 const SDK_VERSION = PKG_VERSION;       // sdk.version follows the published package version
 const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min of inactivity (iOS ADR-004)
+// New in v4 (§4.2). Removing the process-death boundary lets a backgrounded app's
+// http.request traffic hold one session open forever; this bounds length, not count.
+const SESSION_MAX_MS = 4 * 60 * 60 * 1000;
 
 /** Store key for the self-minted, persisted `device.id` (#91). */
 export const DEVICE_ID_KEY = "telemetry_device_id";
+/** Store key for the resumable session record (#92). */
+export const SESSION_KEY = "telemetry_session";
+
+/** `session.reason` domains: 3 on session.started, the last 2 on session.finalized (§4.1/§4.2). */
+export type SessionReason = "launch" | "idle" | "max_duration";
+export type SessionEndReason = Exclude<SessionReason, "launch">;
+
+/**
+ * What survives process death, tab close, hard reload and bfcache restore (§4.2).
+ * On web the Store is `localStorage`, so this record is browser-wide and shared
+ * across tabs — intended, not a leak.
+ */
+type PersistedSession = {
+    id: string;
+    start: number;
+    lastActivity: number;
+    sequence: number;
+    eventCount: number;
+    errorCount: number;
+};
+
+/** What hydration decided, so the emitting half stays free of storage concerns. */
+type SessionHydration =
+    | { kind: "resumed" }                                   // inside the idle window: no session.started (§4.1)
+    | { kind: "nothing" }                                   // miss or unavailable — storage told us nothing
+    | { kind: "expired"; reason: SessionEndReason };        // adopted, now owed a finalize + a fresh session
 /** The collector caps `user.id` at 255; truncate at source rather than be rejected (§3.2). */
 const USER_ID_MAX = 255;
 
@@ -327,36 +356,142 @@ export class Telemetry {
 
     // ---------- Session lifecycle (#29) ----------
 
-    /** Emit session.started for the current session (init / resume). */
-    public async startSession() {
-        this.lastActivity = Date.now();
-        await this.log("session.started", {});
+    /**
+     * The entry's one call at init (§4.2): resume the durable session when the gap is
+     * inside the idle window, otherwise close the stale one out and start fresh.
+     *
+     * Process death, tab close, hard reload and bfcache restore all land here, and all
+     * four **resume** — which is why a resumed session must not re-emit `session.started`
+     * (§4.1), or `COUNT(session.started)` stops equalling session count.
+     */
+    public async resumeOrStartSession() {
+        const decision = await this.hydrateSession();
+        if (decision.kind === "resumed") return;
+        // Expired: hydration adopted the old id/start so the finalize ships under them.
+        if (decision.kind === "expired") { await this.rotateSession(decision.reason); return; }
+
+        // Storage told us nothing. At init that means launch. On a bfcache restore this method
+        // runs a second time with a session already going — storage having nothing to say is no
+        // reason to discard it and re-announce a session that never ended. Just re-check the
+        // boundaries, which is the whole point of re-running after a long freeze.
+        if (this.lastActivity === undefined) { await this.startSession("launch"); return; }
+        const reason = this.expiryReason(Date.now());
+        if (reason) await this.rotateSession(reason);
     }
 
-    /** Finalize the current session: journey summary + sdk.error_count, then an immediate flush. */
-    public async finalizeSession() {
+    /**
+     * Read the durable record and adopt it. Adoption happens even when the session has
+     * expired: `session.finalized` has to ship under the *old* `session.id` and
+     * `session.start_time` before the fresh one takes over.
+     */
+    private async hydrateSession(): Promise<SessionHydration> {
+        const read = await this.store.get(SESSION_KEY);
+        // `unavailable` is not `miss` — incognito, a partitioned iframe, ITP eviction or a full
+        // disk means this process can never resume and can never be resumed FROM, so every
+        // launch mints a session and COUNT(session.started) over-counts. There is no
+        // `session.id_ephemeral` on the contract to say so, and inventing one needs backend
+        // sign-off — but the same store failed the device.id round-trip, so every event from
+        // this population already carries `device.id_ephemeral: true`. Filter on that.
+        if (read.status === "unavailable") {
+            debug.warn("Telemetry: session storage unavailable — this session cannot be resumed");
+            return { kind: "nothing" };
+        }
+        if (read.status === "miss") return { kind: "nothing" };
+
+        let saved: Partial<PersistedSession>;
+        try { saved = JSON.parse(read.value); } catch { return { kind: "nothing" }; }
+        // A record we can't trust is not a session to resume; mint rather than guess.
+        if (typeof saved?.id !== "string"
+            || typeof saved.start !== "number"
+            || typeof saved.lastActivity !== "number") return { kind: "nothing" };
+
+        this.sessionId = saved.id;
+        this.sessionStart = saved.start;
+        this.lastActivity = saved.lastActivity;
+        this.sessionSequence = saved.sequence ?? 0;
+        this.sessionEventCount = saved.eventCount ?? 0;
+        this.errorCount = saved.errorCount ?? 0;
+
+        const reason = this.expiryReason(Date.now());
+        return reason ? { kind: "expired", reason } : { kind: "resumed" };
+    }
+
+    /**
+     * Which boundary, if any, the current session has crossed. Idle is checked first:
+     * when a long session has also gone quiet, the reason it ended is that the user left.
+     *
+     * Inert until `lastActivity` is set, so a bare `new Telemetry()` that never started a
+     * session never rotates one.
+     */
+    private expiryReason(now: number): SessionEndReason | undefined {
+        if (this.lastActivity === undefined) return undefined;
+        // Both boundaries are strict: a session sitting exactly on one has not crossed it.
+        if (now - this.lastActivity > SESSION_IDLE_MS) return "idle";
+        if (now - this.sessionStart > SESSION_MAX_MS) return "max_duration";
+        return undefined;
+    }
+
+    /**
+     * Write the session through the `Store` so the next process can resume it.
+     *
+     * ponytail: one write per event. Web's is a synchronous `localStorage` write; native's
+     * is an AsyncStorage round-trip — debounce here if it ever shows up in a trace.
+     */
+    private async persistSession() {
+        const record: PersistedSession = {
+            id: this.sessionId,
+            start: this.sessionStart,
+            lastActivity: this.lastActivity ?? this.sessionStart,
+            sequence: this.sessionSequence,
+            eventCount: this.sessionEventCount,
+            errorCount: this.errorCount,
+        };
+        const write = await this.store.set(SESSION_KEY, JSON.stringify(record));
+        // Same first-class `unavailable` path as the read: nothing to retry and nothing to
+        // throw, but it must not read as a successful write. See hydrateSession().
+        if (write.status === "unavailable") debug.log("Telemetry: session not persisted (store unavailable)");
+    }
+
+    /** Emit session.started for the current session. */
+    public async startSession(reason: SessionReason) {
+        this.lastActivity = Date.now();
+        await this.persistSession();   // durable before it is announced
+        await this.log("session.started", { "session.reason": reason });
+    }
+
+    /**
+     * Finalize the current session: journey summary + sdk.error_count, then an immediate flush.
+     *
+     * The backend discards `duration_ms` and `event_count` and derives both (§4.2) — they
+     * stay on the wire because the event survives as the carrier for `session.reason` and
+     * `sdk.error_count`, neither of which is derivable. Duration is stamped from
+     * `lastActivity`, never `now`: a lazily-detected rotation must report 2 minutes of use,
+     * not the 6 idle hours that followed it.
+     */
+    public async finalizeSession(reason: SessionEndReason) {
         await this.log("session.finalized", {
-            "session.duration_ms": Date.now() - this.sessionStart,
+            "session.duration_ms": Math.max(0, (this.lastActivity ?? this.sessionStart) - this.sessionStart),
             "session.event_count": this.sessionEventCount,
             "sdk.error_count": this.errorCount,
+            "session.reason": reason,
         });
         await this.flush();
     }
 
     /** Begin a fresh session: new id/start, reset per-session counters, emit session.started. */
-    public async newSession() {
+    public async newSession(reason: SessionReason) {
         this.sessionId = this.generateSessionId();
         this.sessionStart = Date.now();
         this.sessionSequence = 0;
         this.sessionEventCount = 0;
         this.errorCount = 0;
-        await this.startSession();
+        await this.startSession(reason);
     }
 
-    /** Idle/boundary rotation: finalize the old session then start a fresh one (the pair). */
-    public async rotateSession() {
-        await this.finalizeSession();
-        await this.newSession();
+    /** Boundary rotation: finalize the old session then start a fresh one (the pair). */
+    public async rotateSession(reason: SessionEndReason) {
+        await this.finalizeSession(reason);
+        await this.newSession(reason);
     }
 
     /** Truncated at source (§3.2): the collector caps at 255 and we must not be the one over. */
@@ -530,17 +665,19 @@ export class Telemetry {
      */
     async log(name: string, data?: Record<string, any>) {
         this.eventCount++;
+        let activity = false;
 
-        // Session activity & 30-min idle rotation. Session events don't count as activity
-        // (they're emitted *by* the lifecycle), so they never re-trigger rotation.
+        // Session activity and the two boundaries — 30-min idle and the 4-hour cap (§4.2).
+        // Session events don't count as activity (they're emitted *by* the lifecycle), so
+        // they never re-trigger a rotation.
         if (!name.startsWith('session.')) {
             const now = Date.now();
-            if (this.lastActivity !== undefined && now - this.lastActivity > SESSION_IDLE_MS) {
-                await this.rotateSession();
-            }
+            const reason = this.expiryReason(now);
+            if (reason) await this.rotateSession(reason);
             this.lastActivity = now;
             this.sessionEventCount++;
             if (name === 'app.crash') this.errorCount++;
+            activity = true;
         }
 
         // v3 allowlist: unknown names ship as custom_event, original kept as event.name
@@ -568,6 +705,11 @@ export class Telemetry {
 
         debug.log("Telemetry queued event:", name, "Queue size:", this.queue.length);
         debug.log("Event attributes:", attributes);
+
+        // After the enqueue, never before it: the durable record is for the *next* process,
+        // and on native this is an AsyncStorage round-trip that must not sit in front of the
+        // event it describes.
+        if (activity) await this.persistSession();
 
         if (this.queue.length >= this.batchSize) {
             void this.flush();
@@ -648,6 +790,13 @@ export class Telemetry {
      */
     async logMetric(metricName: string, value: number, data?: Record<string, any>) {
         this.eventCount++;
+        // A metric is a sample, not a user action: it must not refresh `lastActivity` and
+        // keep a dead session alive. It is still *checked* against the boundaries, or a
+        // metric-only stream (a backgrounded app sampling memory) would ship forever under
+        // a session that expired hours ago and never hit the 4-hour cap (§4.2).
+        const reason = this.expiryReason(Date.now());
+        if (reason) await this.rotateSession(reason);
+
         const attributes = await this.collectContext(data);
 
         const m: TelemetryEvent = {
@@ -706,6 +855,9 @@ export class Telemetry {
         try {
             await this.sender.send(toSend);
             this.sessionSequence++;   // acknowledged (2xx) batch — order a session's batches (#29)
+            // Persist it too: a resumed session that restarts at 0 would emit duplicate
+            // (session.id, session.sequence) pairs and stop ordering anything (#92).
+            await this.persistSession();
         } catch (lastError) {
             if (this.sender.onFailure) {
                 try {
