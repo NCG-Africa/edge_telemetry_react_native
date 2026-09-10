@@ -278,6 +278,7 @@ common_attributes:
   - {field: sdk.hook_failed, type: int, unit: none, always_present: true, evidence: telemetry.ts:969}          # monotonic; beforeSend threw — the hook BROKEN (#93)
   - {field: sdk.events_dropped, type: int, unit: none, always_present: true, evidence: telemetry.ts:966}       # monotonic, process-lifetime (NOT reset by a session rotation); 0 until the first drop (#94)
   - {field: sdk.drop_reason, type: string, unit: none, always_present: false, evidence: telemetry.ts:967}      # OMITTED until a drop occurs; domain queue_full|store_full|rejected — "rejected" has no producer yet (needs 4xx-drops-the-batch, #113)
+  - {field: app.build_id, type: string, unit: none, always_present: false, evidence: telemetry.ts:1149}   # contract 4.8 symbolication resolve key, third part of (app_id, device.platform, app.build_id). CONSUMER-SUPPLIED via createTelemetry({buildId}); OMITTED when unset, never "", NEVER derived from app.version + app.build_number (#101). Assembled with the identity keys, so a caller's log() data cannot shift it
   # --- device block (from DeviceInfo handler; present when collect() succeeds) ---
   - {field: app.name, type: string, unit: none, always_present: false, evidence: adapters/native/deviceInfo.native.ts:52 / web/deviceInfo.web.ts:16}
   - {field: app.version, type: string, unit: none, always_present: false, evidence: deviceInfo.native.ts:53}
@@ -450,7 +451,7 @@ privacy:
 # 6. Public API surface
 # ============================================================
 api:
-  init_config_options: [apiKey (required, must start with "edge_"), sender, batchSize, flushIntervalMs, endpoint, captureConsole, debug, store, beforeSend, sessionSampleRate, traceHostAllowlist]   # evidence createTelemetry.web.ts / .native.ts; assertApiKey validates edge_ prefix, normalizeAllowlist validates the hosts
+  init_config_options: [apiKey (required, must start with "edge_"), sender, batchSize, flushIntervalMs, endpoint, captureConsole, debug, store, beforeSend, sessionSampleRate, traceHostAllowlist, buildId]   # evidence createTelemetry.web.ts / .native.ts; buildId ships as app.build_id (#101), omitted when unset or ""; assertApiKey validates edge_ prefix, normalizeAllowlist validates the hosts
   exported_ports:
     store: |
       Store port (#89). Narrow get/set/remove over persisted state, declared in shared core
@@ -492,6 +493,7 @@ features:
   view-loading-time: {status: done, evidence: "adapters/loadingTime.ts + viewManager.ts + the two interceptors + index.*.ts runtime-ready seed", notes: "#97 network settle, ONE shared module for both builds. 1000ms quiet window subtracted back out (the same constant as 4.6's dead-click window), 30s hard cap emitting null not the cap, zero-network null not 0, collector POST out of scope, initial_load seeded from loadEventEnd (web) / performance.rnStartupTiming (native). Requests count to the view they STARTED in. loading_time omitted when null; loading_time_outcome always ships"}
   view-tracking: {status: done, evidence: "adapters/viewManager.ts + adapters/navigationRef.ts + screenTiming.ts + navigationTracker.ts", notes: "#96 ViewManager: view.id/view.name on every row, the `view` event at four exit boundaries, and the explicit>route>url>none name ladder (rank beats order — a higher rung re-stamps in place and never changes view.id). attachNavigation moved to TelemetryBase, so React Navigation names views identically on both builds. view.loading_time landed separately in #97 — see view-loading-time"}
   error-capture: {status: done, evidence: crashCapture.ts + crashHandler.web.ts/crashHandlerNative.native.ts, notes: "JS errors + unhandled rejections -> app.crash; captureError() and an opted-in console.error -> app.error; console.warn -> breadcrumb (#100)"}
+  symbolication-wire: {status: done, evidence: "telemetry.ts:1149 + crashCapture.ts:87-124", notes: "the WIRE half of contract 4.8 only (#101): app.build_id from createTelemetry({buildId}), error.stacktrace raw and byte-for-byte under the cap, and a dev-only once-per-process Error.stackTraceLimit advisory. The source-map build plugin and the backend resolve pipeline are out of scope and do not exist"}
   crash-capture: {status: partial, evidence: crashHandlerNative.native.ts:15-25, notes: "JS-level only (ErrorUtils/window.onerror). No native iOS/Android signal/ANR crash capture. error.fatal only on the native ErrorUtils path"}
   network-capture: {status: done, evidence: interceptHttpNative.native.ts + interceptFetchWeb.web.ts + xhrIntercept.ts, notes: "XHR only on native (fetch IS XHR there, so axios is covered); fetch+XHR on web; bodies never read, sizes only"}
   custom-events: {status: done, evidence: telemetry.ts:474-520, notes: "log(); non-allowlisted names remapped to custom_event + event.name"}
@@ -695,6 +697,25 @@ inconsistencies_and_surprises: >
       that suffixes device.id / session.id), never from a runtime global — shared core must not
       branch on platform. A direct `new Telemetry()` with no platform opt therefore omits the
       key, which is the web discipline.
+
+  46. #101: `app.build_id` has NO fallback to app.version + app.build_number, deliberately.
+      Under Expo Updates / CodePush the native binary is unchanged, so the fallback resolves
+      against the wrong source map and produces frames that are plausible and WRONG with
+      nothing on the row marking them untrustworthy. Absence is itself the signal (contract 4.8).
+      The SDK has zero OTA awareness (no expo-updates / code-push dep, peer or optional) and
+      cannot derive one. It is app.* and therefore already Tier A immutable in beforeSend.
+  47. #101: the SDK NEVER assigns `Error.stackTraceLimit` — raising it globally is an invisible
+      mutation of the consumer's runtime that makes every `new Error()` in their app more
+      expensive and unattributable to us. Instead adviseStackTraceLimit() warns ONCE PER PROCESS,
+      IN DEV ONLY, from buildErrorAttributes() — the one chokepoint every captured stack passes
+      through, chosen over init so #23's "construct → log → flush is silent by default" holds.
+      It is NOT behind the debug() gate: a consumer who has not wired this up is exactly a
+      consumer who has not set debug: true (same reasoning as 6.4's dev throw, one rung quieter).
+      evidence adapters/crashCapture.ts adviseStackTraceLimit.
+  48. #101: `error.stacktrace` travels RAW and byte-for-byte under the cap — no normalization,
+      no reformatting, no path rewriting, because metro-symbolicate consumes the engine's native
+      format. Structured `error.frames` was rejected on the record: three engine formats (V8,
+      JSC, Hermes) and every parser bug becomes an app-store rollout.
 
 ci_cd:
   what_exists: >

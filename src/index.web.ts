@@ -30,6 +30,8 @@ export class TelemetryWeb extends TelemetryBase {
         sessionSampleRate?: number;
         // §6.4/#99 — bare hosts, exact match, ports ignored, empty by default.
         traceHostAllowlist?: string[];
+        // §4.8 — symbolication resolve key. Omitted when unset, never `""`, never derived.
+        buildId?: string;
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -69,6 +71,7 @@ export class TelemetryWeb extends TelemetryBase {
                 beforeSend: opts?.beforeSend,
                 sessionSampleRate: opts?.sessionSampleRate,
                 traceHostAllowlist: opts?.traceHostAllowlist,
+                buildId: opts?.buildId,
                 // §4.11: web has never emitted `screen.duration`, and a now-shared
                 // attachNavigation must not be what starts it. `navigation` is untouched by
                 // this flag — web's own history+popstate path still emits it (see the known

@@ -6,6 +6,8 @@
  * `error.*`, and both explicit wire nulls go with them. #100
  */
 
+import { isDev } from "../core/debug";
+
 /** `error.source` — a full re-cut of v3's `crash.cause`, not a rename. 5 values. */
 export type ErrorSource =
   | "global_handler"
@@ -67,6 +69,34 @@ function errorMessage(error: unknown, fallbackMessage?: unknown): string | undef
 }
 
 /**
+ * §4.8's second consumer wiring step, said **once per process and only in dev**.
+ *
+ * RN 0.81.4 sets `Error.stackTraceLimit` nowhere, so V8's default of **10 frames** governs —
+ * not the 2000-char cap, which holds ~26. Ten frames of an `unhandledrejection` can be
+ * entirely library internals.
+ *
+ * ⚠ The SDK **never assigns it**. Raising it globally is an invisible mutation of the
+ * consumer's runtime that makes every `new Error()` in their app more expensive and
+ * unattributable to us — so this is an advisory, and the consumer's own line of code.
+ *
+ * Not behind `debug()`: a consumer who has not wired this up is precisely a consumer who
+ * has not set `debug: true`. Same reasoning as §6.4's dev throw, one rung quieter — and the
+ * one carve-out from the no-bare-console rule, recorded as such in CLAUDE.md.
+ */
+let advised = false;
+function adviseStackTraceLimit(): void {
+  // The flag is set only when the advice is actually *said*: burning it on a call made
+  // before `__DEV__` is defined would silence a dev app for the rest of the process.
+  if (advised || !isDev()) return;
+  advised = true;
+  console.warn(
+    "[edge-telemetry] Error.stackTraceLimit is the engine default (10 frames on V8), which " +
+    "truncates crash stacks well before the SDK's 2000-char cap. Set `Error.stackTraceLimit = 50` " +
+    "in your app's entry file — the SDK will not set it for you.",
+  );
+}
+
+/**
  * The `error.*` block for both event names. `error.handled` does not exist — the event name
  * carries that bit, and carrying both is a denormalization that can disagree. `error.fatal`
  * is passed only by the native build (§4.7: on web nothing is fatal).
@@ -87,13 +117,17 @@ export function buildErrorAttributes(
   const stack = (error as any)?.stack;
   if (typeof stack === "string" && stack !== "") {
     attrs["error.stacktrace"] = cap(stack, STACK_MAX, true);
+    // Here rather than at init: this is the one chokepoint every captured stack passes
+    // through, so the advice arrives when a dev has a real, already-truncated stack in front
+    // of them — and #23's "construct → log → flush is silent by default" stays intact.
+    adviseStackTraceLimit();
   }
 
   if (opts.fatal !== undefined) attrs["error.fatal"] = opts.fatal;
   return attrs;
 }
 
-/** What `captureConsole` needs of a `Telemetry` — structural, so this file imports nothing. */
+/** What `captureConsole` needs of a `Telemetry` — structural. */
 type ErrorSink = {
   captureError(error: unknown, context?: Record<string, any>, source?: ErrorSource): unknown;
   addBreadcrumb(name: string, data?: Record<string, any>): void;

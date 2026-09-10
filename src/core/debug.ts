@@ -12,3 +12,16 @@ export const debug = {
   warn: (...args: any[]) => { if (enabled) console.warn(...args); },
   error: (...args: any[]) => { if (enabled) console.error(...args); },
 };
+
+/**
+ * `__DEV__` on RN, `NODE_ENV` elsewhere. Dev-only *config* diagnostics (a malformed
+ * allowlist, the `Error.stackTraceLimit` advisory) surface through this rather than the
+ * `debug` gate above: they are wiring mistakes the consumer has to see while building,
+ * and `debug: true` is exactly what a consumer with a wiring mistake has not set.
+ */
+export function isDev(): boolean {
+  const dev = (globalThis as any).__DEV__;
+  if (typeof dev === "boolean") return dev;
+  const env = (globalThis as any).process?.env?.NODE_ENV;
+  return env !== undefined && env !== "production";
+}
