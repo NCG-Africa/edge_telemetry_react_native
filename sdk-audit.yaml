@@ -194,11 +194,25 @@ events:
       - {field: rum.action.id, type: string, unit: none, always_present: false}
       - {field: trace.root_type, type: string, unit: none, always_present: false}
 
-  - name: user.interaction
-    trigger: native tap, best-effort — consumer must spread telemetry.interactionProps() onto app root <View>. NOT auto-wired; web has NO interaction capture. evidence src/adapters/interaction.ts:14-31; index.native.ts:168-172
+  - name: ui.interaction
+    trigger: EVERY web click — one capture-phase listener on document, auto-started in the ctor (#102, contract 4.6). Actionable or not: suppressing role-less clicks would destroy dead-click detection at the source. Replaces user.interaction, which is OFF the allowlist. NATIVE HAS NO PRODUCER until #103's trackTap(name). evidence src/adapters/web/interactionWeb.web.ts; src/adapters/uiInteraction.ts; index.web.ts trackInteractions()
     payload_fields:
-      - {field: interaction.type, type: string, unit: none, always_present: true}         # "tap"
-      - {field: interaction.screen, type: string, unit: none, always_present: false}      # only when currentScreen known
+      - {field: ui.type, type: string, unit: none, always_present: true}                  # "click" on web; "tap" on native (#103)
+      - {field: ui.target, type: string, unit: none, always_present: true}                # derived name | "unnamed" | "surface". Rungs 2-5 capped 64; rung 1 UNCAPPED and UNNORMALIZED
+      - {field: ui.name_source, type: string, unit: none, always_present: true}           # edge_action|test_id|aria_label|title|text|none — six on web, two on native
+      - {field: ui.tag, type: string, unit: none, always_present: true}                   # the RESOLVED element's tagName, lowercased — not the click target's
+      - {field: ui.x, type: int, unit: px, always_present: true}                          # viewport px
+      - {field: ui.y, type: int, unit: px, always_present: true}                          # viewport px
+      - {field: ui.dead, type: bool, unit: none, always_present: false}                   # OMITTED when not evaluated (non-actionable, text entry, download/_blank, no MutationObserver). WEB ONLY
+      - {field: ui.rage, type: bool, unit: none, always_present: false}                   # OMITTED when false. One flag per burst, on the crossing click
+      # §6 Tier 1, captured at the click's MINT (contract 6.2). EVERY click mints an
+      # `interaction` root — the one unconditional mint in the table — so span.id == rum.action.id
+      # and there is never a parent.span.id or a span.duration_ms on this row.
+      - {field: trace.id, type: string, unit: none, always_present: true}
+      - {field: span.id, type: string, unit: none, always_present: true}
+      - {field: rum.action.id, type: string, unit: none, always_present: true}
+      - {field: trace.root_type, type: string, unit: none, always_present: true}          # always "interaction"
+      - {field: span.start_time, type: string, unit: iso8601, always_present: true}
 
   - name: network_change
     trigger: connectivity TYPE transition (NetInfo native / navigator.connection+online/offline web). Only on actual change. evidence src/adapters/networkChange.ts:16-25; native networkInfo.native.ts:31-38; web networkInfo.web.ts:36-53
@@ -250,7 +264,7 @@ events:
 # screen.duration feeds. Not one trace key on any of them. The metrics exclusion is the one worth
 # arguing: a windowed aggregate belongs to no single action, and a rum.action.id on a p95 would
 # invite a GROUP BY over a number that was never attributable — and the join would LOOK valid.
-# `user.interaction` is also trace-free TODAY: §6.2's `interaction` root arrives with #102/#103.
+# `ui.interaction` is Tier 1 as of #102 — every click mints an `interaction` root.
 # Expiry is 2 s idle / 10 s cap — internal constants in adapters/traceManager.ts, deliberately NOT
 # TelemetryOpts surface. A span's START extends the root; a view's EXIT does not. A backwards
 # clock is clamped to expired. Background and session rotation both CLEAR the carrier.
@@ -481,8 +495,9 @@ api:
     - "captureError(error: unknown, context?) => emits app.error, NEVER app.crash (#100). Accepts unknown: a string, a plain object and an Error all work"
     - "getDeviceInfo() / getNetworkInfo()"
     - "attachNavigation(ref) — BOTH builds as of #96; getCurrentRoute() is a navigation-tree API, not a native one"
-    - "TelemetryNative only: trackRoute(from,to), screenStart(name), screenEnd(name), interactionProps()"
+    - "TelemetryNative only: trackRoute(from,to), screenStart(name), screenEnd(name). interactionProps() is GONE with user.interaction (#102); #103 replaces it with trackTap(name)"
     - "trackFrameDrops/trackNetworkRequests/trackMemoryUsage/autoTrackNavigation — auto-started in constructor, not meant for direct call"
+    - "TelemetryWeb only: trackInteractions() — also auto-started; ui.interaction is what the interaction root hangs off (#102)"
 
 # ============================================================
 # 7. Feature checklist
@@ -598,8 +613,8 @@ inconsistencies_and_surprises: >
       synchronously inside the patch, no request tag, no thread-local — and a module singleton
       would let one Telemetry inherit another's live root inside one process, which is the hazard
       that actually exists on a single-threaded runtime. ViewManager is owned the same way.
-  24. #98: `trace.root_type = interaction` has NO producer. §6.2's interaction root arrives with
-      #102/#103, so `user.interaction` is trace-free today and taps do not start an action.
+  24. RESOLVED (#102 web / #103 native pending): `trace.root_type = interaction` now has a web
+      producer — every click mints one. Native taps still start no action until #103.
   25. #98: a NAVIGATION root's `view` row arrives AFTER its own children — fetches during a view
       ship in earlier batches than the `view` event closing it. On RN root-after-child is the
       NORMAL case, not the offline one. Do not assume root-before-child arrival.
@@ -716,6 +731,44 @@ inconsistencies_and_surprises: >
       no reformatting, no path rewriting, because metro-symbolicate consumes the engine's native
       format. Structured `error.frames` was rejected on the record: three engine formats (V8,
       JSC, Hermes) and every parser bug becomes an app-store rollout.
+  49. #102: `ui.interaction` needs backend allowlist sign-off. It IS in ALLOWED_NAMES, so it is
+      being emitted; the `rum_ui_interactions` columns already exist (contract 4.6). In the same
+      change `user.interaction` came OFF the allowlist, and native's root-responder auto-tap
+      (`interactionProps()`) was DELETED rather than renamed: it sat on the consumer's root
+      <View>, where PressEvent.nativeEvent.target is a node tag number with no public API
+      resolving it, so every row it emitted was un-nameable. Contract 4.6 makes native
+      explicit-only; #103 restores taps as a public trackTap(name).
+  50. #102: `ui.dead` UNDER-REPORTS by construction and never falsely accuses. Aliveness is any
+      DOM mutation (attribute-only counts), any request start, or any view mint — and the last
+      of those includes the background and session-rotation boundaries, which the click did not
+      cause. Counting them as alive is the safe direction. It is OMITTED, never false, whenever
+      it was not evaluated: a non-actionable click, text entry, a download/_blank anchor, or a
+      runtime with no MutationObserver.
+  51. #102 DIVERGENCE, deliberate: `ui.rage`'s window and `ui.dead`'s window are BOTH
+      loadingTime.ts's exported QUIET_WINDOW_MS — one named constant, never a second literal
+      1000 (contract 4.6 requires this of the dead-click window and states the same number for
+      rage). If one moves, both move.
+  52. #102: rage identity is the DOM NODE REFERENCE the ladder resolved to, never `ui.target` —
+      three clicks on three different `unnamed` divs are indistinguishable on the wire, which is
+      the whole reason rage runs client-side. The tracker holds one node at a time and drops it
+      the moment a click lands elsewhere, so there is no eviction policy and no leak.
+  53. #102: the role gate is a PROXY, NOT a privacy guarantee. `<button>Delete John Kamau</button>`
+      still ships that text under `ui.name_source: text`. beforeSend is the answer and there is
+      deliberately NO second per-element masking mechanism — no mask attribute, no placeholder
+      mode. What the gate buys is that a role-less clickable div is never auto-named.
+  54. #102 DIVERGENCE from a literal reading of 4.6's normalization list: rungs 2-5 also drop
+      LEADING AND TRAILING underscores after the fold, so "Add to cart!" is `add_to_cart` and not
+      `add_to_cart_`. A trailing punctuation mark or a 64-char cut must not change the name a
+      consumer sees in the dashboard.
+  55. #102: `ui.interaction` is the one event with a MINT/EMIT SPLIT. An actionable click is
+      emitted a full dead-click window after it happened, so its wire `timestamp` and its
+      view.id / view.name / session.id are snapshotted at the click and replayed through
+      Telemetry.log()'s third argument. Stamping emit time would attribute a navigating tap to
+      THE VIEW IT OPENED, silently inverting every "which screen frustrates users" query.
+  56. #102: ERROR CLICK spends no key. It is the join — a ui.interaction whose rum.action.id
+      appears on an app.crash / app.error row WHERE trace.root_type = 'interaction'. The
+      root_type filter is not optional; without it the signal absorbs launch and route-change
+      errors. No fourth causality window was invented.
 
 ci_cd:
   what_exists: >
@@ -733,6 +786,8 @@ open_questions:
   - Backend contract: does the collector expect a top-level `location` in the telemetry_batch envelope? It is not sent.
   - RESOLVED (#94): the offline store now caps at 500 events / 1 MB with app.crash evicted last.
   - Backend: allowlist `app.start` (#98). Until then the event is emitted and dropped on ingest.
+  - Backend: allowlist `ui.interaction` (#102) and drop `user.interaction`. Until then the event
+    is emitted and dropped on ingest; the rum_ui_interactions columns already exist.
   - Backend: contract 6.5's §0.3 — RN's position on a malformed inbound `traceparent` is a SKIP
     (`skipped_consumer_set`), while the live `trace_injection` enum encodes the opposite verb
     (`injected_inbound_malformed`). Needs a ruling before #99 authors that column.

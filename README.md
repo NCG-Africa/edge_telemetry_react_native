@@ -245,19 +245,42 @@ await telemetry.attachNavigation(navRef);
 
 On **web**, navigation is auto-tracked (History API) — no wiring needed.
 
-### User interactions (taps) — **native-only, best-effort**
+### User interactions (clicks) — **web, auto-started**
 
-Native has no global tap stream, so the SDK gives you responder props to spread on your app root.
-Each tap emits `user.interaction` with `interaction.type` and the current screen when known. It
-observes the gesture without stealing it (no DOM `target_tag`/`target_class` — those are web-only).
+Every click emits `ui.interaction` — actionable or not. No wiring: the SDK attaches one
+capture-phase listener to `document`.
 
-```tsx
-function Root() {
-  const [props, setProps] = React.useState({});
-  React.useEffect(() => { telemetry.interactionProps().then(setProps); }, []);
-  return <View style={{ flex: 1 }} {...props}><App /></View>;
-}
+**Names are derived only from elements that are actionable by role** — `<button>`, `<a href>`,
+`<input type=submit|button|reset>`, `<summary>`, `<option>`, or `role="button|link|tab|checkbox|
+radio|switch|menuitem|option"`. That is what keeps a clickable `<div>` full of customer data from
+being auto-named. On React Native Web a `Pressable` maps to a role-bearing element automatically.
+
+```html
+<!-- Rung 1 wins over everything, works on role-less elements, and ships exactly as written -->
+<div data-edge-action-name="Checkout — Step 2 of 3">…</div>
 ```
+
+Below rung 1 the SDK reads, in order, `data-testid`, `aria-label`, `title`, then `textContent` —
+each normalized (lowercased, non-alphanumerics folded to `_`) and capped at 64 characters.
+
+| Click lands on | `ui.target` |
+|---|---|
+| role-bearing, a rung matched | the derived name |
+| role-bearing, nothing to read | `unnamed` — add a `data-edge-action-name` |
+| role-less with `cursor: pointer` | `unnamed` — same gap |
+| role-less, default cursor | `surface` — whitespace, nothing to fix |
+
+Two frustration signals ride along: **`ui.rage`** (≥3 clicks in 1000 ms on the *same element node*,
+flagged once per burst, omitted when false) and **`ui.dead`** (no DOM change, no request and no
+navigation within 1000 ms — judged on actionable clicks only, excluding text entry and
+`download`/`target="_blank"` anchors, and **omitted** when it was not evaluated).
+
+⚠ **The role gate is not a privacy guarantee.** `<button>Delete John Kamau</button>` still ships
+that text. Use `beforeSend` to scrub it — there is deliberately no per-element masking attribute.
+
+Native taps are **explicit-only** and land in a follow-up: `PressEvent.nativeEvent.target` is a
+node tag number with no public API resolving it, so the root `<View>` cannot tell a tap on a button
+from a tap on padding. `interactionProps()` and `user.interaction` are retired.
 
 ---
 
@@ -276,7 +299,7 @@ Auto-started in the constructor (both platforms unless noted):
 | Unhandled JS error / promise rejection | `app.crash` | event |
 | `captureError()` / (opt-in) `console.error` | `app.error` | event |
 | Identity update via `identify()` | `user.profile.update` | event |
-| Tap (native, best-effort) | `user.interaction` | event |
+| Click (web) | `ui.interaction` | event |
 | Custom `log()` name (non-allowlisted) | `custom_event` | event |
 | Memory sample | `memory_usage` | metric |
 | Frame render window | `frame_render_time` | metric |

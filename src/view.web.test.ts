@@ -114,7 +114,7 @@ describe("#96 view.id / view.name on the Context block (web)", () => {
     const firstId = attrsOf(sent, "session.started")[0]["view.id"];
 
     await t.log("app.crash", { "error.message": "boom" });
-    await t.log("user.interaction", { "interaction.type": "tap" });
+    await t.log("ui.interaction", { "ui.type": "click", "ui.target": "cta" });
     await t.log("http.request", { "http.status_code": 500 });
     // request_count is booked at *send* (§4.5.2), which is what the interceptors call — an
     // `http.request` row is the completion and may belong to an earlier view. The real

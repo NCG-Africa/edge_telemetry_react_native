@@ -36,7 +36,7 @@ export class ScreenTimingTracker {
      */
     markStart(screen: string) {
         this.startTimes.set(screen, Date.now());
-        this.telemetry.currentScreen = screen;   // best-effort screen for user.interaction taps (#33)
+        this.telemetry.currentScreen = screen;   // best-effort screen for the deprecated feeds (#33)
         // Advanced here too, not only in startScreen: the route path calls this one, and a
         // consumer mixing both APIs would otherwise get a stale `navigation.from_screen`
         // naming a screen they left several route changes ago.
