@@ -1,8 +1,14 @@
 // src/index.web.ts
 import { TelemetryBase } from "./index.base";
 import { debug, setDebug } from "./core/debug";
+import type { SyncStore } from "./core/store";
 
 export { createTelemetry, type TelemetryOpts } from "./createTelemetry.web";
+
+// The Store port (#89) — public so a consumer can inject their own persistence,
+// and so the in-memory fake is available outside the test tree.
+export type { Store, SyncStore, AsyncStore, StoreRead, StoreWrite } from "./core/store";
+export { memoryStore, type MemoryStoreOpts } from "./core/memoryStore";
 
 export class TelemetryWeb extends TelemetryBase {
     constructor(opts?: {
@@ -13,6 +19,7 @@ export class TelemetryWeb extends TelemetryBase {
         endpoint?: string;
         captureConsole?: boolean;
         debug?: boolean;
+        store?: SyncStore;   // sync only: the web build's guarantee depends on it
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -22,13 +29,17 @@ export class TelemetryWeb extends TelemetryBase {
         this.instancePromise = (async () => {
             const { Telemetry } = await import("./core/telemetry");
             const { webSender } = await import("./adapters/webSender");
+            const { webStore } = await import("./adapters/web/store.web");
 
             const { DeviceInfoTrackerWeb } = await import("./adapters/web/deviceInfo.web");
             const { NetworkInfoTrackerWeb } = await import("./adapters/web/networkInfo.web");
             const deviceInfoTrackerWeb = new DeviceInfoTrackerWeb();
             const networkInfoTrackerWeb = new NetworkInfoTrackerWeb();
 
-            const sender = opts?.sender ?? webSender(opts?.endpoint, opts?.apiKey);
+            // One store, shared by the offline queue and core (#89) — so a consumer that
+            // injects a store governs both, instead of the sender quietly keeping its own.
+            const store = opts?.store ?? webStore();
+            const sender = opts?.sender ?? webSender(opts?.endpoint, opts?.apiKey, store);
 
             const telemetry = new Telemetry({
                 sender,
@@ -39,6 +50,7 @@ export class TelemetryWeb extends TelemetryBase {
                 // device.platform="web" still rides as an attribute from the adapter.
                 deviceInfoHandler: deviceInfoTrackerWeb,
                 networkInfoHandler: networkInfoTrackerWeb,
+                store,
             });
 
             return telemetry;

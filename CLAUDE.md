@@ -41,9 +41,12 @@ src/
 │   ├── telemetry.ts       ← Telemetry: queue, batch, retry, session lifecycle, log/logMetric
 │   ├── breadcrumbs.ts     ← ring buffer (last 20) for crash.breadcrumbs
 │   ├── debug.ts           ← debug() gate; all SDK-internal logging goes through this
+│   ├── store.ts           ← Store port: get/set/remove over persisted state, no RN import
+│   ├── memoryStore.ts     ← in-memory Store, configurable sync or async
 │   └── utils/uuid.ts      ← randomHex() — one shared impl, no platform split
 ├── adapters/
 │   ├── batch.ts           ← buildBatch(): the telemetry_batch envelope, shared by both senders
+│   ├── failedEvents.ts    ← offline-queue key + decode/encode, shared by both senders
 │   ├── appLifecycle.ts    ← AppLifecycleEmitter (edge-triggered foreground/background)
 │   ├── crashCapture.ts    ← shared crash normalisation → app.crash
 │   ├── httpAttributes.ts  ← shared http.* attribute builder
@@ -52,8 +55,8 @@ src/
 │   ├── networkChange.ts   ← edge-triggered network_change emitter
 │   ├── navigationTracker.ts / screenTiming.ts
 │   ├── webSender.ts / nativeSender.ts
-│   ├── web/               ← *.web.ts capture adapters
-│   └── native/            ← *.native.ts capture adapters
+│   ├── web/               ← *.web.ts capture adapters (+ store.web.ts over localStorage)
+│   └── native/            ← *.native.ts capture adapters (+ store.native.ts over AsyncStorage)
 └── shims/react-native-web-shim.ts
 ```
 
@@ -96,6 +99,7 @@ type TelemetryOpts = {
   captureConsole?: boolean; // console.error/warn → app.crash. Default ON
   debug?: boolean;          // SDK-internal diagnostics. Default off
   sender?: Sender;          // override the default platform sender
+  store?: Store;            // override the default platform Store (see below)
 };
 ```
 
@@ -136,8 +140,9 @@ X-API-Key: edge_...
 Built by `adapters/batch.ts` so both senders are byte-identical. Web uses
 `fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the API-key header.
 On failure: retried (3 attempts; native exponential + jitter, web linear), then persisted
-(`AsyncStorage` native / `localStorage` web, key `telemetry_failed_events`) and replayed on
-next init.
+**through the `Store` port** under key `telemetry_failed_events` and replayed on next init.
+Neither sender touches `localStorage` / `AsyncStorage` directly any more — the decode rules
+are shared in `adapters/failedEvents.ts`, and web's persist stays synchronous on purpose.
 
 ### Event and Metric
 
@@ -181,6 +186,32 @@ device.id  : native getUniqueId(); web device_{ms}_{uuidv4}_web
 
 Entropy is `Math.random()`, not crypto — deliberate, marked with a `ponytail:` comment.
 
+### The Store port
+
+Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
+interface with **no React Native import** — v4 moves `device.id`, session resume, the sticky
+sample rate and the capped offline store into shared core, which cannot reach AsyncStorage.
+
+**The sync/async split is load-bearing, not an implementation detail.** `SyncStore`
+(`adapters/web/store.web.ts`, `localStorage`) has finished its read when `get()` returns;
+`AsyncStore` (`adapters/native/store.native.ts`, `AsyncStorage`) settles later. That is why the
+crash-loss window closes on web and only narrows on native. Do **not** flatten the two behind a
+uniform `Promise` — a caller must be able to depend on the web side being synchronous. Shared
+code that doesn't care takes the `Store` union and `await`s either side.
+
+Reads return `hit` | `miss` | `unavailable`. `unavailable` is a first-class path, not an error:
+incognito, partitioned iframes, ITP eviction and full disks land there, and that population is
+what `device.id_ephemeral` reports. Never throw out of a Store, and never collapse
+`unavailable` into `miss`.
+
+Each entry builds **one** store and hands it to both the sender and core, so an injected
+store governs the offline queue too. `TelemetryOpts.store` overrides it — typed `SyncStore` on
+the web build (its guarantee depends on that) and the `Store` union on native, which only ever
+awaits. The offline queue in `webSender` / `nativeSender` is the port's first consumer. `memoryStore({ async?, unavailable?, seed? })` is a shipped in-memory
+implementation — a production-shaped seam, not a test-only affordance — configurable to either
+build's shape. A direct `new Telemetry()` with no injected store falls back to
+`memoryStore({ unavailable: true })`, so shared core never has to special-case a missing one.
+
 ### Event allowlist
 
 `ALLOWED_NAMES` in `core/telemetry.ts`. Anything else is rewritten to `custom_event` with
@@ -215,7 +246,9 @@ ingest.
 - The code uses `any` liberally in older paths. Prefer `unknown` and concrete types in **new**
   code; don't widen what's already typed.
 - Public types live in `src/core/telemetry.ts` (`TelemetryEvent`, `Sender`, `DeviceInfo`,
-  `UserProfile`, the `*Handler` interfaces).
+  `UserProfile`, the `*Handler` interfaces). The one exception is the `Store` port, which lives
+  in `src/core/store.ts` — it has to, since `telemetry.ts` imports it. A second port gets its
+  own file too; anything else goes in `telemetry.ts`.
 - Native adapters may use RN / `react-native-device-info` / `@react-native-async-storage` —
   **peer deps** (`device-info` optional). Web adapters must not import them.
 - Guard native-only globals (`ErrorUtils`, `AppState`) before use.
@@ -253,7 +286,9 @@ coordination.
 - No URL sanitisation — `http.url` and web navigation paths keep query strings, so tokens
   and PII in query params ship as-is.
 - `captureConsole` defaults ON, so every `console.error` becomes an `app.crash`.
-- The offline store is **unbounded** — append-only, no cap or eviction.
+- The offline store is **unbounded** — append-only, no cap or eviction. It now goes through
+  the `Store` port, so the cap has somewhere to live, but capping it needs `sdk.events_dropped`
+  and `sdk.drop_reason="store_full"` on the wire — v4, backend sign-off.
 - `http.request_size` is string `.length` (chars), not bytes.
 - No top-level `location` in the envelope, though the contract allows one.
 - `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`

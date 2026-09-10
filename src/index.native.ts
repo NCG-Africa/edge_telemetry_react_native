@@ -1,8 +1,14 @@
 // React Native telemetry implementation
 import { TelemetryBase } from "./index.base";
 import { debug, setDebug } from "./core/debug";
+import type { Store } from "./core/store";
 
 export { createTelemetry, type TelemetryOpts } from "./createTelemetry.native";
+
+// The Store port (#89) — public so a consumer can inject their own persistence,
+// and so the in-memory fake is available outside the test tree.
+export type { Store, SyncStore, AsyncStore, StoreRead, StoreWrite } from "./core/store";
+export { memoryStore, type MemoryStoreOpts } from "./core/memoryStore";
 
 export class TelemetryNative extends TelemetryBase {
     constructor(opts?: {
@@ -13,6 +19,7 @@ export class TelemetryNative extends TelemetryBase {
         endpoint?: string;
         captureConsole?: boolean;
         debug?: boolean;
+        store?: Store;   // either shape: the native path awaits
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -23,6 +30,7 @@ export class TelemetryNative extends TelemetryBase {
             const { nativeSender } = await import("./adapters/nativeSender");
 
             const { replayFailedNative } = await import("./adapters/nativeSender");
+            const { nativeStore } = await import("./adapters/native/store.native");
             const { DeviceInfoTrackerNative } = await import("./adapters/native/deviceInfo.native");
             const { NetworkInfoTrackerNative } = await import("./adapters/native/networkInfo.native");
 
@@ -35,7 +43,10 @@ export class TelemetryNative extends TelemetryBase {
             const networkInfoTrackerNative = new NetworkInfoTrackerNative();
             const deviceInfoTrackerNative = new DeviceInfoTrackerNative();
 
-            const sender = opts?.sender ?? nativeSender(opts?.endpoint, opts?.apiKey);
+            // One store, shared by the offline queue and core (#89) — so a consumer that
+            // injects a store governs both, instead of the sender quietly keeping its own.
+            const store = opts?.store ?? nativeStore();
+            const sender = opts?.sender ?? nativeSender(opts?.endpoint, opts?.apiKey, store);
 
             const telemetry = new Telemetry({
                 sender,
@@ -45,10 +56,11 @@ export class TelemetryNative extends TelemetryBase {
                 platform,
                 deviceInfoHandler: deviceInfoTrackerNative,
                 networkInfoHandler: networkInfoTrackerNative,
+                store,
             });
 
             // 🔄 recover failed events right after init
-            replayFailedNative(opts?.endpoint, opts?.apiKey).catch(err => {
+            replayFailedNative(opts?.endpoint, opts?.apiKey, store).catch(err => {
                 debug.warn("Native replay failed:", err);
             });
 

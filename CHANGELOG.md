@@ -2,6 +2,57 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
+## Unreleased
+
+### Added
+
+- **The `Store` port** (#89) — a narrow `get` / `set` / `remove` interface over persisted
+  state, declared in shared core (`src/core/store.ts`) with no React Native import. v4 moves
+  `device.id`, session resume, the sticky sample rate and the capped offline store into
+  shared core, and shared core cannot reach AsyncStorage; that is what forces the seam. It is
+  architecture, not testability.
+
+  **Web is synchronous and native is asynchronous, and the port keeps the difference in the
+  types.** `SyncStore` (`adapters/web/store.web.ts`, over `localStorage`) has completed its
+  read by the time `get()` returns; `AsyncStore` (`adapters/native/store.native.ts`, over
+  `AsyncStorage`) settles later. That asymmetry is exactly why the crash-loss window *closes*
+  on web and only *narrows* on native, so it is not papered over with a uniform `Promise`
+  signature — a caller can depend on the web side being synchronous. Shared code that doesn't
+  care takes the `Store` union and `await`s either.
+
+  **Storage-unavailable is a first-class outcome, not an error.** Reads return
+  `hit` | `miss` | `unavailable`. Incognito, partitioned iframes, Safari ITP eviction and full
+  disks land on `unavailable` — never a throw, and never conflated with a key that simply
+  isn't there. That population is what v4's `device.id_ephemeral` reports (wire contract §3.2).
+
+  The store is injectable via `TelemetryOpts.store` and defaulted per build by the entry.
+  `memoryStore()` ships alongside it — a real in-memory implementation, configurable to either
+  build's shape so the sync/async asymmetry can be tested deliberately; a direct
+  `new Telemetry()` with no injected store falls back to `memoryStore({ unavailable: true })`.
+
+### Changed
+
+- **Both senders' offline queue now goes through the port.** `webSender` and `nativeSender`
+  no longer touch `localStorage` / `AsyncStorage` directly; each entry builds one store and
+  hands it to both the sender and core, so a consumer who injects a store governs the offline
+  queue too. Same key (`telemetry_failed_events`), so queues written by 3.1.0 still replay.
+
+  Three things fall out of it:
+
+  - **Web persists synchronously, native awaits.** `onFailure()` runs on the unload path, and
+    on web the write has landed before the promise settles — the crash-loss window closes
+    there and only narrows on native. `TelemetryOpts.store` is typed `SyncStore` on the web
+    build for exactly this reason; native takes the union, since it only ever awaits.
+  - **A corrupt queue no longer takes startup down.** The old code was a bare
+    `JSON.parse(stored || "[]")` that threw straight through `replayFailed()` on a
+    half-written payload. Decoding now yields "nothing to replay", and the key is cleared on
+    any hit — so junk is dropped once rather than re-read and re-dropped on every launch.
+  - **Storage being unavailable is logged, not thrown.** The batch is already lost; throwing
+    would only lose the next one too.
+
+  The offline store is still unbounded. Capping it needs `sdk.events_dropped` and
+  `sdk.drop_reason="store_full"` on the wire — v4, and backend sign-off.
+
 ## 3.1.0
 
 **Wire fix, shipped alone and ahead of v4.** Seven Context-block keys were spelled camelCase,

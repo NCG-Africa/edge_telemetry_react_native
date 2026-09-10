@@ -10,7 +10,9 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
   },
 }));
 
-import { nativeSender } from "./nativeSender";
+import { nativeSender, replayFailedNative } from "./nativeSender";
+import { memoryStore } from "../core/memoryStore";
+import { decodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
 
 const event = (eventName: string): TelemetryEvent => ({
   type: "event",
@@ -46,5 +48,93 @@ describe("nativeSender — v3 transport envelope (Seam 2)", () => {
     expect(body.batch_size).toBe(2);
     expect(body.events).toHaveLength(2);
     expect(body.tenant_id).toBeUndefined();
+  });
+});
+
+describe("nativeSender — the offline queue through the Store port (#89)", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  const failing = () => vi.fn(async () => { throw new Error("network down"); });
+  const seeded = (events: TelemetryEvent[]) =>
+    memoryStore({ async: true, seed: { [FAILED_EVENTS_KEY]: JSON.stringify(events) } });
+
+  it("persists a failed batch into the INJECTED store, not its own", async () => {
+    const store = memoryStore({ async: true });
+    const sender = nativeSender("https://x/collect", "edge_k", store);
+
+    await sender.onFailure!([event("app.crash")]);
+
+    expect(decodeFailed(await store.get(FAILED_EVENTS_KEY)).map(e => e.eventName))
+      .toEqual(["app.crash"]);
+  });
+
+  it("appends to an existing queue rather than clobbering it", async () => {
+    const store = memoryStore({ async: true });
+    const sender = nativeSender("https://x/collect", "edge_k", store);
+
+    await sender.onFailure!([event("session.started")]);
+    await sender.onFailure!([event("app.crash")]);
+
+    expect(decodeFailed(await store.get(FAILED_EVENTS_KEY)).map(e => e.eventName))
+      .toEqual(["session.started", "app.crash"]);
+  });
+
+  it("does not throw when storage is unavailable — the batch is already lost", async () => {
+    const store = memoryStore({ async: true, unavailable: true });
+    const sender = nativeSender("https://x/collect", "edge_k", store);
+
+    await expect(sender.onFailure!([event("app.crash")])).resolves.toBeUndefined();
+  });
+
+  it("replayFailed() drains the queue and clears it on success", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }) as any);
+    vi.stubGlobal("fetch", fetchMock);
+    const store = seeded([event("app.crash")]);
+
+    await nativeSender("https://x/collect", "edge_k", store).replayFailed!();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(await store.get(FAILED_EVENTS_KEY)).toEqual({ status: "miss" });
+  });
+
+  it("re-persists when the replay fails again, so nothing is dropped", async () => {
+    // Fake timers: the native backoff is exponential (500·2^n + jitter), so real time
+    // here costs ~3s for one assertion.
+    vi.useFakeTimers();
+    try {
+      vi.stubGlobal("fetch", failing());
+      const store = seeded([event("app.crash")]);
+
+      const replay = replayFailedNative("https://x/collect", "edge_k", store);
+      const settled = expect(replay).rejects.toThrow();
+      await vi.runAllTimersAsync();
+      await settled;
+
+      expect(decodeFailed(await store.get(FAILED_EVENTS_KEY)).map(e => e.eventName))
+        .toEqual(["app.crash"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("survives a half-written queue, and clears it so it can't stick forever", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }) as any);
+    vi.stubGlobal("fetch", fetchMock);
+    const store = memoryStore({ async: true, seed: { [FAILED_EVENTS_KEY]: '[{"type":"eve' } });
+
+    await expect(replayFailedNative("https://x/collect", "edge_k", store)).resolves.toBeUndefined();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(await store.get(FAILED_EVENTS_KEY)).toEqual({ status: "miss" });
+  });
+
+  it("accepts a synchronous store too — the native path only ever awaits", async () => {
+    // The union is deliberate here: awaiting a sync store is a no-op. The reverse —
+    // a sync store on the web build — is what the types forbid.
+    const store = memoryStore();
+    const sender = nativeSender("https://x/collect", "edge_k", store);
+
+    await sender.onFailure!([event("app.crash")]);
+
+    expect(decodeFailed(store.get(FAILED_EVENTS_KEY))).toHaveLength(1);
   });
 });
