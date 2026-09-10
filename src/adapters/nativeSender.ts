@@ -3,9 +3,10 @@ import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { Store } from "../core/store";
 import { nativeStore } from "./native/store.native";
 import { decodeFailed, encodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
-import { buildBatch } from "./batch";
+import { buildBatch, buildHeaders } from "./batch";
 
-const DEFAULT_ENDPOINT = "https://your.telemetry.endpoint/collect";
+// Placeholder host, real path: the collector terminates POST /telemetry (contract §11.1).
+const DEFAULT_ENDPOINT = "https://your.telemetry.endpoint/telemetry";
 
 // The offline queue goes through the Store port (#89). Unlike web, these await: on the
 // native build a write is not guaranteed to have landed when the app is killed, so the
@@ -44,10 +45,7 @@ async function sendWithRetry(endpoint: string, apiKey: string | undefined, event
         try {
             const res = await fetch(endpoint, {
                 method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    ...(apiKey ? { "X-API-Key": apiKey } : {}),
-                },
+                headers: buildHeaders(apiKey),
                 body: buildBatch(events),
             });
 

@@ -14,7 +14,7 @@ const event = (eventName: string): TelemetryEvent => ({
 describe("webSender — v3 transport envelope (Seam 2)", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("POSTs a telemetry_batch envelope with X-API-Key when sendBeacon is unavailable", async () => {
+  it("POSTs a telemetry_batch envelope with both credential headers when sendBeacon is unavailable", async () => {
     // no navigator.sendBeacon in node → falls back to fetch
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }) as any);
     vi.stubGlobal("fetch", fetchMock);
@@ -30,6 +30,8 @@ describe("webSender — v3 transport envelope (Seam 2)", () => {
 
     const headers = init.headers as Record<string, string>;
     expect(headers["X-API-Key"]).toBe("edge_web_key");
+    // Both headers, always, same value: the collector reads one or the other by AUTH_MODE (#90).
+    expect(headers["Authorization"]).toBe("Bearer edge_web_key");
 
     const body = JSON.parse(init.body as string);
     expect(body.type).toBe("telemetry_batch");

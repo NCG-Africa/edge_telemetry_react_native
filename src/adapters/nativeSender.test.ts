@@ -24,7 +24,7 @@ const event = (eventName: string): TelemetryEvent => ({
 describe("nativeSender — v3 transport envelope (Seam 2)", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("POSTs a telemetry_batch envelope with X-API-Key to the endpoint, no tenant_id", async () => {
+  it("POSTs a telemetry_batch envelope with both credential headers, no tenant_id", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }) as any);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -40,6 +40,8 @@ describe("nativeSender — v3 transport envelope (Seam 2)", () => {
 
     const headers = init.headers as Record<string, string>;
     expect(headers["X-API-Key"]).toBe("edge_test_key");
+    // Both headers, always, same value: the collector reads one or the other by AUTH_MODE (#90).
+    expect(headers["Authorization"]).toBe("Bearer edge_test_key");
     expect(headers["Content-Type"]).toBe("application/json");
 
     const body = JSON.parse(init.body as string);
