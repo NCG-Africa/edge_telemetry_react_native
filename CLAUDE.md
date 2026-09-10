@@ -147,10 +147,10 @@ captureError(error: unknown, context?)   // emits app.error — never app.crash
 the same `view.name`.
 
 Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `screenEnd(name)`,
-`trackTap(name)`.
+`trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory_usage` is (§5.2).
 
-`trackErrors`, `trackFrameDrops`, `trackNetworkRequests`, `trackMemoryUsage`,
-`autoTrackNavigation` and (web) `trackInteractions` are auto-started in the constructor —
+`trackErrors`, `trackFrameDrops`, `trackNetworkRequests`, `autoTrackNavigation`, (native)
+`trackMemoryUsage` and (web) `trackInteractions` are auto-started in the constructor —
 consumers don't call them.
 
 ---
@@ -796,6 +796,37 @@ The rAF loop is **one shared `FrameDropTracker`**, not a `.web`/`.native` pair �
 `performance.now()` are globals both runtimes provide, so there was nothing platform-specific left to
 split and the two builds cannot drift on window length, measurement or the reset.
 
+### `memory_usage` — RSS, native only, and a sampler that runs
+
+`adapters/native/memoryNative.native.ts` (§5.2, #105). There is **no web counterpart** — the file was
+deleted, not stubbed, and `TelemetryWeb` has no `trackMemoryUsage` method at all. `performance.memory`
+is Chromium-only, so the metric's *presence* was a browser-detection signal wearing a memory label,
+and a p95 over it was Chrome-only data with no population marker on the row to say so.
+
+**The sampler actually runs.** v3's `trackMemoryUsage()` fired the one-shot read and then applied
+`.catch` to its `void` return — so the one call it did make threw, and the periodic `start(30000)` had
+no caller. The metric was single-shot at best and zero-shot in practice. `MemoryHandler` is now
+`{ start(): Promise<void> }`, the same shape as every other tracker interface, so core's uniform
+`void h.start().catch(...)` registration is correct by construction rather than by coincidence.
+`start()` is **idempotent** — a second call returns rather than opening a second interval.
+
+**`memory.type` is `rss`**, read from the device-info package's `getUsedMemory()`. `performance.memory`
+sees the **JS heap only**, while RN's memory lives largely in native allocations — images, native
+views — which are what actually get the process OOM-killed. RSS is also engine- and
+architecture-independent, so a Hermes and a JSC build report the same quantity.
+
+| Key | Rule |
+|---|---|
+| `value` | resident MB — `metric.unit` is `MB` |
+| `memory.type` | const `"rss"` ⚠ was `"heap"` in v3, on the same column |
+| `memory.total_mb` | device total MB; omitted when the read reports nothing usable |
+| `memory.source` | `Platform.OS` |
+
+**`usage_mb`, `pressure_level` and `memory.unit` are gone** — the first duplicated `value`, the second
+has been discarded on arrival for every RN sample ever sent, and the third is superseded by
+`metric.unit`. ⚠ **A read that throws or returns a non-finite number emits nothing** rather than a
+fabricated `0`, which would drag every percentile down and read as a memory *win*.
+
 ### The Store port
 
 Persisted state goes through `Store` (`core/store.ts`), a shared-core `get` / `set` / `remove`
@@ -972,7 +1003,7 @@ the original name as `event.name`. Currently emitted:
 | `user.profile.update` | `identify()` |
 | `custom_event` | any non-allowlisted `log()` name |
 | `frame_render_time` | **metric** — p95 per window; the window closes at 10s **or at a view boundary** (§5.1) |
-| `memory_usage` | **metric** — used heap MB |
+| `memory_usage` | **metric** — resident MB, **native only**, sampled every 30 s (§5.2) |
 
 Allowlisted but with **no producer**: `page_load`, `resource_timing`, `long_task`, `LCP`,
 `FCP`, `CLS`, `INP`, `TTFB`. These are the RN-Web track, not built yet.
@@ -1027,8 +1058,13 @@ Real and current, maintained by hand as behaviour changes. Flag before "fixing" 
 need backend coordination, and several are deliberate trade-offs with the reasoning recorded
 above rather than defects.
 
-- `memory_usage` is **single-shot**: `trackMemoryUsage()` calls `recordMemoryUsage()` once;
-  the periodic `start()` in the memory adapters is never invoked.
+- **`memory_usage` is RSS, so it is not comparable to a v3 chart across the cutover.** v3
+  reported the JS heap under the same `memory_usage` name; a panel spanning the change
+  compares two different quantities. `memory.type` (`heap` → `rss`) is what tells them apart.
+- **`memory.total_mb` is the *device* total, not a per-process limit**, so `value / total_mb`
+  is share-of-device, not share-of-budget. iOS kills an app well below the device total.
+- **A device-info read that throws emits nothing**, so a sampler failing on every tick is
+  indistinguishable from a build that never started one. There is no counter for it.
 - `sdk.platform` is the constant `"react-native"` on the web build too, while
   `device.platform` is `"web"`.
 - Web navigation paths keep their query strings, so tokens and PII in query params ship as-is.

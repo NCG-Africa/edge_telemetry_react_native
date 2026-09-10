@@ -117,9 +117,6 @@ export class TelemetryWeb extends TelemetryBase {
         this.trackNetworkRequests().catch(err => {
             debug.log("Web trackNetworkRequests errors", err);
         });
-        this.trackMemoryUsage().catch(err => {
-            debug.log("Web trackMemoryUsage errors", err);
-        });
         this.autoTrackNavigation().catch(err => {
             debug.log("Web autoTrackNavigation errors", err);
         });
@@ -184,12 +181,9 @@ export class TelemetryWeb extends TelemetryBase {
         return inst.trackNetworkRequests(networkTracker);
     }
 
-    async trackMemoryUsage() {
-        const { TelemetryMemoryUsageWeb } = await import("./adapters/web/memoryWeb.web");
-        const inst = await this.instancePromise;
-        const memoryTracker = new TelemetryMemoryUsageWeb(inst);
-        return inst.trackMemoryUsage(memoryTracker);
-    }
+    // §5.2/#105: web emits no `memory_usage` at all. `performance.memory` is Chromium-only,
+    // so the metric's *presence* was a browser-detection signal wearing a memory label and a
+    // p95 over it was Chrome-only data with no population marker on the row.
 
     /**
      * §4.6/#102 — one capture-phase `click` listener on `document`. Auto-started, like every

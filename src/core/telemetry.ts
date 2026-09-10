@@ -227,7 +227,7 @@ export interface NetworkHandler {
 }
 
 export interface MemoryHandler {
-    recordMemoryUsage(): Promise<void>;
+    start(): Promise<void>;
 }
 
 export interface NavigationHandler {
@@ -567,8 +567,8 @@ export class Telemetry {
 
     public trackMemoryUsage(memoryHandler: MemoryHandler) {
         this.memoryHandler = memoryHandler;
-        void memoryHandler.recordMemoryUsage().catch((err) => {
-            debug.warn("Telemetry memoryHandler recordMemoryUsage failed:", err);
+        void memoryHandler.start().catch((err) => {
+            debug.warn("Telemetry memoryHandler start failed:", err);
         });
     }
 
