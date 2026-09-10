@@ -171,9 +171,9 @@ export class TelemetryWeb extends TelemetryBase {
     }
 
     async trackFrameDrops() {
-        const { FrameDropTrackerWeb } = await import("./adapters/web/frameDropsWeb.web");
+        const { FrameDropTracker } = await import("./adapters/frameTracker");
         const inst = await this.instancePromise;
-        const frameDropTracker = new FrameDropTrackerWeb(inst);
+        const frameDropTracker = new FrameDropTracker(inst);
         return inst.trackFrameDrops(frameDropTracker);
     }
 

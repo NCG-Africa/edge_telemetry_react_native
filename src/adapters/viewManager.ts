@@ -69,6 +69,8 @@ export class ViewManager {
     private readonly host?: string;
     /** §4.6's aliveness subscribers. Empty on native and on a web build with no DOM. */
     private readonly activityListeners = new Set<() => void>();
+    /** §5.1's boundary subscribers — the frame window, awaited before the successor mints. */
+    private readonly boundaryListeners = new Set<() => unknown>();
 
     constructor(private telemetry: Emitter) {
         // A capability check, not a platform branch: RN has no `location`, and a
@@ -159,6 +161,20 @@ export class ViewManager {
     }
 
     /**
+     * §5.1's view-boundary reset. A subscriber is **awaited inside `beginView`, before the
+     * successor replaces the current view**, so anything it emits is stamped with the
+     * departing `view.id`. That ordering is the whole feature: a fixed 10 s frame window
+     * straddling a route change otherwise charges the departing screen's dropped frames to
+     * the arriving one — backwards for the one query the metric exists to serve.
+     *
+     * @returns an unsubscribe, so a torn-down subscriber does not keep the manager alive.
+     */
+    onBoundary(fn: () => unknown): () => void {
+        this.boundaryListeners.add(fn);
+        return () => { this.boundaryListeners.delete(fn); };
+    }
+
+    /**
      * The platform's runtime-ready marker — `loadEventEnd` on web,
      * `performance.rnStartupTiming` on native — or `undefined` where the platform has none.
      *
@@ -208,8 +224,10 @@ export class ViewManager {
      * An unnamed successor carries the departing view's name: backgrounding and a session
      * rotation do not move the user off the screen they were on.
      */
-    beginView(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): void {
+    async beginView(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): Promise<void> {
         this.notifyActivity();
+        // Awaited while `this.view` is still the departing one — see `onBoundary`.
+        for (const fn of this.boundaryListeners) await fn();
         const prev = this.view;
         const now = Date.now();
         this.view = {
@@ -230,7 +248,7 @@ export class ViewManager {
     /** A boundary that stays inside one session: emit, then mint the successor. */
     async exit(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): Promise<void> {
         await this.endView();
-        this.beginView(successorLoadType, name, source);
+        await this.beginView(successorLoadType, name, source);
     }
 
     /**

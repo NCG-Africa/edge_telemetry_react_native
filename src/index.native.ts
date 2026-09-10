@@ -186,9 +186,9 @@ export class TelemetryNative extends TelemetryBase {
     }
 
     async trackFrameDrops() {
-        const { FrameDropTrackerNative } = await import("./adapters/native/frameDropsNative.native");
+        const { FrameDropTracker } = await import("./adapters/frameTracker");
         const inst = await this.instancePromise;
-        const frameDropTracker = new FrameDropTrackerNative(inst);
+        const frameDropTracker = new FrameDropTracker(inst);
         return inst.trackFrameDrops(frameDropTracker);
     }
 

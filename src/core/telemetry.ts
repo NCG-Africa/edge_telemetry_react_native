@@ -119,6 +119,21 @@ const ALLOWED_NAMES = new Set<string>([
 ]);
 
 /**
+ * §5.1's `metric.unit` — NULL on every RN row ever landed until v4. Without it a CLS of
+ * `0.08` renders as a flat zero line beside an LCP of `4000` in the same `value` column,
+ * so `score` for CLS is the key entry, not `ms`.
+ *
+ * A name absent from this map ships no unit: absent means the SDK had nothing, and a
+ * consumer's own `recordMetric()` name has no unit we can honestly claim.
+ */
+const METRIC_UNIT: Record<string, string> = {
+    frame_render_time: "ms",
+    memory_usage: "MB",
+    LCP: "ms", FCP: "ms", INP: "ms", TTFB: "ms",
+    CLS: "score",
+};
+
+/**
  * §6.3's Tier 2 — annotation-only: `trace.id`, `rum.action.id` and `trace.root_type`, no
  * span. Stamped here because these rows have no earlier capture point; Tier 1 rows
  * (`app.start`, `view`, `http.request`) carry keys captured at launch / view entry / send
@@ -818,7 +833,7 @@ export class Telemetry {
         // After the new session.id is in place and before the first row of it is emitted:
         // `view.id` never spans a `session.id` (§4.5). rotateSession() has already emitted
         // the departing view's `view` event under the *old* id.
-        this.views.beginView("session_rotation");
+        await this.views.beginView("session_rotation");
         await this.startSession(reason);
     }
 
@@ -1259,6 +1274,10 @@ export class Telemetry {
         if (!this.sampled) return;
 
         const attributes = await this.collectContext(data);
+        // §5.1 — assembled after caller `data`, so a stray attribute cannot mislabel the
+        // unit of the column it lands in. Omitted for a name we have no unit for.
+        const unit = METRIC_UNIT[metricName];
+        if (unit) attributes['metric.unit'] = unit;
 
         this.enqueue({
             type: 'metric',
