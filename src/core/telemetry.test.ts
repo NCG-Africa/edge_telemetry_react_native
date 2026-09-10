@@ -9,7 +9,7 @@ function deviceHandler() {
   return { start: vi.fn(async () => undefined), collect: vi.fn(async () => info) };
 }
 function networkHandler() {
-  const info = { type: "wifi", isConnected: true };
+  const info = { type: "wifi", is_connected: true };
   return { start: vi.fn(async () => info), collect: vi.fn(async () => info) };
 }
 

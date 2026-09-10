@@ -16,10 +16,10 @@ export class NetworkInfoTrackerNative {
             const netState = await NetInfo.fetch();
             return {
                 type: netState.type,
-                isConnected: netState.isConnected ?? undefined,
+                is_connected: netState.isConnected ?? undefined,
             };
         } catch {
-            return { type: "unknown", isConnected: undefined };
+            return { type: "unknown", is_connected: undefined };
         }
     }
 

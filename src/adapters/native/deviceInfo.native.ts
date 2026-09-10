@@ -52,26 +52,26 @@ export class DeviceInfoTrackerNative {
             app: {
                 name: appName,
                 version: appVersion,
-                buildNumber,
-                packageName,
+                build_number: buildNumber,
+                package_name: packageName,
             },
             device: {
                 id: uniqueId,
                 platform: Platform.OS,
-                platformVersion: systemVersion,
+                platform_version: systemVersion,
                 model,
                 manufacturer,
                 brand,
 
                 // Android fields
-                androidSdk: sdk ? String(sdk) : undefined,
-                androidRelease: Platform.OS === "android" ? systemVersion : undefined,
+                android_sdk: sdk ? String(sdk) : undefined,
+                android_release: Platform.OS === "android" ? systemVersion : undefined,
                 fingerprint,
                 hardware,
                 product,
 
                 // iOS fields
-                iosSystemName,
+                ios_system_name: iosSystemName,
                 iosDeviceName,
             },
         };

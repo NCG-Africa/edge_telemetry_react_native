@@ -10,7 +10,7 @@ export async function getNetworkInfo(): Promise<NetworkInfo> {
         const conn = (navigator as any).connection;
         return {
             type: conn.type || "unknown",
-            isConnected: navigator.onLine,
+            is_connected: navigator.onLine,
             // downlink: conn.downlink,
             // effectiveType: conn.effectiveType,
         };
@@ -19,7 +19,7 @@ export async function getNetworkInfo(): Promise<NetworkInfo> {
     // Fallback
     return {
         type: "unknown",
-        isConnected: typeof navigator !== "undefined" ? navigator.onLine : undefined,
+        is_connected: typeof navigator !== "undefined" ? navigator.onLine : undefined,
     };
 }
 

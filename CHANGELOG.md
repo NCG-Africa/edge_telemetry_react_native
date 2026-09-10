@@ -2,6 +2,53 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
+## 3.1.0
+
+**Wire fix, shipped alone and ahead of v4.** Seven Context-block keys were spelled camelCase,
+so the processor read them as absent. Five columns start filling the day you upgrade. No
+backend work is required, and nothing else from the v4 programme rides along in this release.
+
+### Fixed
+
+- **Seven Context keys respelled to their contract spelling** (§9.3 of the backend wire
+  contract). The camelCase was never authored — it was the TypeScript interface shape leaking
+  through the Context flattener — so the fix is a rename on the `DeviceInfo` / `NetworkInfo`
+  interfaces:
+
+  | was | now |
+  |---|---|
+  | `app.buildNumber` | `app.build_number` |
+  | `app.packageName` | `app.package_name` |
+  | `device.platformVersion` | `device.platform_version` |
+  | `device.androidSdk` | `device.android_sdk` |
+  | `device.androidRelease` | `device.android_release` |
+  | `device.iosSystemName` | `device.ios_system_name` |
+  | `network.isConnected` | `network.is_connected` |
+
+- **`app.packageName` was live cross-tenant misattribution, not just an empty column.** The
+  processor's `rum_apps` table is UNIQUE on `package_name` and upserts
+  `ON CONFLICT (package_name) DO UPDATE`. Reading the camelCase key yielded `""`, so **every
+  React Native app on the platform, across every tenant, upserted onto one empty-string row** —
+  permanently attributed to whichever tenant inserted it first. App-level segmentation did not
+  exist for React Native before this release.
+
+### ⚠ Breaking for consumers of `getDeviceInfo()` / `getNetworkInfo()`
+
+These two methods **return a different object shape** — the seven fields above are renamed on
+the returned `DeviceInfo` / `NetworkInfo`. The break is structural only: the `DeviceInfo` type
+is not exported from the package entry, so **you will not get a compile error**. If you read
+`(await telemetry.getDeviceInfo()).app.packageName` or `.device.platformVersion`, or
+`(await telemetry.getNetworkInfo()).isConnected`, those reads now silently return `undefined`.
+Update them to the snake_case spellings.
+
+### ⚠ History is not migrated
+
+The fix is forward-only. The poisoned empty-string `rum_apps` row and its tenant attribution
+survive; real rows begin appearing alongside it from 3.1.0. **Every `rum_apps` series steps at
+this boundary** — split on `sdk.version` before comparing across it. Any saved query or
+dashboard filtering on the old camelCase attribute names returns zero rows from this release
+onward.
+
 ## 3.0.1
 
 First published release of the scoped `@nathanclaire/edge-telemetry-sdk`. (3.0.0 was pulled
