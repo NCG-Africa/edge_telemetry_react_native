@@ -1,7 +1,7 @@
 // React Native telemetry implementation
 import { TelemetryBase } from "./index.base";
 import { debug, setDebug } from "./core/debug";
-import { RAGE_WINDOW_MS, RageTracker, UI_UNNAMED } from "./adapters/uiInteraction";
+import { RAGE_WINDOW_MS, RageTracker, UI_UNNAMED, uiAttributes } from "./adapters/uiInteraction";
 import type { Store } from "./core/store";
 import type { BeforeSend } from "./core/beforeSend";
 
@@ -19,11 +19,11 @@ export class TelemetryNative extends TelemetryBase {
     /** ≥3 named taps in a 1000 ms window, keyed on the name — see `trackTap`. */
     private readonly tapRage = new RageTracker(RAGE_WINDOW_MS);
     /**
-     * The resolved core, once `instancePromise` settles. `trackTap` is the one public method
-     * that cannot afford an `await` before it reads the world: the host's own press handler
+     * The resolved core, once `instancePromise` settles. `trackTap` is the one public method that
+     * cannot afford an `await` before it reads the world: the host's own press handler
      * navigates on the very next line (§4.6's mint/emit split).
      */
-    private ready?: any;
+    private resolved?: any;
 
     constructor(opts?: {
         apiKey?: string;
@@ -122,7 +122,7 @@ export class TelemetryNative extends TelemetryBase {
             await telemetry.resumeOrStartSession()
                 .catch(err => debug.warn("Native session resume failed:", err));
 
-            this.ready = telemetry;
+            this.resolved = telemetry;
             return telemetry;
         })();
 
@@ -252,28 +252,29 @@ export class TelemetryNative extends TelemetryBase {
     async trackTap(name: string) {
         const at = Date.now();
         const named = typeof name === "string" && name.trim() !== "";
-        const attrs: Record<string, any> = {
-            "ui.type": "tap",
-            "ui.target": named ? name : UI_UNNAMED,
-            "ui.name_source": named ? "edge_action" : "none",
+        const attrs = uiAttributes({
+            type: "tap",
+            target: named ? name : UI_UNNAMED,
+            nameSource: named ? "edge_action" : "none",
             // No element model: nothing was resolved, so the tag names the platform rather
-            // than inventing a `<button>` that does not exist. §4.6 types it never-null.
-            "ui.tag": "native",
-            // Same reason `ui.x`/`ui.y` are 0 on a web keyboard activation: never-null keys
-            // with no honest value. A `PressEvent` carries coordinates; `trackTap(name)`
-            // deliberately does not take one — the name is the whole contract.
-            "ui.x": 0,
-            "ui.y": 0,
+            // than inventing a `<button>` that does not exist. §4.6 types it never-null, as
+            // it does the coordinates the builder floors at 0 — a `PressEvent` carries some,
+            // but `trackTap(name)` deliberately takes none: the name is the whole contract.
+            tag: "native",
             // Gated to named taps (§4.6): running rage over `unnamed` would not merely lose
             // information, it would invent a frustration event that never happened. Identity
             // is the name, which on native *is* the element — there is no node to key on.
-            ...(named && this.tapRage.record(name, at) ? { "ui.rage": true } : {}),
-        };
+            rage: named && this.tapRage.record(name, at),
+        });
         // §6.2: **every** tap mints an interaction root, live carrier or not — a tap is a new
         // user action by definition, so the request it fires is its child and not the route
         // change's before it.
         const emit = (inst: any) =>
             inst.log("ui.interaction", { ...inst.trace.interactionSpan(at), ...attrs }, inst.snapshot(at));
-        return this.ready ? emit(this.ready) : this.instancePromise.then(emit);
+        // Swallowed like every other capture path: the README's own example calls this
+        // un-awaited from an `onPress`, and a RUM SDK must not be able to fault the host with
+        // an unhandled rejection.
+        return Promise.resolve(this.resolved ? emit(this.resolved) : this.instancePromise.then(emit))
+            .catch((err: unknown) => debug.warn("Native ui.interaction failed:", err));
     }
 }

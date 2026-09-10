@@ -144,11 +144,14 @@ describe("#103 trackTap — native's only interaction producer (§4.6)", () => {
 
   it("counts into view.action_count like any other interaction row", async () => {
     const { t, sent } = await launch();
-    const inst = await (t as any).instancePromise;
-    await inst.enterView("Home", "route");     // rung upgrade — still the launch view
+    const nav = navRef();
+    await t.attachNavigation(nav.ref);
+    nav.go("Home");                            // rung upgrade — still the launch view
+    await vi.advanceTimersByTimeAsync(0);
     await (t as any).trackTap("a");
     await (t as any).trackTap("b");
-    await inst.enterView("Next", "route");     // same rung, new name — the view exits
+    nav.go("Next");                            // same rung, new name — the view exits
+    await vi.advanceTimersByTimeAsync(0);
     await t.flush();
 
     expect(attrsOf(sent, "view")[0]["view.action_count"]).toBe(2);

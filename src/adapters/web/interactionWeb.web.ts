@@ -13,6 +13,7 @@ import {
     RageTracker,
     isDeadClickExempt,
     resolveUiName,
+    uiAttributes,
     type UiElement,
 } from "../uiInteraction";
 
@@ -87,16 +88,18 @@ export class InteractionTrackerWeb {
 
         const attrs: Record<string, any> = {
             ...span,
-            "ui.type": "click",
-            "ui.target": resolution.target,
-            "ui.name_source": resolution.nameSource,
-            "ui.tag": resolution.tag,
-            // Viewport pixels. `clientX/Y` is absent on a synthetic or keyboard-driven click,
-            // and §4.6 types both as never-null, so there is no honest way to omit them.
-            "ui.x": Math.round(mouse.clientX ?? 0),
-            "ui.y": Math.round(mouse.clientY ?? 0),
-            // Absent means false, deliberately asymmetric with `ui.dead` (§4.6).
-            ...(this.rage.record(resolution.node, at) ? { "ui.rage": true } : {}),
+            // The key block is shared with native's `trackTap` so the two cannot drift; only
+            // the values are web's. `clientX/Y` is absent on a synthetic or keyboard-driven
+            // click, and §4.6 types both never-null, so the builder floors them at 0.
+            ...uiAttributes({
+                type: "click",
+                target: resolution.target,
+                nameSource: resolution.nameSource,
+                tag: resolution.tag,
+                x: mouse.clientX,
+                y: mouse.clientY,
+                rage: this.rage.record(resolution.node, at),
+            }),
         };
 
         // `ui.dead` is judged on **actionable** clicks only, minus text entry and

@@ -1012,6 +1012,9 @@ above rather than defects.
   §4.6 and native has no element and no coordinate; a `PressEvent` carries coordinates but
   `trackTap(name)` deliberately takes none. Flag it if the backend wants the tag column empty
   instead of a constant.
+- **Native rage keys on the name, so two different buttons sharing one `trackTap` name are
+  one burst.** There is no node to key on — the name *is* the element — and the collision
+  over-reports where web's node identity cannot. Name taps per control.
 - **A tap arriving before `instancePromise` settles loses the mint/emit split** — there is no core
   to snapshot from, so it reports emit-time identity. That window is the launch view either way,
   which is why it is not worth a queue.
@@ -1022,7 +1025,9 @@ above rather than defects.
   with every other key — absence means "not evaluated", exactly as it does for the exempt cases.
 - **§4.6's key table caps `ui.target` at 64 while its prose exempts rung 1.** The issue's
   acceptance criteria say `data-edge-action-name` ships "unnormalized and uncapped", so that is
-  what ships. Flag it if the backend column is a hard 64.
+  what ships — and native's `trackTap(name)` is rung 1's equivalent, so **every** native
+  `ui.target` is uncapped, not just the annotated web minority. Flag it if the backend column is
+  a hard 64.
 - **A hard navigation drains open dead-click windows, but `log()` is still async.** `pagehide`
   and `visibilitychange: hidden` emit every pending row with `ui.dead` **omitted** — the window
   never closed, so it was not evaluated. The enqueue itself is a promise, so a document that
