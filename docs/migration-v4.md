@@ -14,6 +14,15 @@ disagree, the contract wins. `CLAUDE.md` explains the behaviour behind each entr
 
 ## Read this first
 
+- ⚠ **You are almost certainly on 3.0.0, not 3.1.0.** `3.0.1` and `3.1.0` exist in the
+  [CHANGELOG](../CHANGELOG.md) but **were never published to npm** — `npm view
+  @nathanclaire/edge-telemetry-sdk versions` returns `["3.0.0"]`. So the twenty discontinuities
+  below, which are counted from 3.1.0, are **not the whole delta for you**: 3.0.1 and 3.1.0
+  arrive inside this upgrade too. The one that matters is 3.1.0's respelling of seven Context
+  keys from camelCase to their contract spelling (`app.packageName` → `app.package_name` and
+  six others). Those columns were never filling for you and start filling now — a step at this
+  release boundary that is a *fix landing*, not a v4 regression. Nothing about it breaks a
+  build.
 - **Two changes break a build.** #2 (accessor return shapes) and the six `@deprecated`
   `UserProfile` fields — the latter outside the twenty. Both are compile-time visible; fix them
   and your app builds.
