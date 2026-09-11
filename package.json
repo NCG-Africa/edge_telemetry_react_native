@@ -69,6 +69,14 @@
     "web"
   ],
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NCG-Africa/edge_telemetry_react_native.git"
+  },
+  "homepage": "https://github.com/NCG-Africa/edge_telemetry_react_native#readme",
+  "bugs": {
+    "url": "https://github.com/NCG-Africa/edge_telemetry_react_native/issues"
+  },
   "devDependencies": {
     "@types/node": "^24.4.0",
     "@types/react": "^19.1.13",
