@@ -34,7 +34,7 @@ Native Web). It captures performance, errors, network requests, device/network c
 navigation, then ships them to the shared **EdgeTelemetryProcessor** backend — the same
 backend the Android (Ionic) and iOS SDKs feed.
 
-- npm: `@nathanclaire/edge-telemetry-sdk`, currently **v3.1.0**. (v2 was the unscoped
+- npm: `@nathanclaire/edge-telemetry-sdk`, currently **v4.0.0**. (v2 was the unscoped
   `edge-telemetry-sdk`, now deprecated.)
 - Bundler: **Vite** (`vite build` → `dist/`). Not `react-native-builder-bob`.
 - Dual entry: web (`dist/index.web.js|.cjs`) and native (`dist/index.native.js|.cjs`),
