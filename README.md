@@ -21,6 +21,9 @@ One SDK, two builds. The bundler picks `index.native.js` or `index.web.js` from 
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Configuration](#configuration)
+- [Scrubbing PII — `beforeSend`](#scrubbing-pii--beforesend)
+- [Sampling](#sampling--sessionsamplerate)
+- [Distributed tracing](#distributed-tracing--tracehostallowlist)
 - [API](#api)
 - [What gets captured](#what-gets-captured)
 - [Wire format](#wire-format)
@@ -142,9 +145,18 @@ type TelemetryOpts = {
   flushIntervalMs?: number; // periodic flush. Default 30000; <= 0 disables the timer
   captureConsole?: boolean; // console.error -> app.error, console.warn -> a breadcrumb. Default OFF
   debug?: boolean;          // SDK-internal console diagnostics. Default false (silent)
+  beforeSend?: BeforeSend;  // sync scrubbing hook, run at enqueue over events AND metrics
+  sessionSampleRate?: number;    // 0.0-1.0, sticky per session. Default 1 (everything)
+  traceHostAllowlist?: string[]; // hosts that may receive `traceparent`. EMPTY by default
+  buildId?: string;         // app.build_id — the symbolication join key. Omitted when unset
+  store?: Store;            // override the persisted-state port (localStorage / AsyncStorage)
   sender?: Sender;          // override the transport (mainly for tests)
 };
 ```
+
+**`beforeSend`, `sessionSampleRate` and `traceHostAllowlist` are constructor-only** — there is
+deliberately no runtime setter. Registering one later leaves a window in which `session.started`,
+the launch trace root and the earliest `http.request`s have already been enqueued unscrubbed.
 
 - **`apiKey`** is validated at `createTelemetry()` — a key not starting with `edge_` throws
   immediately, so misconfiguration fails fast instead of silently dropping data. `tenant_id`
@@ -152,6 +164,92 @@ type TelemetryOpts = {
 - **`endpoint`** is the exact URL the SDK POSTs to. The collector terminates **`POST /telemetry`** —
   that is the path to point it at — `/collector/telemetry`, documented here previously, exists in
   no deployment and 404s.
+
+---
+
+## Scrubbing PII — `beforeSend`
+
+```typescript
+createTelemetry({
+  apiKey: "edge_xxxxxxxx",
+  endpoint: "https://collector.example.com/telemetry",
+  beforeSend: (event) => {
+    delete event.attributes?.["ui.target"];          // rewrite, or
+    if (event.eventName === "custom_event") return null;  // drop outright
+    return event;
+  },
+});
+```
+
+`(event) => event | null`, run **synchronously at enqueue** — before anything can reach the
+network *or* the offline store, so a failed send can never put unscrubbed PII on disk. It sees
+**metrics too**: `vital.target` is a raw CSS selector and the least sanitised key on the wire.
+
+Three tiers, enforced by re-stamping after your hook returns — never by throwing, so an
+over-broad `delete` loop cannot get your whole feed discarded behind a 2xx:
+
+| Tier | Keys | Rule |
+|---|---|---|
+| **A — immutable** | `type`, `eventName`/`metricName`, `timestamp`, `session.*`, `event.sequence`, `sdk.*`, `app.*`, `device.platform`, `trace.id`, `span.id`, `parent.span.id`, `rum.action.id`, `view.id` | restored from the original — deletion *and* forgery |
+| **B — rewritable, not deletable** | `device.id` | a hashed id is fine; a missing one 400s the batch |
+| **C — free** | everything else: `user.*`, `http.*`, `error.*`, `ui.target`, `vital.target`, your `log()` data | untouched — this is where the PII lives |
+
+Return `null` to drop an event deliberately (counted as `sdk.hook_dropped`). A hook that
+**throws fails closed** — the event is dropped, never sent in its original form, and counted
+separately as `sdk.hook_failed`. Two counters, because "my volume is down 40%" has to
+distinguish a working scrubber from a broken one.
+
+---
+
+## Sampling — `sessionSampleRate`
+
+```typescript
+createTelemetry({ apiKey: "edge_xxxxxxxx", endpoint: "…", sessionSampleRate: 0.1 });
+```
+
+Rolled **once per session**, persisted with the session record and re-rolled at each rotation —
+never per event, which would desynchronise the per-view counters. A sampled-out session sends
+**nothing at all**, and ⚠ **crashes are not exempt**: 100% of crashes over 10% of sessions makes
+the unfiltered crash-free query read 10× too high with no `WHERE` available to repair it.
+`session.sample_rate` rides every row instead, so extrapolation is arithmetic. An out-of-range
+or non-finite value warns and falls back to `1`.
+
+---
+
+## Distributed tracing — `traceHostAllowlist`
+
+**Tracing is dark by default.** The allowlist is empty, so upgrading cannot break your network
+calls on day one. Opt a host in and the SDK injects a W3C `traceparent` on requests to it,
+joining your frontend spans to your backend traces:
+
+```typescript
+createTelemetry({
+  apiKey: "edge_xxxxxxxx",
+  endpoint: "https://collector.example.com/telemetry",
+  traceHostAllowlist: ["api.example.com", "checkout.example.com"],
+});
+```
+
+Bare hosts, **exact match**, **ports ignored** (⚠ a deliberate mismatch with `http.host`, which
+keeps the port — do not join the two). No wildcards, no regexes, no same-origin exemption:
+listing a host is your assertion that *that host's* CORS allows the header, and you cannot make
+that assertion over a pattern. A malformed entry throws in dev and is dropped in production.
+
+**`traceparent` is the only header the SDK writes, and the only one it reads.** No `b3`, no
+`tracestate` — that is a sentence you must be able to state in a security review. The SDK never
+strips or rewrites a `traceparent` you set yourself; it adopts a valid one and steps aside.
+
+⚠ **Before you enable a host, add `traceparent` to its `Access-Control-Allow-Headers`.** Missing
+it is what *"our app broke after we turned on tracing"* means — not an SDK fault. Adding the
+header also turns previously-*simple* cross-origin GETs into preflighted ones, so set
+`Access-Control-Max-Age` too. There is deliberately **no retry-without-the-header**: a rejected
+preflight and a dead server are the same `TypeError`, and retrying would double-send a
+non-idempotent POST.
+
+Every request stamps `traceparent.outcome` (7 values) so a missing backend join is computable
+rather than a mystery — `skipped_off_allowlist`, `skipped_no_cors`, `skipped_consumer_set`,
+`adopted`, `injected_attributed`, `injected_expired`, `injected_unattributed`. ⚠ An unsampled
+session injects no header at all.
 
 ---
 
@@ -334,8 +432,10 @@ Auto-started in the constructor (both platforms unless noted):
 
 | Signal | `eventName` / `metricName` | Type |
 |---|---|---|
+| App launch | `app.start` | event |
 | Session start / end | `session.started`, `session.finalized` | event |
 | App foreground/background | `app_lifecycle` | event |
+| Screen visit (exit, dwell, load time) | `view` | event |
 | Route change / screen entry | `navigation` | event |
 | Screen dwell time | `screen.duration` | event |
 | HTTP request (fetch/XHR) | `http.request` | event |
@@ -354,6 +454,17 @@ Both error events carry `error.type` (from `error.name`, never the minified `con
 — and, when present, `error.message` / `error.stacktrace`. `error.fatal` is **native-only**;
 `error.breadcrumbs` (last 20 actions, JSON-stringified) rides `app.crash` only. Sessions rotate after 30 minutes of inactivity; `session.finalized` flushes
 immediately and includes a journey summary + `sdk.error_count`.
+
+**`view` is the screen-visit event** and replaces `page_load` on both builds. One row at each
+of four exit boundaries — route change, backgrounding, session rotation, process death — carrying
+`view.name`, `view.time_spent` (foreground only, so a night spent backgrounded is not charged as
+dwell), `view.request_count` and `view.loading_time`. Loading time is **network settle**: the same
+shared module on web and native, so one column means one thing. It is `null` when a view fetched
+nothing — never `0`, which would make p75 track the cache-hit rate and render a backend caching win
+as a frontend regression. `view.loading_time_outcome` (`settled` | `no_activity` | `capped` |
+`abandoned`) always ships and is what tells the nulls apart: read **p75 where outcome = 'settled'**
+plus **% capped**, never a naive average. ⚠ One screen visit can produce several `view` rows — a
+background/foreground round trip splits it — so sum by `view.name`.
 
 **Web-only signals** are emitted only by the web build — native never reports metrics it can't
 honestly measure. The five **Core Web Vitals** ship on the metric path with attribution:
@@ -446,7 +557,10 @@ anonymous, since the SDK never mints one.
 - **Retry:** failed sends retry with exponential backoff + jitter.
 - **Persisted replay:** after final failure, batches are persisted (AsyncStorage on native,
   `localStorage` on web, key `telemetry_failed_events`) and replayed on next init — telemetry
-  survives transient network loss.
+  survives transient network loss. There is **exactly one replay path per build**, driven by the
+  core: before v4 native had two wired at once and sent every recovered batch **twice**, while
+  web had none at all and its offline queue only ever grew. A replay that fails again
+  re-persists exactly one copy.
 - **Web unload:** the web sender uses `fetch({ keepalive: true })` (not `sendBeacon`, which can't
   set the required credential headers) so in-flight batches survive page unload.
 - **Auth:** every POST carries the credential twice — `X-API-Key` and `Authorization: Bearer`, same

@@ -2,7 +2,14 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
-## Unreleased
+## 4.0.0
+
+**The EdgeRum v4 wire.** A single release, no dual-emit and no v3 fallback: the Context block is
+frozen at its final 39-key shape, the PII moved off every event onto `user.profile.update`, the
+error surface split into `app.crash` / `app.error`, and `view`, `ui.interaction`, `app.start`,
+trace/span and the Core Web Vitals arrive. **Read [`docs/migration-v4.md`](docs/migration-v4.md)
+before deploying** — of its twenty discontinuities exactly one is visible at compile time; the
+other nineteen surface in a chart, silently.
 
 ### Added
 
@@ -125,6 +132,36 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
   next three had no column and no reader, and the last two were byte-identical every session.
 
 ### Fixed
+
+- **One offline-replay path per build — native sent every recovered batch twice, web sent none at
+  all** (#113). The persisted queue is the SDK's answer to a flaky network, and on neither build
+  did it work. Native had *two* replay paths wired at once — the entry's standalone
+  `replayFailedNative()` and the core's `Sender.replayFailed()` — so every batch recovered from
+  disk was POSTed **twice**, duplicating rows the backend then had to dedup on
+  `(session.id, event.sequence)`. Web had **neither**: nothing ever called its drain, so
+  `telemetry_failed_events` only ever grew until the store's cap started evicting the oldest
+  batches. A web consumer on a flaky network lost telemetry the SDK had already successfully
+  written to disk.
+
+  **The one path is `Sender.replayFailed()`, called once from the core constructor.** The
+  standalone `replayFailedNative` / `replayFailedWeb` exports are **deleted, not deprecated** — a
+  second entry point is exactly what caused the double-send, and leaving it importable invites
+  the bug back. The decode rules and the store key live in `adapters/failedEvents.ts` so the two
+  senders cannot drift on them. A replay that fails again **re-persists exactly one copy**: it
+  never goes through `flush()`, so `onFailure()` does not persist it a second time.
+
+  The native drain is wrapped in a per-sender `guardedDrain()`. `takeFailed()` clears the key
+  before the send is attempted, but on an async store two *concurrent* drains both read the
+  payload before either removes it — so the second caller is handed the first's in-flight promise
+  instead. ⚠ **Web has no guard, and that is the `SyncStore` guarantee, not an oversight**: on
+  `localStorage` the key is already cleared when the drain first yields, so a second caller reads
+  a miss and returns. The race is unconstructable there, and a guard whose bucket is permanently
+  empty is eventually read as one that is working.
+
+  ⚠ `webSender.replayFailed()` **rejects where the deleted `replayFailedWeb` swallowed.** Core's
+  constructor `.catch` absorbs it and warns, so nothing changes for a consumer — but a path that
+  was unconditionally quiet now has an error edge, and both builds report replay failure the same
+  way as a result.
 
 - **A bad `identify()` no longer crashes the host app** (#107). `flattenWithPrefix` had no depth
   guard, so a cyclic value in `customAttributes` recursed to a **`RangeError` inside the SDK** —
