@@ -8,7 +8,8 @@ on:
       - "v*"
 
 permissions:
-  contents: read
+  # Needed to create the GitHub Release at the end of the job.
+  contents: write
   # npm trusted publishing (OIDC). This is what authenticates the publish, so there is
   # no NPM_TOKEN secret to store or rotate — the package must name this repo and this
   # workflow file as a trusted publisher at npmjs.com > package > Settings.
@@ -55,3 +56,30 @@ jobs:
 
       - name: Publish to npm
         run: npm publish --access public --provenance
+
+      # The CHANGELOG section for this version *is* the release notes — writing them
+      # twice is how the two come to disagree. A version with no section gets an empty
+      # body rather than failing the job: npm is already published by this point, and
+      # a missing GitHub Release is fixable by hand while an unpublish is not.
+      - name: Extract release notes from CHANGELOG
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 == "## " ver { found = 1; next }
+            found && /^## / { exit }
+            found { print }
+          ' CHANGELOG.md > RELEASE_NOTES.md
+          if [ ! -s RELEASE_NOTES.md ]; then
+            echo "::warning::no CHANGELOG section found for $VERSION — publishing an empty release body"
+          fi
+
+      # --verify-tag: refuse to invent a tag. The tag is the trigger, so if it is not
+      # there something is wrong enough that a silent tag creation would hide it.
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "$GITHUB_REF_NAME" \
+            --notes-file RELEASE_NOTES.md \
+            --verify-tag
