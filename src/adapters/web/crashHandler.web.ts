@@ -1,5 +1,6 @@
 import { Telemetry } from "../../core/telemetry";
 import { buildErrorAttributes, captureConsole, isBoundaryCaught } from "../crashCapture";
+import { isDev } from "../../core/debug";
 
 export type CrashHandlerOptions = { captureConsole?: boolean };
 
@@ -12,7 +13,7 @@ export class CrashHandler {
         const { captureConsole: consoleEnabled = false } = options;
         return new Promise((resolve, reject) => {
             try {
-                window.onerror = (msg, _url, _line, _col, error) => {
+                const report = (msg: string | Event, error: unknown) => {
                     // React's dev build rethrows a boundary-caught error here; it is already a row (#166).
                     if (isBoundaryCaught(error)) return;
                     // ⚠ `error === undefined` is the cross-origin instrumentation gap, not a
@@ -21,6 +22,14 @@ export class CrashHandler {
                     const source = error ? "global_handler" : "cross_origin";
                     // No `fatal` on web — nothing here is fatal, the page keeps running (§4.7).
                     this.telemetry.log("app.crash", buildErrorAttributes(source, error, { fallbackMessage: msg }));
+                };
+                window.onerror = (msg, _url, _line, _col, error) => {
+                    // React ≤18's dev build replays a failed render through invokeGuardedCallback, so
+                    // this fires *before* getDerivedStateFromError marks the error — later in the same
+                    // render. One macrotask lets the mark land. Dev only: production React never
+                    // replays, and the production crash path stays synchronous.
+                    if (error && !isBoundaryCaught(error) && isDev()) setTimeout(() => report(msg, error), 0);
+                    else report(msg, error);
                 };
 
                 window.onunhandledrejection = (event) => {

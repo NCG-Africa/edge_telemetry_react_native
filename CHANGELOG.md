@@ -60,6 +60,9 @@ fourteen are unsigned.
 
 - The vitals tracker stops on `shutdown()`; `trackErrors()` is per entry, so shared code imports
   no crash handler; a synchronously-throwing XHR `send()` discards the root it minted (#160).
+- On React ≤18 web dev builds a boundary-caught error is no longer also an `app.crash`: React's
+  dev replay reaches `window.onerror` before `getDerivedStateFromError`, so in dev the handler
+  waits one macrotask for the mark (#175).
 
 ### Deprecated
 

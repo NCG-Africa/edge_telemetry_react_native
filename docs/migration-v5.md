@@ -147,9 +147,7 @@ Each is in `CLAUDE.md`'s Known gaps with its reasoning.
   A superseded span emits nothing.
 - **`app.hang`** — no stack, ever; a stall that never ends (the OS kills it) emits nothing; only the
   JS thread is seen; `hang.duration_ms` under-reports by up to one tick.
-- **Error boundary** — on React ≤18 web **dev** builds, React re-throws a render error to
-  `window.onerror` before the boundary sees it, so it can also ship as `app.crash`; a thrown
-  non-object is not deduped; on React 18 with `captureConsole` on, a
+- **Error boundary** — a thrown non-object is not deduped; on React 18 with `captureConsole` on, a
   caught error can add a `console` row beside the `boundary` one.
 - **`view.ready_*`** — a screen's first visit in a process can't be judged `abandoned`; a mark
   landing after a tab-away is lost.
@@ -173,3 +171,5 @@ Each is in `CLAUDE.md`'s Known gaps with its reasoning.
 - web tabs diverged on the shared session record (#161).
 - a synchronously-throwing XHR `send()` left its `request` root live (#160).
 - `app.start.js_ready_ms` was specified and not built (#171).
+- on React ≤18 web dev builds, a boundary-caught error also shipped as `app.crash` — React's dev
+  replay reaches `window.onerror` before the boundary marks it (#175).

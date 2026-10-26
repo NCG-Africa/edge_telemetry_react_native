@@ -30,6 +30,7 @@ const attrsOf = (sent: TelemetryEvent[], name: string) =>
 /** Let the ctor's fire-and-forget trackErrors() finish its dynamic import and attach. */
 async function settle(t: any) {
   await (t as any).instancePromise;
+  await new Promise((r) => setTimeout(r, 0));   // dev defers window.onerror one macrotask (#175)
   for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 

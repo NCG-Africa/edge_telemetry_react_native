@@ -3,6 +3,7 @@ import * as React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import type { TelemetryEvent } from "./core/telemetry";
 import { memoryStore } from "./core/memoryStore";
+import { markBoundaryCaught } from "./adapters/crashCapture";
 
 // #166 — Seam 3: the React surface rendered through react-test-renderer, on both builds, with
 // the assertions still on what reaches the Sender.
@@ -111,6 +112,18 @@ for (const build of ["native", "web"] as const) {
       await settle();
       await t.flush();
       expect(errors(sent)).toHaveLength(1);
+    });
+
+    // React ≤18's dev build replays a failed render inside invokeGuardedCallback, so `window.onerror`
+    // fires *before* getDerivedStateFromError marks the error — same task, earlier line.
+    if (build === "web") it("React ≤18 dev order: global handler before the mark is still one row", async () => {
+      const { t, sent } = await launch();
+      const boom = new Error("replayed");
+      globalThrow(boom);
+      markBoundaryCaught(boom);
+      await settle();
+      await t.flush();
+      expect(errors(sent)).toEqual([]);
     });
 
     it("an error the boundary did not catch is still reported by the global handler", async () => {

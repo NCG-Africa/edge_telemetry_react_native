@@ -978,7 +978,12 @@ emit is started and its throw is swallowed.
 **One error, one row.** `getDerivedStateFromError` — the render phase, before React's own reporting
 — adds the error to a module-level `WeakSet` in `crashCapture.ts`; `captureConsole`, `window.onerror`
 / `onunhandledrejection` and the native `ErrorUtils` handler skip a marked error. RN's own default
-handler still runs (the red box is the dev's). Rendered through `react-test-renderer` on both builds
+handler still runs (the red box is the dev's). ⚠ **React ≤18's dev build reports first and marks
+second**: it replays a failed render through `invokeGuardedCallback`, so `window.onerror` fires
+*before* `getDerivedStateFromError`, later in the same render. Under `isDev()` the web handler
+therefore defers an unmarked error one macrotask before deciding; production React never replays,
+so the production crash path stays synchronous. Reproduced against React 18.3.1 + jsdom, the
+concurrent scheduler included; React 19 marks first and needs no deferral. Rendered through `react-test-renderer` on both builds
 in `src/boundary.test.tsx` — **Seam 3**, which #171 and #174 reuse.
 
 ### `app.hang` — JS-thread stalls
@@ -1832,9 +1837,6 @@ above rather than defects.
 - **A pre-init `disable()` chains on `instancePromise`**, so it flips when init settles — after
   `session.started` was enqueued, which the flip then drops with the queue. Nothing is sent;
   `enabled: false` is the way to have nothing *built*.
-- **React ≤18 web dev builds can double-report a boundary error** as `app.crash`: React re-throws
-  the render error to `window.onerror` (invokeGuardedCallback) before `getDerivedStateFromError`
-  marks it. Dev only — production React does not replay. (#156 §7)
 - **A thrown primitive is not deduped.** `throw "x"` inside a boundary cannot be a `WeakSet` key,
   so if React or a global handler also reports it, it can be two rows. Throw `Error`s.
 - **React 18's caught-error console message carries no error object** (`"The above error occurred

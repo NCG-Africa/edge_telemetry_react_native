@@ -31,7 +31,8 @@ function makeXHR() {
     return XHR;
 }
 
-async function settle() { for (let i = 0; i < 300; i++) await Promise.resolve(); }
+// One macrotask first: dev defers window.onerror until a boundary can mark (#175).
+async function settle() { await new Promise((r) => setTimeout(r, 0)); for (let i = 0; i < 300; i++) await Promise.resolve(); }
 
 beforeEach(() => {
     for (const k of Object.keys(subs)) delete subs[k];
