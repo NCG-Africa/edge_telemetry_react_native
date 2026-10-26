@@ -15,15 +15,15 @@ export type SpanHandle = {
 
 type ProfileInput = {
     userId?: string;
-    /** @deprecated Removed in v5 — use `identify({ name })`. */
+    /** @deprecated Removed in v6 — use `identify({ name })`. */
     fullName?: string;
-    /** @deprecated Removed in v5 — never reaches the wire (§3.4). */
+    /** @deprecated Removed in v6 — never reaches the wire (§3.4). */
     firstName?: string;
-    /** @deprecated Removed in v5 — never reaches the wire (§3.4). */
+    /** @deprecated Removed in v6 — never reaches the wire (§3.4). */
     lastName?: string;
     email?: string;
     phone?: string;
-    /** @deprecated Removed in v5 — never reaches the wire (§3.4). */
+    /** @deprecated Removed in v6 — never reaches the wire (§3.4). */
     avatar?: string;
     customAttributes?: Record<string, any>;
 };

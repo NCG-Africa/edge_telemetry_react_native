@@ -2,6 +2,70 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
+## 5.0.0 — unreleased (gated on contract A1–A14 sign-off)
+
+**Manual spans, RN-native capture, sibling parity.** Pure JS still — no native module, no new peer
+dependency. **Read [`docs/migration-v5.md`](docs/migration-v5.md) before deploying**: of six
+breaking changes exactly one is visible at compile time (#1, the type-only entry classes).
+
+⚠ **Do not publish while any of contract Appendix B's A1–A14 is unsigned.** Every new name and key
+below is already emitted, and an unlisted one is dropped on ingest behind a 2xx. At this cut all
+fourteen are unsigned.
+
+### Breaking
+
+- **`TelemetryWeb` / `TelemetryNative` are exported as types only** (#159). `createTelemetry()` is
+  the one way to build an instance, so the `apiKey` / `traceHostAllowlist` validation cannot be
+  bypassed. *Compile-time visible.*
+- **`navigation` and `screen.duration` are removed from the wire** (#163), with the internal
+  `deprecatedScreenFeeds` opt. `screenEnd()` / `trackRoute()` are `@deprecated` no-ops, deleted in
+  v6. Web's history path now actually runs, so a web app without `attachNavigation` gets `view`
+  rows named by normalized path.
+- **`view.name` from `attachNavigation` is the route path joined root to leaf with `/`** (#170) —
+  `Details` → `HomeTab/Details`; Expo Router file paths verbatim, no Expo dependency. A ready ref is
+  read on attach, an unready one on its `ready` event.
+- **A route change always bounds a view** (#169) — rank-beats-order applies only within one route,
+  so `screenStart()` can no longer pin a view across navigations.
+- **`react-native-device-info`, netinfo and get-random-values are externalized** (#158) — the
+  consumer's installed copy runs.
+- **Draining `flush()` and §2.5 status handling** (#162) — up to 50 sequential batches, ≥100 ms
+  apart; a 4xx drops the batch with `sdk.drop_reason: rejected` and one dev warning; a 429 requeues
+  and halts until `X-RateLimit-Reset`.
+
+### Added
+
+- **Manual spans** — `startSpan` / `withSpan` / `endSpan` → one `task.complete` row
+  (`completed` | `failed` | `abandoned`), child of a live root or a `custom` root; open spans
+  persist and are closable after a resume (#164).
+- **`app.hang`** — JS-thread stalls of 2–60 s, foreground only, off under `__DEV__`, attributed to
+  the last good tick; `hang.duration_ms` + breadcrumbs (#165).
+- **`<EdgeErrorBoundary>`** — a caught render error is `app.error` with `error.source: boundary`
+  and `error.component_stack`, deduped against the global handlers (#166).
+- **`markScreenReady()` / `useScreenReady()`** — `view.ready_time` / `view.ready_outcome` on the
+  `view` row, and native `app.start.js_ready_ms` (#171).
+- **`recordMetric`, `addBreadcrumb`, `startNewSession`** — `session.reason` gains `manual` (#167).
+- **`disable()` / `enable()` and the `enabled` opt** — while disabled nothing is sent and nothing
+  is kept; constructing dark skips `app.start` for the process (#172).
+- **Device state** — battery on native `app.crash` / `app.error` / `app.hang`, accessibility on
+  `session.started` (#173).
+- **`autoTrackTaps`** — native, opt-in, constructor-only: automatic `onPress` (`tap`) and
+  `onLongPress` (`long_press`) capture, named by `trackTap` > `testID` > `unnamed` (#174).
+- **Cross-tab session sync on web** — a `storage` listener keeps tabs on one session record (#161).
+- **Gz size budget** — CI fails above 20 KB native / 26 KB web per entry (shipped: 19.9 / 25.5)
+  (#158).
+- **`docs/migration-v5.md` ships in the tarball, with the release** (#175).
+- **Contract "v5 additions"** — A1–A14 sign-off asks, B1–B5 notices, C1–C10 open rulings (#168).
+
+### Fixed
+
+- The vitals tracker stops on `shutdown()`; `trackErrors()` is per entry, so shared code imports
+  no crash handler; a synchronously-throwing XHR `send()` discards the root it minted (#160).
+
+### Deprecated
+
+- The six `UserProfile` fields `@deprecated` in v4 stay live; their removal moves to **v6** so it
+  is not a seventh break here.
+
 ## 4.0.0
 
 **The EdgeRum v4 wire.** A single release, no dual-emit and no v3 fallback: the Context block is
