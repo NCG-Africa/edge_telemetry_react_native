@@ -1,9 +1,16 @@
 # React Native → Backend Wire Contract
 
-**What `@nathanclaire/edge-telemetry-sdk` sends in v4, key by key, and what the backend must store.**
+**What `@nathanclaire/edge-telemetry-sdk` sends in v4 and v5, key by key, and what the backend must store.**
 
 Addressed to the team authoring `edge_db`'s schema. It is written so you can author schema from it
-without asking us a question — with one deliberate exception, §0.3, where we have a question for you.
+without asking us a question — with two deliberate exceptions: §0.3, where we have a question for
+you, and Appendix C, ten rulings v5 asks for.
+
+> **v5 additions (#168).** v5's wire delta is written into the sections it touches and collected in
+> one place for sign-off: **Appendix B** (two names, fourteen asks A1–A14, one sign-off line each),
+> **§12.6** (five notice-only discontinuities B1–B5) and **Appendix C** (open rulings C1–C10, current
+> behaviour stated). Every v5 change carries **v5** in its row or paragraph. Until signed, every new
+> name and key is dropped on ingest — this gates the release, not the code.
 
 ---
 
@@ -13,7 +20,7 @@ Every `file:line` in this document is against one of these five, named at the ci
 
 | Artifact | Pin | Role |
 |---|---|---|
-| `NCG-Africa/edge_telemetry_react_native` | **`4f92c16`** (v3.0.1; non-test `src/` unchanged since `1eb1b10`) | this SDK |
+| `NCG-Africa/edge_telemetry_react_native` | **`4f92c16`** (v3.0.1; non-test `src/` unchanged since `1eb1b10`) for v4; **`e9bf13b`** (the v5 merge, #176) for every v5 addition — re-pinned to the `v5.0.0` tag when it is cut | this SDK |
 | `NCG-Africa/EDGETELEMETRYCOLLECTORGO` | `20a8470` | terminates the SDK's POST |
 | `NCG-Africa/EDGETELEMETRYPROCESSORGO` | **`516a02f`** (`origin/main`, 2026-08-30) | Kafka consumer → Postgres |
 | `NCG-Africa/edge_telemetry_rum_analytics` | `264732f` | owns the live schema; issues the dashboard queries |
@@ -61,7 +68,8 @@ Two companion documents, both cited throughout and both reproducible:
   retired by §4.7, so the rule holds across the whole v4 surface **except `navigation.from_screen`**,
   which still ships a literal `null` on the first `screenStart` and rides an event already deprecated
   for removal in v5 (§4.11). One nullable column, on a table you should not be building new
-  dashboards on anyway.
+  dashboards on anyway. **v5 removes `navigation`, so from v5 the rule has no exception at all** —
+  which is the case Appendix C's C1 rests on.
 - **Every SDK-authored key matches `^[a-z][a-z0-9_]*(\.[a-z][a-z0-9_]*)*$`.** Snake_case under a
   dotted namespace, no exceptions. **Consumer-supplied keys are exempt** and pass through verbatim —
   `log(event, data)`'s payload and `user.custom.*`. Expect arbitrary casing **in that slice of the
@@ -70,7 +78,7 @@ Two companion documents, both cited throughout and both reproducible:
 
 ### 0.3 The one question running backwards
 
-Everything else in this document is a statement. This is not:
+Everything else in this document is a statement — except Appendix C, v5's ten rulings. This is not:
 
 > **`rum_http_requests.trace_injection` is a live enum, `public.trace_injection_outcome`, whose six
 > labels are defined in neither repository. Three of them contradict or re-partition the SDK's
@@ -124,6 +132,9 @@ Ordered so the first item is free.
 | 13 | `ANALYTICS` | **Session aggregates become a query-time view.** `repository.go:94-99` upserts `ON CONFLICT (session_id) DO UPDATE SET session_id = EXCLUDED.session_id` — a **no-op** — so the row is fixed by the first event bearing the id, always `session.started`, and `duration_ms` is **NULL forever** / `event_count` **0 forever**, for all four SDKs. No SDK change fixes this. Derive instead. | none | §4.2 |
 | 14 | `PROC` | **Cap the `user.*` reads at 255 / 255 / **50**.** `rum_users.phone` is `VARCHAR(50)`. Same asymmetry as #11; failure mode is the whole profile silently lost behind a 2xx. | none | §4.10 |
 | 15 | `PROC` | **Drop the `memory.timestamp` read.** `extract.go` extracts it into `rum_performance_events.memory_timestamp` — a key no SDK has ever emitted, on a table RN does not write to. The envelope `timestamp` is authoritative. | none | §5.2 |
+| 16 | `PROC` | **v5 — `extractError` must read dotted `hang.duration_ms`.** It reads `hang_duration_ms` by exact key, while Android already ships `hang.duration_ms` — so the column is **NULL for every SDK today**, not just RN. Sibling-wide fix; A4. | none | §4.12 |
+| 17 | `PROC` | **v5 — allowlist `task.complete` and `app.hang`; drop `navigation` and `screen.duration`.** Net zero. A1, A4. | none | §4.0 |
+| 18 | `PROC`+`ANALYTICS` | **v5 — sign off A1–A14** (Appendix B): new enum values on existing columns (`ui.type`, `ui.name_source`, `error.source`, `trace.root_type`, `session.reason`), a home for each new key per §8.2/§8.3, and the §10.3 battery amendment. | per §8 | App. B |
 
 **Reported, not requested** — four facts you should know and that RN is not asking you to fix:
 
@@ -148,6 +159,10 @@ Ordered so the first item is free.
 | Distinct attribute keys | **73** | **125** — 52 carried over, 73 new, 21 retired |
 | Event names produced | 11 events + 2 metrics | 13 events + 7 metrics |
 | Allowlist delta | — | **net zero** (+4 / −4), but **four names need sign-off**: `view`, `ui.interaction`, `app.error`, `app.start` |
+
+**v5** adds **12 keys** and retires the **7** `navigation.*` / `screen.*` keys (A.5), and its
+allowlist delta is **net zero again**: +`task.complete`, +`app.hang`; −`navigation`,
+−`screen.duration`. Two names need sign-off — Appendix B.
 
 Reproduce the v3 side with Appendix A. The v4 side is an enumeration of this document's own tables,
 not a grep of code that does not exist yet — Appendix A says how to re-derive it from here.
@@ -447,6 +462,12 @@ Three tiers, **enforced by re-stamping, never by throwing**, because the realist
 | **B — rewritable, not deletable** | `device.id` | hashing to a tenant-local id is legitimate; deleting it 400s the batch at the collector |
 | **C — free** | everything else — `user.*`, `http.*`, `view.name`, `error.*`, `ui.target`, `vital.target`, `user.custom.*`, all caller `data` | where the PII actually lives |
 
+**v5:** every key v5 adds is **Tier C** — `task.*`, `hang.duration_ms`, `view.ready_*`,
+`error.component_stack`, the battery and accessibility `device.*` keys. `task.complete` and
+`app.hang` rows get the same Tier A re-stamp as any other row (their `eventName`, trace ids and
+`view.id` are immutable); `span.duration_ms` on a root `task.complete` stays Tier C like everywhere
+else.
+
 **Throwing fails closed** — sending the original would ship the exact field the hook existed to
 remove. Two **separate** counters ride the Context block, because "my volume is 40% down" needs to
 distinguish *my rule is too broad* (`sdk.hook_dropped`) from *my rule is crashing*
@@ -486,32 +507,35 @@ Every event carries §3 **plus** the keys listed. `eventName` outside the allowl
 
 ### 4.0 The allowlist
 
-| Name | v3 | v4 | Note |
-|---|---|---|---|
-| `session.started` | ✓ | ✓ | |
-| `session.finalized` | ✓ | ✓ | |
-| `app.start` | — | **+ new, sign-off** | §4.3 |
-| `app_lifecycle` | ✓ | ✓ | |
-| `view` | — | **+ new, sign-off** | §4.5 |
-| `navigation` | ✓ `N` | ✓ `N` **deprecated** | remove v5 |
-| `screen.duration` | ✓ `N` | ✓ `N` **deprecated** | remove v5 |
-| `http.request` | ✓ | ✓ | §4.4 |
-| `app.crash` | ✓ | ✓ | §4.7 |
-| `app.error` | — | **+ new, sign-off** | §4.7 |
-| `ui.interaction` | — | **+ new, sign-off** | §4.6 |
-| `user.interaction` | ✓ `N` | **− retired** | Android's contract already tells you not to build a table for it |
-| `network_change` | ✓ `N` | ✓ `N` | |
-| `user.profile.update` | ✓ | ✓ | §4.10 |
-| `custom_event` | ✓ | ✓ | |
-| `page_load` | allowlisted, **never produced** | **− retired** | §5.3 — its job is done three times over |
-| `resource_timing` | allowlisted, never produced | **− retired** | §10.2 |
-| `long_task` | allowlisted, never produced | **− retired** | §10.2 |
-| `frame_render_time` | metric | metric | §5.1 |
-| `memory_usage` | metric | metric `N` | §5.2 — **web drops it entirely** |
-| `LCP` `FCP` `CLS` `INP` `TTFB` | allowlisted, never produced | **metrics** `W` | §5.3 |
+| Name | v3 | v4 | v5 | Note |
+|---|---|---|---|---|
+| `session.started` | ✓ | ✓ | ✓ | |
+| `session.finalized` | ✓ | ✓ | ✓ | |
+| `app.start` | — | **+ new, sign-off** | ✓ | §4.3 |
+| `app_lifecycle` | ✓ | ✓ | ✓ | |
+| `view` | — | **+ new, sign-off** | ✓ | §4.5 |
+| `navigation` | ✓ `N` | ✓ `N` **deprecated** | **− removed** | §4.11 |
+| `screen.duration` | ✓ `N` | ✓ `N` **deprecated** | **− removed** | §4.11 |
+| `http.request` | ✓ | ✓ | ✓ | §4.4 |
+| `app.crash` | ✓ | ✓ | ✓ | §4.7 |
+| `app.error` | — | **+ new, sign-off** | ✓ | §4.7 |
+| `app.hang` | — | — | **+ new, sign-off** | §4.12 — A4 |
+| `task.complete` | — | — | **+ new, sign-off** | §4.13 — A1 |
+| `ui.interaction` | — | **+ new, sign-off** | ✓ | §4.6 |
+| `user.interaction` | ✓ `N` | **− retired** | — | Android's contract already tells you not to build a table for it |
+| `network_change` | ✓ `N` | ✓ `N` | ✓ `N` | |
+| `user.profile.update` | ✓ | ✓ | ✓ | §4.10 |
+| `custom_event` | ✓ | ✓ | ✓ | |
+| `page_load` | allowlisted, **never produced** | **− retired** | — | §5.3 — its job is done three times over |
+| `resource_timing` | allowlisted, never produced | **− retired** | — | §10.2 |
+| `long_task` | allowlisted, never produced | **− retired** | — | §10.2 |
+| `frame_render_time` | metric | metric | metric | §5.1 |
+| `memory_usage` | metric | metric `N` | metric `N` | §5.2 — **web drops it entirely** |
+| `LCP` `FCP` `CLS` `INP` `TTFB` | allowlisted, never produced | **metrics** `W` | **metrics** `W` | §5.3 |
 
 **Net zero, four names to sign off.** Anything not on the list is dropped on ingest, so the four are
-a hard dependency.
+a hard dependency. **v5 is net zero again** (+2 / −2) — `app.hang` and `task.complete` are the two
+names to sign off (Appendix B).
 
 ⚠ **Web's event surface is greenfield, not a compatibility constraint.** In v3 the web build emits
 only `session.started`, `session.finalized` (idle rotation only — a closed tab never finalizes),
@@ -525,13 +549,26 @@ vitals, and web's entire name-level sign-off is **one name**: `view`.
 
 | Key | Type | Cardinality | Note |
 |---|---|---|---|
-| `session.reason` ✱ | string | **3** — `launch`\|`idle`\|`max_duration` | |
+| `session.reason` ✱ | string | **4** — `launch`\|`idle`\|`max_duration`\|`manual` | **v5** `manual` — A9 |
+| `device.reduce_motion` **v5** | bool | 2 | **both builds**; iOS's key. Omitted when the read fails — A11 |
+| `device.screen_reader` **v5** ⚠ RN invention | bool | 2 | **native only** — VoiceOver *and* TalkBack. Omitted when the read fails — A11 |
+| `device.font_scale` **v5** ⚠ RN invention | float | small | **native only** — `PixelRatio.getFontScale()`. Omitted when the read fails — A11 |
 | `device.locale` ✱ | string | ~50 | `session.started` only — a cohort property nobody slices a *crash* by |
 | `device.timezone` ✱ | string | ~40 | as above. **Tier C** — a coarse geolocation proxy |
 | `sdk.trace_allowlist_size` ✱ | int | small | **count only, never the hosts** — §6.4 |
 
 **A resumed session does not re-emit `session.started`**, or `COUNT(session.started)` stops equalling
 session count.
+
+**v5 — `manual`** is the host's `startNewSession()` (logout/login): the same finalize/start pair as
+the two automatic boundaries, carrying `manual` on both sides.
+
+**v5 — accessibility keys ride `session.started` only**, read once per session. They sit **outside
+the 39-key Context block**, which stays frozen. A mid-session toggle is missed until the next
+session, and a resumed session — which emits no `session.started` — carries the launch's state.
+Web ships no `screen_reader` or `font_scale`: RN-Web answers both with constants. All three are
+Tier C. ⚠ `device.screen_reader` and `device.font_scale` exist in no sibling SDK — **RN inventions**,
+each needing its own sign-off line (Appendix B).
 
 ### 4.2 `session.finalized` — both builds, and its payload is discarded on arrival
 
@@ -540,7 +577,7 @@ session count.
 | `session.duration_ms` | int | stamped from `lastActivity`, not `now` |
 | `session.event_count` | int | |
 | `sdk.error_count` | int | |
-| `session.reason` ✱ | string | **2** — `idle`\|`max_duration` |
+| `session.reason` ✱ | string | **3** — `idle`\|`max_duration`\|`manual` — **v5** `manual`, Android-aligned (A9) |
 
 ⚠ **`rum_sessions.duration_ms` is NULL forever and `event_count` is 0 forever, for all four SDKs,
 and no SDK change fixes it.** `repository.go:94-99` upserts `ON CONFLICT (session_id) DO UPDATE SET
@@ -579,7 +616,10 @@ every kill mints a session. Do not compare a v4 number to a v3 one. Two tabs als
 
 | Key | Type | Null? |
 |---|---|---|
-| `app.start.js_ready_ms` | int ms | **nullable** — Old Architecture, or where the platform omits the marker |
+| `app.start.js_ready_ms` | int ms | **omitted** — always on web; on native when the runtime has not stamped `executeJavaScriptBundleEntryPointEnd` or `startTime` |
+
+**v5 — confirmed native-only (A8).** Web never ships it: its runtime-ready marker is `load`, which
+fires *after* `app.start` is emitted. On native it is read at `app.start`'s emit and never awaited.
 
 A bare per-process marker. It exists because two decisions left a hole *between* them: the launch
 trace root rides `app.start` (§6.2), and §4.2 made sessions resume across process death without
@@ -708,6 +748,19 @@ deliberately, so "errors by screen" and "p95 by screen" need no join.
 | `view.error_count` | int | never | measure | `app.crash` + `app.error` — a **closed enumeration**. Not resource failures, not failed requests, not `console.warn` |
 | `view.action_count` | int | never | measure | `ui.interaction` rows sharing the `view.id` |
 | `view.request_count` | int | never | measure | **all** `http.request` in the view, **failures included**, collector POST excluded |
+| `view.ready_time` **v5** | int ms | **omitted** unless `ready_outcome = ready` | measure | host-marked time to full display — A7 |
+| `view.ready_outcome` **v5** | string | **omitted when not judged** | **2** — `ready`\|`abandoned` | A7 |
+
+**v5 — screen-ready marks (A7)** complement `view.loading_time` on the same row; **never average the
+two**. The host calls `markScreenReady()` (or `useScreenReady`) and the first mark per view wins.
+`view.ready_time = max(0, mark − anchor)`: a route view anchors at entry, the **initial** view at
+**process start**, so the launch screen's ready time *is* cold-start-to-ready. `abandoned` fires only
+on a route-change or rotation exit, and only for a `view.name` this process has already seen marked
+(a learned set) — so an uninstrumented screen never reads as abandoned, and a screen's first visit
+per process cannot. A background exit is not judged: neither key ships.
+
+⚠ **v5 — `view.action_count` changes meaning for apps opted into `autoTrackTaps`** (B3): from "named
+taps" to "every `onPress`/`onLongPress` activation". The column's meaning is per app.
 
 **Lifetime — four boundaries.** A view ends, emits, and mints a successor on: **route change**,
 **background**, **session rotation**, and **process death** (which ends the view but, since §4.2,
@@ -720,9 +773,8 @@ action's root span always has a view.
 real win: the event flushes while the app is reliably alive rather than pending through an OS kill or
 a tab close.
 
-⚠ **`view` is authoritative for dwell. `screen.duration` becomes a deprecated compatibility feed**
-(remove in v5), and **its volume goes *up* in v4** — see §4.11. Do not size `rum_screen_durations`
-from v3 traffic, and do not build new dashboards on it.
+⚠ **`view` is authoritative for dwell. `screen.duration` was a deprecated compatibility feed in v4,
+and is removed in v5** — §4.11. `view` is the only screen feed.
 
 ⚠ **Straddling actions.** `COUNT(DISTINCT rum_action_id) WHERE view_id = X` is **not** "actions in
 view X" — it is "actions with at least one span in X", and an action that straddles a boundary is
@@ -731,7 +783,7 @@ mint-time view). §6.3.
 
 #### 4.5.1 `view.name` — a three-rung ladder, and the URL rule is the *last* rung
 
-React Navigation *authors* the web URL (`linking.getPathFromState`), and `getCurrentRoute()` is a
+React Navigation *authors* the web URL (`linking.getPathFromState`), and `getCurrentRoute()` (v5: `getRootState()`, joined root to leaf) is a
 navigation-tree API that works identically on RN-Web. So a digit heuristic reading `/dashboard/1234`
 is reverse-engineering a template the app is holding in memory — and losing to it. Worse, the answer
 it discards is **the same string native already sends** (`route.name`), so one `GROUP BY view.name`
@@ -740,13 +792,24 @@ spanning both builds is available for free. `attachNavigation` moves to `Telemet
 | Rung | `view.name_source` | Source | Normalized? |
 |---|---|---|---|
 | 1 | `explicit` | host called `screenStart(name)` | **no** |
-| 2 | `route` | React Navigation `getCurrentRoute().name`, **both builds** | **no** |
+| 2 | `route` | React Navigation route name, **both builds** — v5: root-to-leaf path joined with `/` | **no** |
 | 3 | `url` | §4.4.1's rule — history-only web (react-router, plain `pushState`) | yes |
 | — | `none` | not yet resolvable; `view.name` is the literal `"unknown"` | — |
 
 Rungs 1 and 2 are **never** normalized: a host naming a screen `"Step 2 of 3"` must not receive
 `"Step {id} of {id}"`. **Rank beats order; order breaks ties** — a higher rung re-stamps the name
 regardless of arrival order, but never mints a new view and never changes `view.id`.
+
+**v5 ladder amendment (A14) — rank beats order only within one route.** Each view records the
+`route` and `url` names it was bound to; **a route or URL event naming a different one is always a
+boundary** — the `view` row emits and a successor mints, whatever rung the display name came from.
+v4 let an explicit `screenStart()` name pin a view across route changes, which merged screens. No
+key changes; this changes *when* `view` rows emit. On web a URL change bounds the view even when the
+route name does not (a query-only change normalizes to the same name and does not).
+
+**v5 — rung 2 is the focused route names joined root to leaf with `/`** (B2), so nested screens that
+share a leaf name stay distinct: `Details` → `HomeTab/Details`. Under Expo Router the route names are
+file paths, kept verbatim — `(tabs)/settings/index`. Top-level screens are unchanged.
 
 ⚠ **`view.name` is therefore mutable within a view's lifetime.** Events emitted in the upgrade window
 — typically single-digit milliseconds, between the route event and a mount effect — carry the
@@ -830,14 +893,14 @@ Storage is **already provisioned**: `rum_ui_interactions` exists with seven `ui_
 
 | Key | Type | Null? | Cardinality | Builds |
 |---|---|---|---|---|
-| `ui.type` | string | never | **2** — `click` (web) / `tap` (native) | both |
-| `ui.target` | string | never | ~100s, **capped 64 chars** | both |
-| `ui.name_source` | string | never | **6** web / **2** native | both |
+| `ui.type` | string | never | **3** — `click` (web) / `tap` (native) / `long_press` (**v5**, native, opt-in only — A13) | both |
+| `ui.target` | string | never | ~100s, **capped 64 chars** — rungs 2–5 and native `test_id`; rung 1 and native `trackTap` names uncapped (C5) | both |
+| `ui.name_source` | string | never | **6** web / **3** native (**v5** adds `test_id` — A12) | both |
 | `ui.tag` | string | never | ~20 | both — resolved element's `tagName`, lowercased |
 | `ui.x` | int, viewport px | never | high | both |
 | `ui.y` | int, viewport px | never | high | both |
 | `ui.dead` ✱ | bool | **omitted when not evaluated** | 2 | **web only** |
-| `ui.rage` ✱ | bool | **omitted when false** | 1 (`true`) | both; native gated to `edge_action` |
+| `ui.rage` ✱ | bool | **omitted when false** | 1 (`true`) | both; native gated to named taps (`edge_action`, v5 `test_id`) |
 
 **Naming: a five-rung ladder gated on element role.** A name is derived automatically **only** from
 the nearest ancestor in `composedPath()` that is actionable *by role* — `<button>`, `<a href>`,
@@ -881,10 +944,19 @@ way to tell missing instrumentation from people tapping whitespace.
 
 **Native cannot see what it touched.** `interactionProps()` sits on the consumer's **root** `<View>`
 and `PressEvent.nativeEvent.target` is a node tag number with no public API resolving it. So native
-ships explicit-only `trackTap(name)`, a two-value `ui.name_source` (`edge_action | none`), **no
+ships explicit-only `trackTap(name)`, a two-value `ui.name_source` (`edge_action | none`; v5's `autoTrackTaps` adds `test_id`, below), **no
 `surface`** (the root responder cannot distinguish a tap on a button from a tap on padding, and
 claiming the distinction would be a lie), and a **mint/emit split** forced by RN's root-before-child
 capture order.
+
+**v5 — `autoTrackTaps` (A12, A13).** An opt-in, native-only, constructor-only flag (default off)
+that wraps every element with a function `onPress` (`ui.type: tap`) or `onLongPress`
+(`ui.type: long_press` — Android's value, so the column already holds it). It fires on
+**activation**, not touch, so a scroll drag emits nothing and there is still no `surface`. Native's
+name ladder grows a middle rung: `trackTap(name)` → `edge_action`, else the element's `testID` →
+**`test_id`** (normalized, capped 64), else `unnamed` / `none`. **Never text or accessibility
+labels** — `"Pay John Kamau KES 5,000"` is exactly what a label rung would ship. Native rage keys on
+the name and runs over `edge_action` and `test_id` rows only.
 
 ⚠ **The emitted `timestamp` is the mint time, never the emit time** — and with it `view.id`,
 `view.name` and `session.id` are **snapshotted at mint**. Stamping the emit time would start the root
@@ -923,7 +995,7 @@ consumers. Dropping it *repairs* that defect for interactions for free.
   must filter `sdk.platform` to the web build**, or native interactions inflate the denominator and
   can never contribute to the numerator.
 - **Native rage coverage equals native instrumentation coverage.** Rage ships on native but only for
-  `ui.name_source = edge_action`, because running it over `unnamed` would not merely lose information
+  named taps — `ui.name_source = edge_action`, plus `test_id` under `autoTrackTaps` (v5) — because running it over `unnamed` would not merely lose information
   — it would **invent a user-frustration event that never happened**. A low native rage count means
   *few named taps*, not *happy users*.
 
@@ -944,11 +1016,15 @@ straight back.
 | Key | Type | Null discipline | Cardinality | Cap |
 |---|---|---|---|---|
 | `error.type` | string | never | ~100s | **255** |
-| `error.source` | string | never | **5** | — |
+| `error.source` | string | never | **6** — v5 adds `boundary` (A5) | — |
 | `error.message` | string | **omitted** when absent | high | **1000** |
 | `error.stacktrace` | string | **omitted** when absent | very high | **2000**, tail-truncated |
 | `error.fatal` | bool | **omitted on web** | 2 | — |
-| `error.breadcrumbs` | string (JSON array, 20 entries) | never on `app.crash` | unique | — |
+| `error.breadcrumbs` | string (JSON array, 20 entries) | never on `app.crash` (and, v5, `app.hang`); absent elsewhere | unique | — |
+| `error.component_stack` **v5** | string | **omitted** except on `boundary` rows | very high | **2000**, cut on a line boundary — A6. ⚠ **RN invention** — React-only, no sibling ships it |
+| `device.battery_level` **v5** | int 0–100 | **omitted** on web, and when the read fails or reports `-1` | 101 | — A10 |
+| `device.battery_charging` **v5** | bool | as above | 2 | — A10 |
+| `device.power_save` **v5** | bool | as above | 2 | — A10 |
 
 Retires all five `crash.*` keys. **Both explicit wire nulls are gone**, which makes the SDK's null
 discipline universal.
@@ -969,6 +1045,7 @@ report `"Error"`: low cardinality but honest.
 | `ConsoleError` | `console` | **`app.error`** — note the event changed |
 | — | `reported` ✱ | `app.error` — from the new `captureError()` |
 | `ConsoleWarn` | **deleted** | — becomes a breadcrumb only |
+| — | `boundary` **v5** | `app.error` — from `<EdgeErrorBoundary>` (A5) |
 
 ⚠ **Do not map old values onto new ones positionally.** `cross_origin` exists because `window.onerror`
 receives `error === undefined` for scripts served from another origin without CORS headers — the
@@ -986,7 +1063,7 @@ forever** — not because web is stable, but because the column is never true th
 cross-platform crash-free chart must exclude web, or use the unfiltered
 `COUNT(event_name='app.crash')`** that the two-name split above made safe.
 
-**`error.breadcrumbs` stays a stringified JSON array, and rides `app.crash` only.** A real array would
+**`error.breadcrumbs` stays a stringified JSON array, and rides `app.crash` only** — plus, from v5, `app.hang`, which is not an error (§4.12). A real array would
 **break on ingest**: `stringAttr` renders non-scalars through `fmt.Sprint`, producing **Go map syntax**,
 not JSON. Android reached the same answer independently. It rides `app.crash` only because `app.error`
 volume is consumer-controlled and a 1–2 KB blob on a high-volume event is how the transport budget gets
@@ -1009,6 +1086,19 @@ a byte, being referenced only by its own definition — hashes the **raw** messa
 most common way error grouping fails. **The ingest grouping key is `error.type` + normalized message,
 frames excluded.** It **over-groups by design**, which is the recoverable direction: a later pass with
 resolved frames can split, but history can never be re-merged.
+
+**v5 — `<EdgeErrorBoundary>` (A5, A6).** A React render error caught by the SDK's boundary component
+is **`app.error`**, never `app.crash` — the boundary handled it — with `error.source: boundary` and
+`error.component_stack` (React's component stack, raw, capped 2000 by the same frame-boundary
+truncator as the stack). **One error, one row**: an error the boundary caught is skipped by the
+global handlers and console capture. Both keys are Tier C.
+
+**v5 — battery on failure rows (A10, amends §10.3).** `device.battery_level`, `.battery_charging`
+and `.power_save` ride **`app.crash`, `app.error` and `app.hang` only, native only** — Android's
+names, columns and shape. A cached read (refreshed at init, on foreground and every 60 s), so the
+capture path never awaits a native call and a value can be up to 60 s stale. Simulator `-1`,
+out-of-range, a missing method or a throw **omits that key**, never a sentinel. Outside the 39-key
+Context block; Tier C. Thermal state stays deferred — no source.
 
 **Public API delta: one method** — `captureError(error: unknown, context?)`. It must accept `unknown`,
 because half of real `catch` blocks receive a string or an axios rejection object.
@@ -1157,30 +1247,80 @@ nested objects recurse into the bag. Overflow past the caps is dropped, counted,
 is the one slice of the bag where arbitrary spelling is expected; the SDK imposes no normalization
 there and you should not size one.
 
-### 4.11 The deprecated native feeds — `navigation` and `screen.duration`
+### 4.11 Removed in v5 — `navigation` and `screen.duration`
 
-Both keep emitting on native, unchanged, for v3 consumers and Android parity. **Web emits neither**
-and never has (§4.0). Both are **removed in v5**.
+**Tombstone.** Both were deprecated native-only compatibility feeds in v4 (web never emitted either)
+and are **removed in v5** (B1), along with the `deprecatedScreenFeeds` opt that kept them alive. Both
+names are off the allowlist and no path on either build emits them; `view` (§4.5) is the only screen
+feed. A v5 consumer's `log("navigation")` is rewritten to `custom_event` like any unknown name.
 
-`navigation`: `navigation.from_screen` (⚠ the SDK's only explicit wire `null`, on the first
-`screenStart`; the route-change path substitutes the string `"init"` — accept both), `.to_screen`,
-`.method` (2 values), `.route_type` (const `"screen"`).
-`screen.duration`: `screen.name`, `.duration_ms`, `.exit_method` (const `"navigation"`).
+What they carried, for reading v4 history: `navigation.from_screen` (the SDK's only explicit wire
+`null`, on the first `screenStart`; the route-change path substituted `"init"`), `.to_screen`,
+`.method` (2 values), `.route_type` (const `"screen"`); `screen.name`, `.duration_ms`, `.exit_method`
+(const `"navigation"`).
 
-⚠ **Their v4 volume goes *up*, not down, and you must not size those tables from v3 traffic.** In v3
-the two native screen paths are **disjoint**: `attachNavigation` — the zero-instrumentation path the
-SDK advertises — registers a listener that calls `NavigationTracker.recordRouteChange`
-(`navigationTracker.ts:12`) and **never touches `inst.screens`**, while `ScreenTimingTracker` is
-armed only by the public `screenStart()`. So a React Navigation consumer emits `navigation` on every
-route change and **never a single `screen.duration`**. v4 unifies both paths onto one `ViewManager`,
-which fixes that as a side effect — so **`screen.duration` starts firing where it never has, at the
-same moment it is declared deprecated.**
+⚠ **v4's volume caveat stands for the v4 window only.** v4 unified both native screen paths onto one
+`ViewManager`, so `screen.duration` started firing for React Navigation consumers where v3 never
+emitted it — and then stops entirely at v5. Do not size `rum_screen_durations` or `rum_navigations`
+from either release. The `rum_navigations` vs `rum_navigation_events` target-table ambiguity (your
+follow-up #3) no longer has an RN producer to settle it for.
 
-⚠ **Target-table ambiguity you must resolve.** `navigation` has two candidate tables and the
-processor writes the wrong one: `rum_navigations` (processor-owned, **25 rows, 0 analytics readers**)
-against `rum_navigation_events` (analytics-owned, **583,907 rows**, read 3×). All four landing
-`navigation.*` keys are currently invisible. This is your follow-up #3, and it is a hard dependency
-for RN navigation visibility: fixing RN's key names alone would move data into a table with no reader.
+**With `navigation.from_screen` gone, omission is the SDK's universal null discipline** — no RN key
+ships an explicit `null` from v5. That is what Appendix C's C1 asks you to rule on.
+
+### 4.12 `app.hang` **v5** — both builds, JS-thread stalls
+
+A4. **Tier 2** (§6.3): annotated with the root live at the **last good tick**, never minting.
+
+| Key | Type | Null? | Note |
+|---|---|---|---|
+| `hang.duration_ms` | int ms | never | the timer's lateness, 2,000–60,000 |
+| `error.breadcrumbs` | string (JSON array) | never | **an exception to "`app.crash` only"** (§4.7) — the trail is the only context a stall has |
+| `device.battery_level` / `.battery_charging` / `.power_save` | int / bool / bool | omitted on web and on a failed read | §4.7, A10 — native only |
+
+A self-rescheduling **1 s** timer; a tick that fires **≥ 2 s** late emits one row whose
+`hang.duration_ms` is that lateness. **No stack** — by the time anything can look, the frozen code
+has returned. Foreground only; off under `__DEV__` (a debugger pause is not a hang); lateness
+> **60 s** is dropped as a suspension (a sleeping device, a frozen tab), not a hang. The row's
+`timestamp`, `view.id` and trace keys are those of the **last good tick**, so it lands on the screen
+and action where the freeze began.
+
+⚠ **Not an error.** `app.hang` is **not** counted in `view.error_count` or `sdk.error_count`, gets no
+forced flush and no eviction reprieve — jank must not move the error rates.
+
+⚠ **It under-reports by construction**: by up to one tick, and a hang that never ends (an iOS
+watchdog kill, an Android ANR force-close) leaves no row, because the row is emitted by the tick
+that wakes up. That is native capture, which RN does not have (§10.3).
+
+⚠ **Processor fix, sibling-wide (work-list 16):** `extractError` reads `hang_duration_ms` by exact
+key while Android already ships dotted `hang.duration_ms`, so `hang_duration_ms` is **NULL for every
+SDK**. Read `hang.duration_ms`.
+
+### 4.13 `task.complete` **v5** — both builds, manual spans
+
+A1–A3. The host's `startSpan(name)` / `withSpan` / `endSpan` — one primitive absorbing iOS
+`RumAction`/`RumTimer` and Flutter tasks, with **Flutter's name and keys**. **One row, at the end**;
+no start row.
+
+| Key | Type | Null? | Cardinality | Note |
+|---|---|---|---|---|
+| `task.name` | string | never | host-chosen, ~10s | **unnormalized**, cap 255 |
+| `task.outcome` | string | never | **3** — `completed`\|`failed`\|`abandoned` | |
+| `span.duration_ms` | int ms | never | measure | **on root *and* child** — the flagged exception, below |
+| Tier 1 trace keys | | | | frozen at span **start**; `trace.root_type` may be `custom` |
+
+**Tier 1, span-carrying.** A span joins the live root, or mints a **`custom`** root when none is live
+(A2). It is a **leaf** — no nesting; a request inside it parents to the root. The row's `timestamp`
+is the end; `view.id` and `session.id` are frozen at start.
+
+⚠ **`span.duration_ms` on a root (A3)** breaks §6.3's "children only": a manual span's end is
+**declared**, not derivable from its children, so a root's width cannot be left to the server.
+
+**`abandoned` means the session ended first**, and nothing else — emitted at session finalize, under
+the session the span was started in, ended at the session's last activity. Navigation and background
+are not abandonment. A span restarted under the same name supersedes its predecessor **silently**.
+Caller attributes ride the row under the SDK keys and cannot forge `task.*`, `span.*`, `trace.*`,
+`parent.*` or `rum.*`. All new keys are Tier C.
 
 ---
 
@@ -1328,9 +1468,9 @@ nowhere in v3 `src/`. **Allowlist delta: zero** — every trace key rides an eve
 | `span.id` | Tier 1 only | 16 lowercase hex; on `adopted`, mirrors the foreign parent-id |
 | `parent.span.id` | children only | omitted on roots, on `adopted`, on unattributed, on expired |
 | `rum.action.id` | Tier 1 + Tier 2 | the root's `span.id` — the stable join key |
-| `trace.root_type` | Tier 1 + Tier 2 | `launch`\|`interaction`\|`navigation`\|`request`, **denormalized onto every child** |
+| `trace.root_type` | Tier 1 + Tier 2 | `launch`\|`interaction`\|`navigation`\|`request`\|`custom` (**v5**, A2), **denormalized onto every child** |
 | `span.start_time` | Tier 1 only | ISO 8601, matching the SDK's existing timestamp discipline |
-| `span.duration_ms` | Tier 1 **children only**, **never `view`** | roots derive server-side at query time |
+| `span.duration_ms` | Tier 1 **children only**, **never `view`** — **v5 exception: `task.complete` ships it on a root too** (A3, §4.13) | roots derive server-side at query time |
 | `traceparent.outcome` | `http.request` only | **7 values**; **absent = not traced** |
 
 **`rum.action.id` identity is adopted exactly as Android holds it**: `== span.id` on a root,
@@ -1350,6 +1490,7 @@ the Android 2.2.2 traffic — and `rum_trace_spans` and `rum_user_actions` both 
 | `ui.interaction` | every tap/click | `interaction` |
 | `view` | no root is live | `navigation` |
 | `http.request` | no root is live | `request` |
+| `task.complete` **v5** | at span **start**, when no root is live | `custom` |
 
 **`trace.root_type = navigation` means the same thing on both platforms** — *a route change no action
 explains*. What differs is the **input**, and that asymmetry belongs here rather than being discovered
@@ -1373,7 +1514,8 @@ from before the user left.
 
 ### 6.3 Three tiers of participation
 
-**Tier 1 — span-carrying:** `app.start`, `ui.interaction`, `view`, `http.request`.
+**Tier 1 — span-carrying:** `app.start`, `ui.interaction`, `view`, `http.request`, and **v5**
+`task.complete` — which alone carries `span.duration_ms` on a root (§4.13).
 
 ⚠ **`view` carries `span.start_time` but never `span.duration_ms`, not even as a child.** View dwell
 is not span duration. With a duration, the envelope aggregate
@@ -1394,14 +1536,15 @@ batches than the `view` event closing it. Do not assume root-before-child arriva
 **normal** case, not the offline one.
 
 **Tier 2 — annotation-only:** carries `trace.id`, `rum.action.id`, `trace.root_type`. No `span.id`, no
-parent, no duration — it joins a trace without occupying a span. `app.crash`, `app.error`, and
-`custom_event`. ⚠ `custom_event`'s inclusion is **the one place RN goes past Android**, flagged as an
+parent, no duration — it joins a trace without occupying a span. `app.crash`, `app.error`,
+`custom_event`, and **v5** `app.hang` (read at its last good tick, §4.12). ⚠ `custom_event`'s inclusion is **the one place RN goes past Android**, flagged as an
 invention rather than borrowed precedent: a consumer's `log("checkout_started")` from a tap handler
 joining that tap's trace is how a business funnel gets attributed to a user action.
 
 **Tier 3 — trace-free, stated so nobody asks later:** **all metrics** (`frame_render_time`,
 `memory_usage`, all five vitals), plus `app_lifecycle`, `network_change`, `session.started`,
-`session.finalized`, `user.profile.update`, and the deprecated `navigation` / `screen.duration` feeds.
+`session.finalized` and `user.profile.update`. (v4's deprecated `navigation` / `screen.duration`
+feeds were Tier 3 too; v5 removes them.)
 
 ⚠ **The metrics exclusion is the one worth arguing, so here it is argued.** A windowed aggregate
 belongs to no single action: `frame_render_time` is a p95 over a window, and vitals are
@@ -1696,8 +1839,9 @@ The column exists live (verified in the 2026-09-03 dump) and the processor fills
 | `http.method` / `.status_code` / `.duration_ms` / `.success` | `rum_http_requests.*` | 2nd most-read table (41 refs) |
 | `error.type` → `exception_type`, `error.message` → `error_message`, `error.stacktrace` → `stack_trace`, `error.source` → `cause`, `error.fatal` → `is_fatal`, `error.breadcrumbs` → `breadcrumbs` | `rum_crash_events.*` | **38 readers** — but see work-list 4 (routing) and §4.9 (naming) |
 | `ui.type` / `.target` / `.x` / `.y` / `.name_source` | `rum_ui_interactions.*` | columns exist, `ui_name_source` included ⚠ 0 dashboard readers — your follow-up #3 |
-| `screen.name` / `.duration_ms` / `.exit_method` | `rum_screen_durations.*` | 7 refs — **deprecated feed**, do not build new dashboards |
-| `navigation.from_screen` / `.to_screen` / `.method` / `.route_type` | `rum_navigations.*` | ⚠ **written, never read** — §4.11 target-table ambiguity |
+| `screen.name` / `.duration_ms` / `.exit_method` | `rum_screen_durations.*` | 7 refs — **removed in v5** (§4.11); v4 history only |
+| `navigation.from_screen` / `.to_screen` / `.method` / `.route_type` | `rum_navigations.*` | ⚠ **written, never read** — **removed in v5** (§4.11) |
+| `hang.duration_ms` **v5** | `rum_errors.hang_duration_ms` (`float8`, live) | ⚠ **NULL for every SDK until work-list 16** (the read is undotted). And the column lives on `rum_errors` (0 readers), not `rum_crash_events` — route `app.hang` with work-list 4 in mind |
 | `trace.id` / `span.id` / `parent.span.id` / `rum.action.id` / `trace.root_type` / `span.start_time` / `span.duration_ms` | `rum_telemetry_events.*` | the envelope aggregate, §6.6 |
 | `metric.unit` | `rum_performance_metrics.unit` | **RN has never sent it** — free win |
 | `memory.type` / `.source` | `rum_performance_metrics.memory_type`/`.memory_source` | live and populated |
@@ -1705,7 +1849,7 @@ The column exists live (verified in the 2026-09-03 dump) and the processor fills
 
 ### 8.2 `COL` — new ask
 
-Fifteen keys, four of which are the work list's DDL items.
+Fifteen keys in v4, four of which are the work list's DDL items, plus v5's rows (marked).
 
 | Key | Owner | Target | The query that needs it |
 |---|---|---|---|
@@ -1720,6 +1864,8 @@ Fifteen keys, four of which are the work list's DDL items.
 | `ui.rage` / `ui.dead` | `ANALYTICS` | `rum_ui_interactions.ui_rage`/`.ui_dead` | `count(*) FILTER (WHERE ui_rage) GROUP BY view_name`. ⚠ Honest caveat: `rum_ui_interactions` has **zero** dashboard readers today (your follow-up #3), so this is the one place we ask for columns slightly ahead of their reader — two booleans, cheapest possible ask |
 | the ten `view.*` event keys | `ANALYTICS` | **`rum_views`** (new) | §4.5 — the whole table |
 | `traceparent.outcome` | `PROC`+`ANALYTICS` | `rum_http_requests.trace_injection` retyped `VARCHAR` | `v_trace_attribution_health` already exists and reads it — §6.5 |
+| `view.ready_time` / `view.ready_outcome` **v5** | `ANALYTICS` | two more columns on **`rum_views`** — twelve, not ten | p75 time-to-full-display by `view.name` where `ready_outcome = 'ready'`, and % `abandoned` — the same two-series read as `loading_time` (A7) |
+| `task.name` / `task.outcome` **v5** | `PROC`+`ANALYTICS` | wherever Flutter's `task.complete` lands — **reuse Flutter's home, do not add a second** | `GROUP BY task.name` p75 `span.duration_ms` and failure rate — the whole point of a manual span (A1). `span.duration_ms` is already a column (§8.1) |
 
 ### 8.3 `bag` — deliberately, with the promotion trigger named
 
@@ -1739,6 +1885,9 @@ Fifteen keys, four of which are the work list's DDL items.
 | `ui.tag` | once "we failed to name a real button vs someone clicked a wrapper" is an actual panel. |
 | `user.custom.*`, `user.custom_dropped` | `rum_users.profile_data` exists (TEXT) and is the natural home. Now safe to index: the domain is bounded (§4.10) and it rides one event per launch. |
 | `view.host` | with the first white-label tenant split. |
+| `error.component_stack` **v5** | **bag — but a queried bag** (A6): the boundary-error detail view reads it per row with `->>`, which needs no index. Promote to `rum_crash_events` only if grouping ever uses it; it is very high cardinality and raw. |
+| `device.battery_level`, `.battery_charging`, `.power_save` **v5** | no live column for any SDK. Promote with the first "does this crash only on low battery / power-save" panel, on the failure-row table; Android ships the same keys, so one promotion serves both (A10). |
+| `device.reduce_motion`, `.screen_reader`, `.font_scale` **v5** | once an accessibility-cohort panel exists. Rides one row per session, so `@>` filtering is cheap. ⚠ The last two are RN inventions (A11). |
 
 **`event.name` on `custom_event`** is the one bag verdict worth arguing against. It has **no column
 anywhere**, so the entire public `log()` surface collapses into one indistinguishable row type. The
@@ -1858,17 +2007,17 @@ SDK list, and build an ANR panel that shows an empty slice forever.
 
 | Table | Column | Why |
 |---|---|---|
-| `rum_crash_events` / `rum_errors` | `anr_duration_ms`, `hang_duration_ms`, `crash_thread`, `crash_is_main_thread` | **crash capture is JS-level only** (§10.3). A signal handler cannot read the JS carrier, so a native crash would carry no trace keys under any design settled here — and the whole `error.*` payload derives from a JS `Error`'s `name`/`message`/`stack`, none of which a signal handler has. |
+| `rum_crash_events` / `rum_errors` | `anr_duration_ms`, `crash_thread`, `crash_is_main_thread` (**v5:** `hang_duration_ms` leaves this row — `app.hang` fills it, §4.12) | **crash capture is JS-level only** (§10.3). A signal handler cannot read the JS carrier, so a native crash would carry no trace keys under any design settled here — and the whole `error.*` payload derives from a JS `Error`'s `name`/`message`/`stack`, none of which a signal handler has. |
 | `rum_crash_events` | `error_context`, `product_id`, `error_code`, `user_action`, `severity_level` | Android's positional `trackError` overloads. RN ships one method, `captureError(err, context)`, and `context` carries them at no fixed spelling. Android's own contract lists them as "omitted when unset". |
 | `rum_crash_events` | `crash_hash` | ⚠ **`NOT NULL` with no producer, by design.** Backend-computed from §4.8's key. If this document did not say so, routing `app.crash` here would hit a non-nullable column nothing computes. |
-| `rum_ui_interactions` | `ui_direction` | **`ui.type`'s domain is closed at `click` \| `tap`.** Gesture capture — swipes, scrolls, pinches, long-presses — is out of scope (§10.5). Do not size this column for RN. |
+| `rum_ui_interactions` | `ui_direction` | **`ui.type`'s domain is closed at `click` \| `tap` \| `long_press`** (v5 adds the last). Directional gestures — swipes, scrolls, pinches — are out of scope (§10.5), and `long_press` has no direction. Do not size this column for RN. |
 | `rum_ui_interactions` | `ui_screen` | dropped deliberately — §4.6. `view.name` on Context supersedes it. |
-| `rum_screen_durations` | every row, on web | web has never emitted `screen.duration` and will not. Native-only, and **deprecated** (§4.11). |
+| `rum_screen_durations` | every row, from v5 | web never emitted `screen.duration`; native stops at v5 (§4.11). |
 | `rum_sessions` | `duration_ms`, `event_count`, `metric_count`, `screen_count`, `visited_screens`, `is_first_session`, `total_sessions` | all derived, work-list 13 / §4.2. |
 | `rum_performance_events` | `memory_usage_mb`, `memory_pressure_level`, `memory_timestamp` | RN emits `memory_usage` on the **metric** path; these live on the **event** path. §10.4. |
 | `rum_performance_metrics` / `rum_performance_events` | `frame_build_duration_ms`, `frame_raster_duration_ms`, `frame_type`, `frame_dropped`, `frame_total_duration_ms`, `frame_severity` | §7.1 — a model difference, not a spelling one. |
 | `rum_devices` | `fingerprint` | **deliberately stopped** — §1.2. Zero analytics readers; sending it corrupts device identity. |
-| `rum_navigations` / `rum_navigation_events` | `has_arguments` | RN's `navigation.*` has four keys, Android's six. Not adopted, and `navigation` is deprecated anyway. |
+| `rum_navigations` / `rum_navigation_events` | every column, from v5 | `navigation` is removed in v5 (§4.11). |
 | `rum_trace_spans`, `rum_user_actions` | every column | RN writes neither table. Both have **0 rows**; the trace surface lands on `rum_telemetry_events` and `rum_http_requests` (§6.1). |
 | — | any `resource.*` or `long_task` key | §10.2. |
 | — | `metric_name = 'page_load'` | §10.2. |
@@ -1898,9 +2047,14 @@ produced, so no chart exists on any of them.
 
 ### 10.3 Deferred as one bundle — native-module capture
 
-`device.cpu_cores`, `device.thermal_status`, `device.battery_level`, `device.battery_charging`,
-`device.power_save`, `app.exit` and its keys, native signal/ANR/hang capture, and a synchronous
-crash store.
+`device.cpu_cores`, `device.thermal_status`, `app.exit` and its keys, native signal/ANR/hang
+capture, and a synchronous crash store.
+
+**v5 amendment (A10): battery and power-save leave this bundle.** `device.battery_level`,
+`.battery_charging` and `.power_save` turned out to need no module of the SDK's own —
+`react-native-device-info`, already an optional peer, reads all three — so they ship on RN failure
+rows from v5 (§4.7). Thermal state stays deferred: no source short of a native module. And
+**JS-thread** hangs ship as `app.hang` (§4.12); native-thread hang and ANR capture stays here.
 
 The rule: **anything needing the SDK's first native module defers, and is priced against the whole
 native surface rather than against itself.** That cost is not "write a module" — it is a change to how
@@ -1936,9 +2090,11 @@ Each is a live trap, and each is kept for a stated reason:
 
 One line each, so a reader stops looking:
 
-- **Gesture capture beyond activation** (swipes, scrolls, pinches, long-presses, and Android's
-  `ui.direction`). Needs `react-native-gesture-handler` as a new native peer plus a pointer state
-  machine on web.
+- **Gesture capture beyond activation** (swipes, scrolls, pinches, and Android's `ui.direction`).
+  **v5: long-press leaves this list** — it is an activation (`onLongPress`), shipped as
+  `ui.type: long_press` under `autoTrackTaps` (§4.6). A swipe is not: it has no single activating
+  prop to wrap, so capturing one needs `react-native-gesture-handler` as a new native peer — and a
+  direction model — plus a pointer state machine on web.
 - **Native-module HTTP capture** — intercepting OkHttp / NSURLSession so traffic that never touches
   JS reaches `rum_http_requests`. Adds **no key, no column, no type and no cardinality** — only a
   second source populating an existing table. A capture-coverage roadmap item, not a wire-contract one.
@@ -2019,7 +2175,7 @@ discarded behind a success response.
 
 ---
 
-## 12. Migration — twenty discontinuities across two releases
+## 12. Migration — twenty discontinuities across two releases, plus v5's five
 
 Every one of these is separable **only by `sdk.version`**, which is work-list item 6. ⚠ And
 `sdk.version` is **absent from the bag on 4,145,161 of 4,146,233 historical rows** (the empty-bag rows
@@ -2078,10 +2234,27 @@ the SDK, not after.** Until it does, replay inflates every aggregate.
 
 ⚠ **And two volume changes that are not breaks but will look like incidents:** `http.request` volume
 goes **zero → everything** for axios-based tenants (§4.4), and `screen.duration` volume goes **up**
-for React Navigation consumers at the exact moment it is deprecated (§4.11).
+for React Navigation consumers at the exact moment it is deprecated (§4.11) — and stops at v5.
 
 Of the twenty, **only #2 and the six `@deprecated` public fields are visible to a consumer at compile
 time.** Everything else surfaces at runtime or in a chart.
+
+### 12.6 v5 — notice only (B1–B5)
+
+None of these needs backend work; each changes what an existing series means at the v5 boundary, and
+each is separable only by `sdk.version` (work-list 6).
+
+| # | Change | Effect |
+|---|---|---|
+| B1 | **`navigation` and `screen.duration` removed**, with the `deprecatedScreenFeeds` opt | both tables stop receiving RN rows. Retires `navigation.from_screen`, the SDK's **only explicit wire null** — omission becomes universal, which strengthens C1. §4.11 |
+| B2 | **`view.name` is the route path joined root to leaf with `/`** | every nested-navigator consumer's value changes (`Details` → `HomeTab/Details`); Expo Router file paths are kept verbatim. A dashboard keyed on a nested leaf name breaks; top-level screens are unchanged. §4.5.1 |
+| B3 | **`view.action_count` under `autoTrackTaps`** | changes from "named taps" to "every `onPress`/`onLongPress` activation" for opted-in apps — the column's meaning is per app. §4.5, §4.6 |
+| B4 | **`sdk.drop_reason: rejected` gets its first producer** | a 4xx drops the batch (§2.5); a 429 is requeued and the draining `flush()` lands per §2.4. Already ruled here — an arrival-shape change only |
+| B5 | **Consent-gated processes skip `app.start`** | an app constructed with `enabled: false` never emits `app.start` for that process, so `COUNT(app.start)` undercounts launches in consent-gated apps. A launch measured without consent is not one to fabricate later |
+
+A web app that never wired `attachNavigation` also changes shape: v4's history path never ran
+(§4.0's swallowed `TypeError`), and v5 wires it, so it emits one `view` row per `pushState`/`popstate`
+route where v4 emitted none. More rows, not different ones.
 
 ---
 
@@ -2197,6 +2370,11 @@ Re-derive it as: §3.3 (39 Context) + §4.1 (4) + §4.2 (3) + §4.3 (1) + §4.0'
 
 Cross-check against v3: **52 of v3's 73 keys survive, 21 are retired, 73 are new.** 52 + 73 = 125.
 
+**v5: 130** = 125 − §4.11's 7 (`navigation.*` 4 + `screen.*` 3) + 12 new: §4.13 (2 — `task.name`,
+`task.outcome`) + §4.12 (1 — `hang.duration_ms`) + §4.5 (2 — `view.ready_*`) + §4.7 (4 —
+`error.component_stack` + three battery keys) + §4.1 (3 — accessibility). `app.start.js_ready_ms`,
+`error.breadcrumbs` and `span.duration_ms` are not new keys; v5 widens where they ride.
+
 ### A.6 Confirming what RN actually sends today
 
 215 RN 3.0.0 events landed in `rum_telemetry_events` between 2026-08-30 and the introspection date,
@@ -2207,17 +2385,70 @@ pre-§3.4's removal; and `http.host`/`http.path` are present on all 67 http rows
 
 ---
 
-## Appendix B — the four names needing sign-off
+## Appendix B — names and keys needing sign-off
 
 Anything not on `ALLOWED_NAMES` is rewritten to `custom_event` on the SDK side and dropped on ingest,
 so these are a hard dependency for everything above.
+
+### B.1 v4 — four names
 
 | Name | Type | Builds | What it carries | Section |
 |---|---|---|---|---|
 | **`view`** | event | both | the ten view-exit keys — and it is **web's entire name-level ask** | §4.5 |
 | **`ui.interaction`** | event | both | the eight `ui.*` keys. Replaces `user.interaction`, which Android already retires; columns are **already built** | §4.6 |
 | **`app.error`** | event | both | handled / non-fatal errors, so `COUNT(event_name='app.crash')` stays an honest unfiltered crash count | §4.7 |
-| **`app.start`** | event | both | one nullable attribute; carries the `launch` trace root and is how app launches are counted | §4.3 |
+| **`app.start`** | event | both | one native-only attribute; carries the `launch` trace root and is how app launches are counted | §4.3 |
 
 **Retired in the same release:** `user.interaction`, `page_load`, `resource_timing`, `long_task`.
 **Net allowlist delta: zero.**
+
+### B.2 v5 — two names, fourteen asks (A1–A14)
+
+**Allowlist: +`task.complete`, +`app.hang`; −`navigation`, −`screen.duration`. Net zero again.**
+One sign-off line per ask. ⚠ marks an **RN invention** — no sibling SDK ships it, so there is no
+precedent to borrow and the line is a decision, not a confirmation. Every unmarked ask either
+borrows a sibling's name or value (A1 Flutter; A4's `hang.duration_ms`, A9's finalized side, A10, A13 Android; A11's
+`reduce_motion` iOS) or extends an RN-owned enum or rule already in this contract (A2, A3, A5,
+A7, A8, A12, A14). Each ask links the ticket that
+made the decision.
+
+| # | Ask | § | Source | Sign-off |
+|---|---|---|---|---|
+| A1 | **`task.complete`** on the allowlist — Tier 1, both builds — with `task.name` (string ≤255, unnormalized) and `task.outcome` (`completed`\|`failed`\|`abandoned`). Flutter's name and keys | §4.13 | [#141](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/141) | ☐ |
+| A2 | `trace.root_type` gains **`custom`** (5 values), minted by a manual span when no root is live | §6.1, §6.2 | [#141](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/141) | ☐ |
+| A3 | **`span.duration_ms` on a root `task.complete`** — flagged exception to §6.3's "children only": the end is declared, not derived | §6.1, §6.3 | [#141](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/141) | ☐ |
+| A4 | **`app.hang`** on the allowlist — Tier 2, both builds — with `hang.duration_ms` and `error.breadcrumbs` (exception to "`app.crash` only"); **not** in `view.error_count` / `sdk.error_count`. **Plus the sibling-wide processor fix**: read dotted `hang.duration_ms` (work-list 16) | §4.12 | [#143](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/143) | ☐ |
+| A5 | `error.source` gains **`boundary`** (6 values), on `app.error` only | §4.7 | [#144](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/144) | ☐ |
+| A6 | ⚠ **`error.component_stack`** — string ≤2000, raw, omitted when absent, boundary `app.error` rows only. Needs a column or a bag that is queried | §4.7, §8.3 | [#144](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/144) | ☐ |
+| A7 | On `view`: **`view.ready_time`** (int ms, omitted when not marked) and **`view.ready_outcome`** (`ready`\|`abandoned`, learned set) | §4.5, §8.2 | [#145](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/145) | ☐ |
+| A8 | Confirm **`app.start.js_ready_ms` is native-only**, always omitted on web | §4.3 | [#145](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/145) | ☐ |
+| A9 | `session.reason` gains **`manual`** — 4 values on `session.started`, 3 on `session.finalized` (the finalized side is Android-aligned) | §4.1, §4.2 | [#148](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/148) | ☐ |
+| A10 | **§10.3 amendment**: `device.battery_level` (int 0–100), `.battery_charging`, `.power_save` on RN `app.crash` / `app.error` / `app.hang` — native only, omitted rather than sentinel; Android's keys. Thermal stays deferred | §4.7, §10.3 | [#149](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/149) | ☐ |
+| A11 | On `session.started`: `device.reduce_motion` (both builds; iOS's key), plus ⚠ **`device.screen_reader`** and ⚠ **`device.font_scale`** (native only) — **RN inventions** | §4.1 | [#149](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/149) | ☐ `reduce_motion` ☐ `screen_reader` ☐ `font_scale` |
+| A12 | Native `ui.name_source` gains **`test_id`** — §4.6 said native has exactly two values | §4.6 | [#150](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/150) | ☐ |
+| A13 | `ui.type` becomes `click`\|`tap`\|**`long_press`** — native, opt-in only; Android's value, so the column already holds it | §4.6, §10.5 | [#154](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/154) | ☐ |
+| A14 | **§4.5.1 ladder amendment**: a route change is always a boundary; rank-beats-order only within one route. No key change — a semantic change to when `view` rows emit | §4.5.1 | [#169](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/169) (ruled in [#152](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/152)) | ☐ |
+
+**Already emitted.** All of A1–A14 ship in the v5 code, so until each is signed the corresponding rows
+or keys are dropped on ingest. The remaining v5 changes — B1–B5 — are notice only (§12.6).
+
+---
+
+## Appendix C — open rulings (C1–C10)
+
+Behaviour v5 **already ships**. Each is recorded as **open**, with the current behaviour stated; a
+ruling that flips one becomes an SDK implementation ticket and does not block the release. Source:
+[#152](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/152).
+
+| # | Question | v5 ships | The alternative | Status |
+|---|---|---|---|---|
+| C1 | **Omit vs explicit `null`** for `view.loading_time`, `vital.target`, `vital.load_state` and `view.ready_time` — §4.5 / §5.3 type the first three `Null? yes`; `view.ready_time` (v5) joins them as a key with no value when unmarked | **omitted** — the universal discipline, with no exception left after B1 | ship a literal `null` | open |
+| C2 | **The fourth null cause of `view.loading_time`** — §4.5 says four, its outcome domain has three null-bearing values | **three** causes (`no_activity`, `capped`, `abandoned`); nothing invented | name a fourth | open |
+| C3 | **`skipped_consumer_set` vs `injected_inbound_malformed`** on a malformed consumer `traceparent` — §0.3 / §6.5 | **skip**, never-strip | inject over it | open — population 0 |
+| C4 | **Empty `traceHostAllowlist`** — §6.5's ladder read literally fires rung 1 | **no `traceparent.outcome`** ("absent means not traced") | stamp `skipped_off_allowlist` on every row | open |
+| C5 | **`ui.target` cap** — §4.6's table caps 64 while its prose exempts rung 1 | rung 1 and native `trackTap` names **uncapped**; `test_id` (v5) and rungs 2–5 capped 64 | cap everything at 64 | open |
+| C6 | **Native `ui.tag`** — never-null, but native has no element | the constant **`"native"`**; `ui.x`/`ui.y` `0` | empty | open |
+| C7 | **`frame.target_fps`** | **snapped** to {60, 90, 120} — a 144 Hz panel reports 120 | the measured rate raw | open |
+| C8 | **`device.cpu_abi`** | the **first** supported ABI | the full list | open |
+| C9 | **`sdk.error_count`** — §4.2 types it only as `int` | **`app.crash` + `app.error`**, in step with `view.error_count` (`app.hang` excluded) | crashes only | open |
+| C10 | **An `app.build_id` column** — work-list 7 | ships on the Context block, **bag only** | promote to `rum_crash_events.app_build_id` | open |
