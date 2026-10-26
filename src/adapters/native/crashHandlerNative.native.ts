@@ -1,5 +1,5 @@
 import { Telemetry } from "../../core/telemetry";
-import { buildErrorAttributes, captureConsole } from "../crashCapture";
+import { buildErrorAttributes, captureConsole, isBoundaryCaught } from "../crashCapture";
 
 export type CrashHandlerOptions = { captureConsole?: boolean };
 
@@ -16,7 +16,8 @@ export class CrashHandlerNative {
                     const defaultHandler = ErrorUtils.getGlobalHandler?.();
                     ErrorUtils.setGlobalHandler((error: any, isFatal?: boolean) => {
                         // `error.fatal` is native-only — the web build never passes it (§4.7).
-                        this.telemetry.log("app.crash", buildErrorAttributes("global_handler", error, {
+                        // A boundary-caught error is already a row (#166); RN's handler still runs.
+                        if (!isBoundaryCaught(error)) this.telemetry.log("app.crash", buildErrorAttributes("global_handler", error, {
                             fatal: !!isFatal,
                         }));
                         if (defaultHandler) defaultHandler(error, isFatal);   // keep RN red screen in dev
@@ -24,6 +25,7 @@ export class CrashHandlerNative {
                 }
 
                 const onRejection = (event: any) => {
+                    if (isBoundaryCaught(event?.reason)) return;
                     this.telemetry.log("app.crash", buildErrorAttributes("unhandled_rejection", event?.reason, {
                         fallbackMessage: "Unhandled Promise Rejection",
                         fatal: false,

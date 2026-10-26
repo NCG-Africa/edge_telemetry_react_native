@@ -152,6 +152,18 @@ export abstract class TelemetryBase {
     }
 
     /**
+     * `<EdgeErrorBoundary>`'s path (#166) — `app.error` with `error.source: boundary` and the
+     * component stack. Not for host code: `captureError()` is the public way to report.
+     * @internal
+     */
+    async captureBoundaryError(error: unknown, componentStack?: string | null) {
+        const inst = await this.instancePromise;
+        const { capComponentStack } = await import("./adapters/crashCapture");
+        const context = componentStack ? { "error.component_stack": capComponentStack(componentStack) } : undefined;
+        return inst.captureError(error, context, "boundary");
+    }
+
+    /**
      * Wired per entry (#160): each build imports its own crash handler. Shared code importing
      * the native one is what made the web build resolve it at runtime and reject.
      */

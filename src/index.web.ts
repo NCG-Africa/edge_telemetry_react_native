@@ -12,3 +12,6 @@ export { memoryStore, type MemoryStoreOpts } from "./core/memoryStore";
 export type { BeforeSend } from "./core/beforeSend";
 export type { SpanHandle } from "./index.base";
 export type { TaskOutcome } from "./adapters/manualSpans";
+
+// The React module (#166) — on the main entry, no subpath.
+export { EdgeErrorBoundary, type EdgeErrorBoundaryProps } from "./react";

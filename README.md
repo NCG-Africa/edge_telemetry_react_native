@@ -447,6 +447,24 @@ try {
 It takes `unknown` on purpose — real `catch` blocks receive strings and axios rejection objects,
 and you shouldn't have to prove to TypeScript that it's an `Error` first.
 
+### Render errors — `<EdgeErrorBoundary>`
+
+```tsx
+import { EdgeErrorBoundary } from "@nathanclaire/edge-telemetry-sdk";
+
+<EdgeErrorBoundary
+  telemetry={telemetry}
+  fallback={({ error, resetError }) => <ErrorScreen onRetry={resetError} />}   // or a plain element
+  onError={(error, info) => { /* runs after the SDK reports; a throw here is ignored */ }}
+>
+  <App />
+</EdgeErrorBoundary>
+```
+
+A caught render error is sent once, as `app.error` with `error.source: "boundary"` and
+`error.component_stack`. React's own console report and the global error handlers skip it, so
+turning on `captureConsole` does not double-count it.
+
 ### Two event names, and why it matters
 
 | | `app.crash` | `app.error` |
@@ -791,6 +809,8 @@ import {
   type TelemetryOpts,
   type BeforeSend,
   type SpanHandle, type TaskOutcome,
+  EdgeErrorBoundary,        // the render-error boundary
+  type EdgeErrorBoundaryProps,
   type Store, type SyncStore, type AsyncStore, type StoreRead, type StoreWrite,
   type MemoryStoreOpts,
 } from "@nathanclaire/edge-telemetry-sdk";

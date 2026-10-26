@@ -1,5 +1,5 @@
 import { Telemetry } from "../../core/telemetry";
-import { buildErrorAttributes, captureConsole } from "../crashCapture";
+import { buildErrorAttributes, captureConsole, isBoundaryCaught } from "../crashCapture";
 
 export type CrashHandlerOptions = { captureConsole?: boolean };
 
@@ -13,6 +13,8 @@ export class CrashHandler {
         return new Promise((resolve, reject) => {
             try {
                 window.onerror = (msg, _url, _line, _col, error) => {
+                    // React's dev build rethrows a boundary-caught error here; it is already a row (#166).
+                    if (isBoundaryCaught(error)) return;
                     // ⚠ `error === undefined` is the cross-origin instrumentation gap, not a
                     // mystery Error: a bundle served from a CDN without CORS headers yields the
                     // classic "Script error." with no stack. Naming it beats collapsing it.
@@ -22,6 +24,7 @@ export class CrashHandler {
                 };
 
                 window.onunhandledrejection = (event) => {
+                    if (isBoundaryCaught(event.reason)) return;
                     this.telemetry.log("app.crash", buildErrorAttributes("unhandled_rejection", event.reason, {
                         fallbackMessage: "Unhandled Promise Rejection",
                     }));

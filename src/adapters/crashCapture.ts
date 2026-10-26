@@ -14,7 +14,8 @@ export type ErrorSource =
   | "unhandled_rejection"
   | "cross_origin"        // web only: window.onerror with error === undefined
   | "console"             // now on app.error
-  | "reported";           // captureError()
+  | "reported"            // captureError()
+  | "boundary";           // <EdgeErrorBoundary> (#166) — on app.error, never app.crash
 
 // §4.7 caps. The stacktrace's 2000 is a tuning knob, not a contractual constant —
 // it may be tight for Hermes, where the bytecode offset is the whole signal.
@@ -42,6 +43,24 @@ function cap(value: string, max: number, frameBoundary = false): string {
     if (nl > 0) cut = cut.slice(0, nl);
   }
   return cut + TRUNCATED;
+}
+
+/** `error.component_stack` (#166): raw, same 2000 cap, cut on a line boundary like a stack. */
+export const capComponentStack = (stack: string): string => cap(stack, STACK_MAX, true);
+
+/**
+ * Errors an `<EdgeErrorBoundary>` has caught, filled in `getDerivedStateFromError` — the render
+ * phase, before React's own reporting runs. The global handlers and `captureConsole` skip
+ * these, so a boundary-caught error is **one row**, not two or three (#166). Module-level so
+ * every boundary and every `Telemetry` in the process share it; a `WeakSet`, so it holds
+ * nothing alive. A thrown primitive cannot be a key and is not deduped.
+ */
+const boundaryCaught = new WeakSet<object>();
+export function markBoundaryCaught(error: unknown): void {
+  if (error !== null && (typeof error === "object" || typeof error === "function")) boundaryCaught.add(error);
+}
+export function isBoundaryCaught(error: unknown): boolean {
+  return error !== null && (typeof error === "object" || typeof error === "function") && boundaryCaught.has(error);
 }
 
 /**
@@ -152,7 +171,9 @@ export function captureConsole(
 
   const guarded = (emit: (text: string) => void, orig: (...a: any[]) => void) =>
     (...args: any[]) => {
-      if (!inside) {
+      // React reports a caught error to console.error *with* the error object; the boundary
+      // already emitted it (#166).
+      if (!inside && !args.some(isBoundaryCaught)) {
         inside = true;
         try {
           emit(args.map(String).join(" "));

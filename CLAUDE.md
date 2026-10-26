@@ -56,6 +56,7 @@ src/
 ├── index.web.ts / index.native.ts        ← public entries: createTelemetry + types only (#159)
 ├── telemetryWeb.web.ts / telemetryNative.native.ts ← TelemetryWeb / TelemetryNative
 ├── index.base.ts                         ← TelemetryBase: shared delegation for both
+├── react.ts                              ← <EdgeErrorBoundary> — the React module, main entry, no JSX
 ├── core/
 │   ├── telemetry.ts       ← Telemetry: queue, batch, retry, session lifecycle, log/logMetric
 │   ├── breadcrumbs.ts     ← ring buffer (last 20) for error.breadcrumbs
@@ -829,7 +830,7 @@ behaviour change the SDK was never entitled to make.
 | | `app.crash` | `app.error` |
 |---|---|---|
 | Means | unhandled / fatal-ish | handled / non-fatal |
-| Producers | `ErrorUtils` / `window.onerror`, unhandled rejection | `captureError()`, opted-in `console.error` |
+| Producers | `ErrorUtils` / `window.onerror`, unhandled rejection | `captureError()`, opted-in `console.error`, `<EdgeErrorBoundary>` |
 | `error.breadcrumbs` | ✓ | — |
 | `error.fatal` | native only | — |
 
@@ -849,7 +850,8 @@ them** — the SDK's omitted-means-absent discipline is now universal.
 | Key | Rule |
 |---|---|
 | `error.type` | from **`error.name` only, never `constructor.name`** — minification turns `class PaymentError` into `"a"`, refragmenting grouping on every deploy. Cap 255; un-named classes report `"Error"` |
-| `error.source` | 5 values: `global_handler`, `unhandled_rejection`, `cross_origin` (web), `console`, `reported` |
+| `error.source` | 6 values: `global_handler`, `unhandled_rejection`, `cross_origin` (web), `console`, `reported`, `boundary` (#166) |
+| `error.component_stack` | `<EdgeErrorBoundary>` rows only. Raw, cap 2000, cut on a line boundary by the same truncator as the stack |
 | `error.message` | omitted when absent. Cap 1000 |
 | `error.stacktrace` | omitted when absent. **Raw and byte-for-byte** under the cap. Cap 2000, **tail-truncated on a frame boundary** |
 | `error.fatal` | **native only, omitted on web** — always `false` on `app.error` |
@@ -883,6 +885,20 @@ live root and correctly carries no trace keys at all.
 **`captureConsole` defaults off.** React's own dev-mode `console.warn` output was the dominant
 contributor to v3's crash count, which is what made "is my app crashing more this release?"
 unanswerable. Opted in, `console.error` becomes `app.error` and `console.warn` a breadcrumb.
+
+**`<EdgeErrorBoundary telemetry fallback? onError?>`** (`src/react.ts`, #166, decision #144) is the
+React module, exported from the **main entry** — no subpath, no Provider, no context; the instance
+is a prop. Written with no JSX so the build emits no `react/jsx-runtime` import the externals list
+would miss. A caught render error is `app.error`, `error.source: boundary` — **never** `app.crash`,
+the boundary handled it — via `TelemetryBase.captureBoundaryError()` (`@internal`; the public path
+stays `captureError()`). `fallback` is a node or `({ error, resetError })`; `onError` runs after the
+emit is started and its throw is swallowed.
+
+**One error, one row.** `getDerivedStateFromError` — the render phase, before React's own reporting
+— adds the error to a module-level `WeakSet` in `crashCapture.ts`; `captureConsole`, `window.onerror`
+/ `onunhandledrejection` and the native `ErrorUtils` handler skip a marked error. RN's own default
+handler still runs (the red box is the dev's). Rendered through `react-test-renderer` on both builds
+in `src/boundary.test.tsx` — **Seam 3**, which #171 and #174 reuse.
 
 ### `app.hang` — JS-thread stalls
 
@@ -1670,6 +1686,13 @@ above rather than defects.
   explicit name upgrades the *old* view in place and the route event then bounds it under that
   name. Call `screenStart()` from the screen's own effect, which React runs after the commit the
   route event follows; the ordering is the host's, and the ruling is literal by design.
+- **A thrown primitive is not deduped.** `throw "x"` inside a boundary cannot be a `WeakSet` key,
+  so if React or a global handler also reports it, it can be two rows. Throw `Error`s.
+- **React 18's caught-error console message carries no error object** (`"The above error occurred
+  in…"` as one string), so with `captureConsole` on it can add a `console` row beside the
+  `boundary` one. React 19 passes the error and is deduped.
+- **`error.source: boundary` and `error.component_stack` need backend sign-off** — a new enum
+  value and a new Tier C key.
 - **`app.hang` needs backend allowlist sign-off**, and the processor's `hang.duration_ms` read
   fix (contract ask A4). It is already in `ALLOWED_NAMES`.
 - **`hang.duration_ms` under-reports by up to one tick.** It is the timer's lateness; a stall
