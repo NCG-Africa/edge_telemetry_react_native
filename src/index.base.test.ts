@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from "vitest";
 import { TelemetryBase } from "./index.base";
-import { TelemetryWeb } from "./index.web";
-import { TelemetryNative } from "./index.native";
+import { TelemetryWeb } from "./telemetryWeb.web";
+import { TelemetryNative } from "./telemetryNative.native";
 
 // A fake core that records every call, so we can assert the base forwards verbatim.
 function fakeCore() {

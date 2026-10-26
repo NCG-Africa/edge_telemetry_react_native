@@ -746,9 +746,8 @@ import {
 } from "@nathanclaire/edge-telemetry-sdk";
 ```
 
-`TelemetryWeb` and `TelemetryNative` are also exported, but **use `createTelemetry()`** — it is
-the only path that validates your `apiKey` and your trace allowlist. Constructing a class
-directly skips both checks.
+`TelemetryWeb` and `TelemetryNative` are exported **as types only** (v5): `createTelemetry()` is
+the only way to construct one, so your `apiKey` and trace allowlist are always validated.
 
 > `TelemetryEvent`, `DeviceInfo`, `NetworkInfo` and `UserProfile` are documented in this README as
 > wire and return shapes, but are **not currently exported as types**. For a `beforeSend` hook,

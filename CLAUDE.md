@@ -53,7 +53,8 @@ No monorepo. One `src/` tree, split by platform at the file level:
 ```
 src/
 ├── createTelemetry.web.ts / .native.ts   ← factory + assertApiKey (bundler picks one)
-├── index.web.ts / index.native.ts        ← TelemetryWeb / TelemetryNative (public entries)
+├── index.web.ts / index.native.ts        ← public entries: createTelemetry + types only (#159)
+├── telemetryWeb.web.ts / telemetryNative.native.ts ← TelemetryWeb / TelemetryNative
 ├── index.base.ts                         ← TelemetryBase: shared delegation for both
 ├── core/
 │   ├── telemetry.ts       ← Telemetry: queue, batch, retry, session lifecycle, log/logMetric
@@ -117,7 +118,11 @@ await telemetry.log("checkout_started", { cart_value: 42 });
 telemetry.attachNavigation(navigationRef);   // native only, React Navigation ref
 ```
 
-`createTelemetry()` returns `TelemetryWeb` or `TelemetryNative`. **Every public method is
+`createTelemetry()` returns `TelemetryWeb` or `TelemetryNative`, and is **the only way to build
+one** (#159): both entries export the classes as **types only**, so `new TelemetryWeb()` from the
+package is a type error and the `apiKey` / `traceHostAllowlist` validation cannot be bypassed.
+The classes live in `telemetryWeb.web.ts` / `telemetryNative.native.ts`, which only the factory
+and tests import. **Every public method is
 `async`** — both classes lazily build the core `Telemetry` behind an `instancePromise`.
 
 ---
@@ -1410,8 +1415,6 @@ above rather than defects.
   than 2000 chars has no newline inside the budget, so that one cut lands mid-frame. The
   `\n… [truncated]` marker is what makes the case countable.
 - No top-level `location` in the envelope, though the contract allows one.
-- `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`
-  constructors still accept it as optional.
 - **`session.reason: "launch"` undercounts launches.** A resume emits no `session.started` at
   all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
   compensator and is not built — count launches from `app.start`, not from `session.reason`.
@@ -1530,8 +1533,6 @@ above rather than defects.
   the live enum's `injected_inbound_malformed` says *inject over a malformed inbound header*,
   never-strip says *skip*. RN ships the skip. Population is 0 rows either way; the other six
   rungs are settled.
-- A **direct `new TelemetryWeb()` / `new TelemetryNative()` skips the allowlist validation**,
-  the same gap `apiKey` already has — both are only enforced in the factory.
 - `traceparent.outcome` is **not** on §3.6's Tier A list, so `beforeSend` can delete or rewrite
   it (Tier C) — same status as `trace.root_type`, `span.start_time` and `span.duration_ms`.
 - `trace.root_type = interaction` is minted by every web click (#102) and every native
@@ -1566,9 +1567,9 @@ above rather than defects.
   be dropped by `JSON.stringify`. Wire-neutral — but a consumer passing
   `log("x", { "device.model": undefined })` used to blank the key and now leaves the real
   `device.model` in place, because the override never enters the bag.
-- **`sdk.platform` falls back to the bare `"react-native"`** for a direct `new Telemetry()` with no
-  entry-declared `platform`. That is the same gap `apiKey` and the allowlist already have: the
-  factory is the only supported construction path.
+- **`sdk.platform` falls back to the bare `"react-native"`** for a core `new Telemetry()` with no
+  entry-declared `platform` — reachable from tests only: core is not exported, and since #159
+  neither are the entry classes as values, so `createTelemetry()` is the sole public path.
 - **The 39-key assertion is per-build, not per-row.** `context.web.test.ts` and
   `context.native.test.ts` pin a clean anonymous `custom_event`; a row with a `buildId`, a
   `user.id`, an ephemeral `device.id` or a drop booked carries more of the 39, which is what

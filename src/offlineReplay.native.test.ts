@@ -50,7 +50,7 @@ describe("offline replay — native (#113)", () => {
         vi.stubGlobal("fetch", fetchMock);
         const store = seeded();
 
-        const { TelemetryNative } = await import("./index.native");
+        const { TelemetryNative } = await import("./telemetryNative.native");
         class Probe extends TelemetryNative { core() { return this.instancePromise; } }
         await new Probe({ apiKey: "edge_test", flushIntervalMs: 0, store }).core();
         await vi.waitFor(() => expect(recoveredBatches(fetchMock)).toBeGreaterThan(0));

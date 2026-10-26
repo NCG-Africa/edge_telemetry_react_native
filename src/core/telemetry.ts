@@ -20,8 +20,8 @@ export type { Orientation };
 // v3 wire contract constants
 // §3.3 / §12's item 10 — `react-native-{Platform.OS}`, joining Flutter's `flutter-{os}` shape.
 // ⚠ NOT a closed three-value enum: RN-Windows emits `react-native-windows`. The bare
-// framework name survives only for a direct `new Telemetry()` with no entry-declared
-// platform, which is the same gap `apiKey` already has.
+// framework name survives only for a core `new Telemetry()` with no entry-declared
+// platform — tests only: neither core nor the entry classes are constructible publicly (#159).
 const sdkPlatform = (platform?: string) => platform ? `react-native-${platform}` : "react-native";
 const SDK_VERSION = PKG_VERSION;       // sdk.version follows the published package version
 const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min of inactivity (iOS ADR-004)

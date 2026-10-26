@@ -31,7 +31,7 @@ describe("Store injection — shared core", () => {
 describe("Store injection — the web build", () => {
     it("defaults to the synchronous localStorage store", async () => {
         silenceConsole();
-        const { TelemetryWeb } = await import("./index.web");
+        const { TelemetryWeb } = await import("./telemetryWeb.web");
         // Subclass access to the protected instance promise — legal, and cheaper than
         // widening the public API just so a test can look.
         class Probe extends TelemetryWeb { core() { return this.instancePromise; } }
@@ -46,7 +46,7 @@ describe("Store injection — the web build", () => {
 
     it("lets a consumer override it through createTelemetry", async () => {
         silenceConsole();
-        const { TelemetryWeb } = await import("./index.web");
+        const { TelemetryWeb } = await import("./telemetryWeb.web");
         class Probe extends TelemetryWeb { core() { return this.instancePromise; } }
 
         const store = memoryStore({ seed: { "device.id": "device_1_abc" } });

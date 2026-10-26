@@ -1,4 +1,4 @@
-import { TelemetryWeb } from "./index.web";
+import { TelemetryWeb } from "./telemetryWeb.web";
 import type { SyncStore } from "./core/store";
 import type { BeforeSend } from "./core/beforeSend";
 import { normalizeAllowlist } from "./adapters/traceHeader";

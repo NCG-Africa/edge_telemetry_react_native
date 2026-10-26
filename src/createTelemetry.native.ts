@@ -1,4 +1,4 @@
-import { TelemetryNative } from "./index.native";
+import { TelemetryNative } from "./telemetryNative.native";
 import type { Store } from "./core/store";
 import type { BeforeSend } from "./core/beforeSend";
 import { normalizeAllowlist } from "./adapters/traceHeader";
