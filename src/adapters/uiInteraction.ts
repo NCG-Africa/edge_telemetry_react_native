@@ -184,7 +184,7 @@ export function resolveUiName(
  * later or not at all.
  */
 export function uiAttributes(a: {
-    type: "click" | "tap";
+    type: "click" | "tap" | "long_press";
     target: string;
     nameSource: UiNameSource;
     tag: string;

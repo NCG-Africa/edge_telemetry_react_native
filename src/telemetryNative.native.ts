@@ -8,6 +8,8 @@ import type { BeforeSend } from "./core/beforeSend";
 export class TelemetryNative extends TelemetryBase {
     /** ≥3 named taps in a 1000 ms window, keyed on the name — see `trackTap`. */
     private readonly tapRage = new RageTracker(RAGE_WINDOW_MS);
+    /** Explicit `trackTap()` calls so far — an auto row is skipped when one fired inside its handler. */
+    private explicitTaps = 0;
 
     constructor(opts?: {
         apiKey?: string;
@@ -27,6 +29,7 @@ export class TelemetryNative extends TelemetryBase {
         // §4.8 — symbolication resolve key. Omitted when unset, never `""`, never derived.
         buildId?: string;
         enabled?: boolean;
+        autoTrackTaps?: boolean;
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -123,6 +126,9 @@ export class TelemetryNative extends TelemetryBase {
             this.resolved = telemetry;
             return telemetry;
         })();
+
+        // #174 — opt-in only: off means the JSX runtime is never touched.
+        if (opts?.autoTrackTaps) this.autoTrackTaps().catch(err => debug.warn("Native autoTrackTaps failed:", err));
 
         // app_lifecycle on foreground/background (#30)
         this.attachAppLifecycle().catch(err => {
@@ -254,6 +260,7 @@ export class TelemetryNative extends TelemetryBase {
      * mutation signal, so any dead-click *rate* must filter to the web build.
      */
     async trackTap(name: string) {
+        this.explicitTaps++;
         const at = Date.now();
         const named = typeof name === "string" && name.trim() !== "";
         const attrs = uiAttributes({
@@ -280,5 +287,51 @@ export class TelemetryNative extends TelemetryBase {
         // an unhandled rejection.
         return Promise.resolve(this.resolved ? emit(this.resolved) : this.instancePromise.then(emit))
             .catch((err: unknown) => debug.warn("Native ui.interaction failed:", err));
+    }
+
+    /**
+     * #174's hook. Patches `react/jsx-runtime`, `react/jsx-dev-runtime` and `React.createElement`
+     * — the module exports objects, which is what Babel's `(0, _jsxRuntime.jsx)` reads — so an
+     * element with a function `onPress`/`onLongPress` gets a wrapper that emits on activation.
+     *
+     * Names never come from text or accessibility labels (`"Pay John Kamau KES 5,000"`):
+     * `trackTap(name)` > `testID` (normalized like web rung 2, cap 64) > `unnamed`. Identity is
+     * snapshotted and the interaction root minted **before** the handler runs; the row is emitted
+     * after it, and skipped if the handler called `trackTap` itself.
+     */
+    private async autoTrackTaps() {
+        const { patchElementFactories } = await import("./adapters/native/autoTaps.native");
+        const { normalizeUiName } = await import("./adapters/uiInteraction");
+        // `.default` is the CJS `module.exports` behind an interop namespace — the object
+        // Babel-compiled code actually reads; the namespace itself is a copy.
+        const load = (p: Promise<any>) => p.then((ns) => ns?.default ?? ns).catch(() => undefined);
+        const modules = await Promise.all([
+            load(import("react/jsx-runtime")), load(import("react/jsx-dev-runtime")), load(import("react")),
+        ]);
+        patchElementFactories(modules, {
+            explicitCount: () => this.explicitTaps,
+            prepare: (kind, testID) => {
+                const inst = this.resolved;
+                if (!inst) return undefined;   // before init: no core to snapshot from
+                const at = Date.now();
+                const name = typeof testID === "string" ? normalizeUiName(testID) : "";
+                const span = inst.trace.interactionSpan(at);
+                const snap = inst.snapshot(at);
+                return () => {
+                    const attrs = uiAttributes({
+                        type: kind,
+                        target: name || UI_UNNAMED,
+                        nameSource: name ? "test_id" : "none",
+                        tag: "native",
+                        // Name-keyed and off for `unnamed`, as for `trackTap` — and recorded only
+                        // for a row that ships, so a handler's own `trackTap` is not counted twice.
+                        // Unreachable on a long press (3 holds of ≥500 ms cannot fit 1000 ms).
+                        rage: !!name && kind === "tap" && this.tapRage.record(name, at),
+                    });
+                    inst.log("ui.interaction", { ...span, ...attrs }, snap)
+                        .catch((err: unknown) => debug.warn("Native auto ui.interaction failed:", err));
+                };
+            },
+        });
     }
 }

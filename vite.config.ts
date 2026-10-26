@@ -35,6 +35,8 @@ export default defineConfig(({ mode }) => ({
         rollupOptions: {
             external: [
                 "react",
+                "react/jsx-runtime",
+                "react/jsx-dev-runtime",
                 "react-dom",
                 "@react-native-async-storage/async-storage",
                 "react-native",

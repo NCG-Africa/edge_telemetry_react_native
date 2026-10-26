@@ -28,6 +28,9 @@ export type TelemetryOpts = {
     buildId?: string;
     // #172 — consent. `false` constructs dark: nothing is sent or stored until `enable()`.
     enabled?: boolean;
+    // #174 — native only, constructor-only, default false: capture every `onPress` /
+    // `onLongPress` by patching the JSX runtime. Dark by default, like the trace allowlist.
+    autoTrackTaps?: boolean;
 };
 
 // Deliberately loose: `apiKey` is the *credential*, and under AUTH_MODE=jwt it is

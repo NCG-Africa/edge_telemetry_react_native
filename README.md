@@ -172,6 +172,7 @@ Everything is passed to `createTelemetry()`. There are no runtime setters for th
 | `enabled` | `boolean` | `true` | `false` starts the SDK dark until [`enable()`](#respect-a-users-opt-out). |
 | `sessionSampleRate` | `number` | `1` | [Fraction of sessions to keep](#sample-a-percentage-of-sessions), `0`–`1`. Constructor-only. |
 | `traceHostAllowlist` | `string[]` | `[]` (empty) | [Hosts allowed to receive `traceparent`](#connect-your-traces-to-your-backend). Constructor-only. |
+| `autoTrackTaps` | `boolean` | `false` | **Native only.** [Capture every `onPress` / `onLongPress`](#native--or-capture-every-press-automatically). Constructor-only. |
 | `store` | `Store` | platform default | Replaces `localStorage` / `AsyncStorage`. Mostly for tests. |
 | `sender` | `Sender` | platform default | Replaces the HTTP transport. Mostly for tests. |
 
@@ -449,6 +450,20 @@ The name ships uncapped and unnormalized, exactly as you wrote it.
 
 **The tap's identity is captured at the tap, not at send.** A tap that navigates is still
 attributed to the screen it happened on, not the one it opened.
+
+### Native — or capture every press automatically
+
+```typescript
+const telemetry = createTelemetry({ apiKey, endpoint, autoTrackTaps: true });   // native only
+```
+
+Opt in and every `onPress` sends a `ui.interaction` (`ui.type: "tap"`), and every `onLongPress` a
+`"long_press"` — no annotation needed. It fires when a press activates, never on a scroll.
+
+Names come from **`testID` only** (normalized: `"Checkout Button!"` → `checkout_button`), never
+from the button's text or accessibility label, which is where names and amounts live. A press with
+no `testID` arrives as `unnamed` — add one to name it. A `trackTap()` call inside the handler
+wins, and nested pressables produce one row.
 
 ---
 

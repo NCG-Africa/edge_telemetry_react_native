@@ -146,6 +146,7 @@ type TelemetryOpts = {
   traceHostAllowlist?: string[]; // bare hosts, exact, ports ignored; EMPTY by default (§6.4)
   buildId?: string;         // app.build_id — symbolication join key; omitted when unset (§4.8)
   enabled?: boolean;        // #172 consent — false constructs dark until enable(); default true
+  autoTrackTaps?: boolean;  // #174 NATIVE ONLY, constructor-only, default false — onPress/onLongPress capture
 };
 ```
 
@@ -681,6 +682,28 @@ either way.
 **Native rage is gated to named taps**, and its identity is the **name**, not a node: on native the
 name *is* the element. Running it over `unnamed` would invent a frustration event that never
 happened, so ⚠ **a low native rage count means few named taps, not happy users**.
+
+**`autoTrackTaps`** (#174, decisions #150/#154) — opt-in, **native-only, constructor-only, default
+`false`**: upgrading must not mutate every consumer's JSX runtime on day one. `TelemetryNative`
+patches the **exports objects** of `react/jsx-runtime`, `react/jsx-dev-runtime` (`jsx`/`jsxs`/
+`jsxDEV`) and `react` (`createElement`) — `.default` behind the import interop, because Babel's
+`(0, _jsxRuntime.jsx)` reads properties at call time — so an element with a function `onPress`
+(`ui.type: tap`) or `onLongPress` (`long_press`, Android's value) gets a wrapper
+(`adapters/native/autoTaps.native.ts`). Both runtimes are in `vite.config.ts`'s externals.
+
+| Rule | Why |
+|---|---|
+| fires on **activation**, not touch | a scroll drag emits nothing; actionability *is* the prop, so still no `surface` |
+| ladder: `trackTap` (`edge_action`) > `testID` (`test_id`, `normalizeUiName`, cap 64) > `unnamed` (`none`) | **never text or accessibility labels** — `"Pay John Kamau KES 5,000"` is exactly what a label rung ships |
+| wrapper cache keyed on **(handler, testID)** | stable `onPress` identity across renders (no `React.memo` breakage), and a handler shared by list rows keeps each row's name |
+| per-event `WeakSet` across both props | `AppButton → Pressable` is one row; the innermost wrapper is called first and claims it |
+| snapshot + interaction root **before** the handler, row **after** | a navigating tap lands on its own screen, and the requests it fires are its children |
+| skipped when the handler called `trackTap` | explicit intent wins (counted by `explicitTaps`) |
+| rage name-keyed over `test_id`/`edge_action`, recorded only for a row that ships | the shared `tapRage`; unreachable on a long press, so not run |
+
+The factories are patched **once per process**; the wrappers report to a module-level sink, so a
+second opted-in instance takes over rather than stacking a second wrapper. Rendered through Seam 3
+in `src/autoTaps.native.test.tsx`.
 
 ### Trace and span
 
@@ -1594,9 +1617,18 @@ above rather than defects.
 - **`ui.interaction` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
   `user.interaction` came off the list in the same change.
-- **Native interaction coverage equals native instrumentation coverage.** `trackTap(name)` is the
-  only producer, so `view.action_count` counts *named taps*, not taps; an uninstrumented screen is
-  indistinguishable from an unused one. Same reason `ui.rage` is gated to `edge_action`.
+- **Native interaction coverage equals native instrumentation coverage — unless `autoTrackTaps`.**
+  Without it `trackTap(name)` is the only producer, so `view.action_count` counts *named taps*;
+  with it, every `onPress`/`onLongPress` activation, so the column **changes meaning per app**.
+- **`autoTrackTaps` emits for non-tap `onPress` callbacks too** — map markers, third-party
+  libraries. Real user presses in practice; accepted residue.
+- **`autoTrackTaps`'s dedupe needs an object event.** A component that calls `onPress()` with no
+  argument through two wrapped layers emits two rows. Pressable always passes one.
+- **`autoTrackTaps` only reaches code that reads the factories at call time** — Babel's CJS
+  output does; an ESM build of a dependency that bound `jsx` at import does not. Elements created
+  before init are wrapped but emit nothing until the core resolves.
+- **`ui.name_source: test_id` and `ui.type: long_press` on native need backend sign-off** (§4.6
+  says native has two name sources; §10.5's `ui.type` domain grows).
 - **`trackTap` ships `ui.tag: "native"` and `ui.x`/`ui.y` of `0`.** All three are never-null in
   §4.6 and native has no element and no coordinate; a `PressEvent` carries coordinates but
   `trackTap(name)` deliberately takes none. Flag it if the backend wants the tag column empty
