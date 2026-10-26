@@ -833,7 +833,7 @@ setUserContact(email?: string, phone?: string): Promise<void>
 ```
 
 > `fullName`, `firstName`, `lastName`, `avatar`, `createdAt` and `updatedAt` are `@deprecated` and
-> go away in v5. `fullName` still works — it's what `user.name` is built from. The other five
+> go away in v6. `fullName` still works — it's what `user.name` is built from. The other five
 > reach no wire key at all.
 
 ### Native only
@@ -1075,6 +1075,17 @@ whose real wait is one of those reports `no_activity`.
 ---
 
 ## Upgrading
+
+### To v5
+
+**Read [`docs/migration-v5.md`](docs/migration-v5.md) before you deploy.** It ships inside the npm
+package.
+
+Of v5's six breaking changes, **exactly one breaks a build**: `TelemetryWeb` / `TelemetryNative`
+are types only, so construct through `createTelemetry()`. The rest move a chart — `navigation` and
+`screen.duration` are gone (read `view`), nested `view.name`s are joined paths (`HomeTab/Details`),
+a route change always bounds a view, the native-module packages run from your install, and a 4xx
+drops its batch instead of persisting it.
 
 ### To v4
 

@@ -326,20 +326,20 @@ export interface DeviceInfo {
 
 export interface UserProfile {
     userId?: string;
-    /** @deprecated Removed in v5 — use `identify({ name })`. Still the source of `user.name`. */
+    /** @deprecated Removed in v6 — use `identify({ name })`. Still the source of `user.name`. */
     fullName?: string;
-    /** @deprecated Removed in v5 — never reached the wire; `identify()` could not set it. */
+    /** @deprecated Removed in v6 — never reached the wire; `identify()` could not set it. */
     firstName?: string;
-    /** @deprecated Removed in v5 — never reached the wire; `identify()` could not set it. */
+    /** @deprecated Removed in v6 — never reached the wire; `identify()` could not set it. */
     lastName?: string;
     email?: string;
     phone?: string;
-    /** @deprecated Removed in v5 — no column and no reader; `user.avatar` is off the wire (§3.4). */
+    /** @deprecated Removed in v6 — no column and no reader; `user.avatar` is off the wire (§3.4). */
     avatar?: string;
     customAttributes?: Record<string, any>;
-    /** @deprecated Removed in v5 — in-memory only, so it meant "first identify() this process" (§3.4). */
+    /** @deprecated Removed in v6 — in-memory only, so it meant "first identify() this process" (§3.4). */
     createdAt?: number;
-    /** @deprecated Removed in v5 — byte-identical to `createdAt` for any one-identify() app (§3.4). */
+    /** @deprecated Removed in v6 — byte-identical to `createdAt` for any one-identify() app (§3.4). */
     updatedAt?: number;
 }
 

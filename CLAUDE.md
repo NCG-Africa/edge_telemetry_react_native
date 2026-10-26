@@ -19,7 +19,9 @@ Two documents outrank this one, and only within their scope:
 
 `docs/migration-v4.md` outranks nothing — it is the **consumer-facing** release note, restating
 contract §12's twenty discontinuities, the columns RN will never write and the five deliberate
-Android departures for someone upgrading. When it and this file disagree, both are the bug.
+Android departures for someone upgrading. `docs/migration-v5.md` is its v5 sibling — #156 §1's six
+breaking changes, §12.6's B1–B5, the A1–A14 ingest gate and the sibling departures. When either
+note and this file disagree, both are the bug.
 
 Anything else — architecture, conventions, why a decision went the way it did, what is still
 broken — lives here. When the code and this doc disagree, the code won and this doc is the
@@ -34,7 +36,7 @@ Native Web). It captures performance, errors, network requests, device/network c
 navigation, then ships them to the shared **EdgeTelemetryProcessor** backend — the same
 backend the Android (Ionic) and iOS SDKs feed.
 
-- npm: `@nathanclaire/edge-telemetry-sdk`, currently **v4.0.0**. (v2 was the unscoped
+- npm: `@nathanclaire/edge-telemetry-sdk`, currently **v5.0.0**. (v2 was the unscoped
   `edge-telemetry-sdk`, now deprecated.)
 - Bundler: **Vite** (`vite build` → `dist/`). Not `react-native-builder-bob`.
 - Dual entry: web (`dist/index.web.js|.cjs`) and native (`dist/index.native.js|.cjs`),
@@ -1246,7 +1248,8 @@ objects therefore take the same `stringifyOrDrop` path the bag does. That also s
 primitive-values rule on this path: the collector renders a raw array through `fmt.Sprint` as Go
 map syntax anyway, so JSON is strictly the better of the two shapes.
 
-**Six public profile fields are `@deprecated` but live**, for removal in v5 — `fullName`,
+**Six public profile fields are `@deprecated` but live**, for removal in v6 (deferred from v5 so it
+was not a seventh break) — `fullName`,
 `firstName`, `lastName`, `avatar`, `createdAt`, `updatedAt`. Their wire keys are gone outright
 (§3.4): `user.fullName` duplicated `user.name`; `firstName`/`lastName`/`avatar` had no column and
 no reader anywhere, and `identify()` could never set the first two; `createdAt`/`updatedAt` were
