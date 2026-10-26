@@ -63,6 +63,12 @@ type View = {
     // was live when the screen opened, not the one live when the user left it. Held here
     // rather than read at exit precisely so the later root cannot claim it.
     span: TraceAttributes;
+    /**
+     * The route-level names this view has been bound to, per rung (#169). Rank-beats-order
+     * holds only *within one route*: a route event naming a different route than the one
+     * recorded here is a navigation, whatever rung the view's display name came from.
+     */
+    routes: Partial<Record<"route" | "url", string>>;
 };
 
 /** `view_{ms}_{16hex}` (§3.3). No platform suffix — a view never leaves its process. */
@@ -98,6 +104,7 @@ export class ViewManager {
             // just above this one — so the initial view is its child and a web hard load
             // reports `launch`, never `navigation` (§6.2).
             span: telemetry.trace?.viewSpan(now) ?? {},
+            routes: {},
         };
     }
 
@@ -126,13 +133,11 @@ export class ViewManager {
      * - a **higher** rung re-stamps the name and never changes `view.id` — that is what
      *   "rank beats order" means, and it is why a route name arriving after a URL-derived
      *   one upgrades the view in place instead of splitting it in two;
-     * - a **lower** rung is ignored outright, whenever it arrives — ⚠ *including its
-     *   boundary*. A host that mixes rung 1 with `attachNavigation` therefore pins the view
-     *   to the `screenStart` name until the next `screenStart`: route changes stop minting
-     *   successors, and dwell keeps accruing under the explicit name. That is what §4.5.1's
-     *   "a lower rung arriving later does not overwrite a higher one" costs, and the two
-     *   rungs describing one navigation (the upgrade window) is the case it exists for.
-     *   It needs a contract ruling, not a local invention — see CLAUDE.md's known gaps;
+     * - a **lower** rung does not overwrite the name — **but a route change is always a
+     *   boundary** (#169, the v5 ladder ruling). Rank-beats-order applies only *within one
+     *   route*, the upgrade window where two rungs describe one navigation: a route or URL
+     *   event naming a different route than the one this view was bound to emits `view` and
+     *   mints a successor, so `screenStart()` can no longer pin a view across route changes;
      * - the **same** rung naming a different screen is a genuine navigation, so it ends the
      *   view and mints a successor.
      *
@@ -140,6 +145,11 @@ export class ViewManager {
      * must not receive "Step {id} of {id}". The caller normalizes rung 3, not this method.
      */
     async navigate(name: string, source: ViewNameSource): Promise<void> {
+        if (source === "route" || source === "url") {
+            const bound = this.view.routes[source];
+            if (bound !== undefined && bound !== name) { await this.exit("route_change", name, source); return; }
+            this.view.routes[source] = name;
+        }
         const rank = RANK[source], current = RANK[this.view.source];
         if (rank < current) return;
         if (rank > current) { this.view.name = name; this.view.source = source; return; }
@@ -293,6 +303,11 @@ export class ViewManager {
             // A view start *extends* the live root; with none live it mints a `navigation`
             // one (§6.2). Its exit does not extend anything (§6.7).
             span: this.telemetry.trace?.viewSpan(now) ?? {},
+            // A route change binds the successor to the route that minted it; a resume or a
+            // rotation keeps the user on the same screen, so it keeps the same routes too.
+            routes: successorLoadType === "route_change"
+                ? (source === "route" || source === "url" ? { [source]: name } : {})
+                : { ...prev.routes },
         };
     }
 

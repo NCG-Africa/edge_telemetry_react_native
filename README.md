@@ -290,10 +290,10 @@ one.
 await telemetry.screenStart("Checkout");   // native only — names the current view
 ```
 
-> **Warning — don't mix `screenStart()` with `attachNavigation()`.** Screen names have ranks:
-> an explicit name outranks a route name, which outranks a URL. A lower-ranked name never
-> overwrites a higher-ranked one — so a single `screenStart()` call pins the view to that name
-> and later route changes stop opening new views. Pick one approach per screen.
+> **Mixing `screenStart()` with `attachNavigation()` is fine (v5).** Screen names have ranks — an
+> explicit name outranks a route name, which outranks a URL — but a route change always opens a
+> new view, so a `screenStart()` name only renames the screen it was called on. Call it from that
+> screen's own effect.
 
 ### Reading the results
 
@@ -914,7 +914,7 @@ backend configuration question, not an SDK one.
 | No `memory_usage` on web | Correct — it's native-only, by design. |
 | No dead-click data on native | Correct — no DOM, so no mutation signal. Filter dead-click rates to web. |
 | `navigation` / `screen.duration` stopped arriving | Removed in v5. Use the `view` event — `view.time_spent` is the dwell. |
-| A screen's name is stuck on an old value | You mixed `screenStart()` with `attachNavigation()`. An explicit name outranks a route name and pins the view. |
+| The *previous* screen got my `screenStart()` name | It ran before the route event. Call it from the new screen's own `useEffect`. |
 | `view.loading_time` is null | Read `view.loading_time_outcome` — it tells you which of the three reasons applies. |
 
 ### Requests the SDK can't see

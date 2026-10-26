@@ -424,10 +424,18 @@ not charged as dwell to whatever screen was left open.
 
 | Arriving rung vs. current | Result |
 |---|---|
+| a `route` / `url` event naming a **different route** than the one this view is bound to | **always a navigation** (#169): emit `view`, mint a successor — whatever rung the display name came from |
 | higher | re-stamps `view.name`; **`view.id` unchanged** — an upgrade, not a navigation |
-| lower | ignored outright, whenever it arrives |
+| lower | name ignored (its route is recorded for the row above) |
 | same, different name | a genuine navigation: emit the `view` event, mint a successor |
 | same, same name | nothing |
+
+**Rank-beats-order applies only within one route** — the v5 ladder ruling (#169, amends §4.5.1,
+no wire change). Each view records the `route` and `url` names it was bound to; a route event
+naming a different one is a boundary even when the view's display name came from `screenStart()`.
+That is what stops an explicit name pinning a view across route changes. A route-change successor
+is bound to the route that minted it; a `resume` / `session_rotation` successor keeps the
+departing view's bindings, because the user never left the screen.
 
 Rungs 1 and 2 are **never normalized** — a host naming a screen `"Step 2 of 3"` must not receive
 `"Step {id} of {id}"`. Rung 3 (web history only) reuses `normalizeRoute()` and drops the query.
@@ -1586,13 +1594,15 @@ above rather than defects.
 - `trace.root_type = interaction` is minted by every web click (#102) and every native
   `trackTap(name)` (#103) — but on native only where the consumer called it, so an unattributed
   native request means *an uninstrumented tap*, not *no action*.
-- **A lower rung swallows its own boundary.** §4.5.1's "a lower rung arriving later does not
-  overwrite a higher one" is implemented literally, so a host that calls `screenStart()` once and
-  then relies on `attachNavigation` pins the view to that explicit name: route changes stop minting
-  successors and dwell keeps accruing under the stale name. The rule exists because two rungs
-  normally describe *one* navigation (the upgrade window), and §4.5 separately makes route change an
-  unconditional boundary — the two readings conflict and it needs a contract ruling, not a local
-  invention. Until then: call `screenStart()` per screen, or don't mix it with `attachNavigation`.
+- **A `screenStart()` that lands *before* its own route event names the departing view.** The
+  ladder ruling (#169) judges a route event against the route bound when the explicit name
+  landed — so if the new screen's mount effect runs before React Navigation's `state` event, the
+  explicit name upgrades the *old* view in place and the route event then bounds it under that
+  name. Call `screenStart()` from the screen's own effect, which React runs after the commit the
+  route event follows; the ordering is the host's, and the ruling is literal by design.
+- **On web, a URL change bounds the view even when the route name does not change** (#169) — a
+  tab or filter that pushes a new path inside one React Navigation screen now splits the view.
+  Same rule as any route change; a query-only change normalizes to the same name and does not.
 
 - **`device.cpu_abi` is the *first* supported ABI, not the list.** `supportedAbis()[0]` is the
   primary one — the answer to "is this a 32-bit device", which is what the key exists for — and a

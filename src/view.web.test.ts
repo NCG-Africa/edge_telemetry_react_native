@@ -249,3 +249,33 @@ describe("#96 view lifetime boundaries (web)", () => {
     expect(view.attributes!["event.name"]).toBeUndefined();
   });
 });
+
+describe("#169 a route change always bounds a view (web)", () => {
+  it("a URL naming a different route bounds a view the route rung named; within one route it is ignored", async () => {
+    const { t, sent } = launch();
+    const inst = await (t as any).instancePromise;
+    await inst.enterView("/home", "url");
+    await inst.enterView("Home", "route");     // upgrade window: higher rung, same view
+    await inst.enterView("/home", "url");      // same route again: nothing
+    await t.log("custom_event", { at: "home" });
+    await inst.enterView("/cart", "url");      // a lower rung, but a different route: a boundary
+    await t.log("custom_event", { at: "cart" });
+    await t.flush();
+
+    const views = attrsOf(sent, "view");
+    expect(views.map((v) => [v["view.name"], v["view.name_source"]])).toEqual([["Home", "route"]]);
+    const [home, cart] = attrsOf(sent, "custom_event");
+    expect(home["view.id"]).toBe(views[0]["view.id"]);
+    expect([cart["view.name"], cart["view.id"] !== home["view.id"]]).toEqual(["/cart", true]);
+  });
+
+  it("an explicit name no longer pins the view across route changes", async () => {
+    const { t, sent } = launch();
+    const inst = await (t as any).instancePromise;
+    await inst.enterView("Home", "route");
+    await inst.enterView("Welcome", "explicit");
+    await inst.enterView("Cart", "route");
+    await t.flush();
+    expect(attrsOf(sent, "view").map((v) => v["view.name"])).toEqual(["Welcome"]);
+  });
+});

@@ -227,3 +227,46 @@ describe("#96 the background boundary and the background flush (native)", () => 
     expect(views[1]["view.id"]).not.toBe(views[0]["view.id"]);
   });
 });
+
+describe("#169 a route change always bounds a view", () => {
+  it("after screenStart, a later route change emits the explicit view's row and mints a successor", async () => {
+    const { t, sent } = await launch();
+    const nav = navRef();
+    await t.attachNavigation(nav.ref);
+
+    nav.go("Home");
+    await vi.advanceTimersByTimeAsync(0);
+    await (t as any).screenStart("Home — signed in");   // upgrade window: same route, higher rung
+    await t.log("custom_event", { at: "home" });
+    nav.go("Cart");                                       // a different route: always a boundary
+    await vi.advanceTimersByTimeAsync(0);
+    await t.log("custom_event", { at: "cart" });
+    await t.flush();
+
+    const views = attrsOf(sent, "view");
+    expect(views.map((v) => [v["view.name"], v["view.name_source"]])).toEqual([["Home — signed in", "explicit"]]);
+    const [home, cart] = attrsOf(sent, "custom_event");
+    expect(home["view.id"]).toBe(views[0]["view.id"]);
+    expect(cart["view.name"]).toBe("Cart");
+    expect(cart["view.id"]).not.toBe(home["view.id"]);
+  });
+
+  it("within one route the ladder is unchanged: higher re-stamps in place, a repeat is nothing", async () => {
+    const { t, sent } = await launch();
+    const nav = navRef();
+    await t.attachNavigation(nav.ref);
+    nav.go("Home");
+    await vi.advanceTimersByTimeAsync(0);
+    await t.log("custom_event");
+    await (t as any).screenStart("Dashboard");
+    nav.go("Home");                       // a re-render on the same route
+    await vi.advanceTimersByTimeAsync(0);
+    await t.log("custom_event");
+    await t.flush();
+
+    expect(attrsOf(sent, "view")).toEqual([]);
+    const [a, b] = attrsOf(sent, "custom_event");
+    expect(a["view.id"]).toBe(b["view.id"]);
+    expect(b["view.name"]).toBe("Dashboard");
+  });
+});
