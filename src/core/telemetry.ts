@@ -2,6 +2,7 @@ import { debug, isDev } from "./debug";
 import { isRejected, statusOf } from "../adapters/batch";
 import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
 import { TraceManager } from "../adapters/traceManager";
+import { HangDetector } from "../adapters/hangDetector";
 import { SpanRegistry, spanAttributes, taskName, type OpenSpan, type PersistedSpan, type TaskOutcome } from "../adapters/manualSpans";
 import { BreadcrumbBuffer } from "./breadcrumbs";
 import { buildErrorAttributes, type ErrorSource } from "../adapters/crashCapture";
@@ -146,6 +147,8 @@ const ALLOWED_NAMES = new Set<string>([
     "app.start",
     // ⚠ #164's manual span terminal — needs backend allowlist sign-off before it ships.
     "task.complete",
+    // ⚠ #165's JS-thread stall — needs backend allowlist sign-off before it ships.
+    "app.hang",
     "frame_render_time", "memory_usage",
     "LCP", "FCP", "CLS", "INP", "TTFB",
     // ⚠ `page_load`, `resource_timing` and `long_task` are **retired, not deferred**
@@ -419,6 +422,9 @@ export class Telemetry {
     // must reuse it, or a second call double-subscribes and doubles every vital row. Unset on
     // native, which emits no vitals ever.
     public webVitals?: { start(): Promise<void>; stop(): void };
+    // #165's stall detector. Off under `__DEV__` — a debugger pause is not a hang — and
+    // otherwise driven by the lifecycle emitter, so it only ticks in the foreground.
+    public readonly hangs?: HangDetector;
 
     private networkInfoHandler: NetworkInfoHandler;
     private deviceInfoHandler: DeviceInfoHandler;
@@ -533,6 +539,7 @@ export class Telemetry {
         // the initial view can parent to it. A view that minted its own root instead would
         // make a web hard load report `trace.root_type = navigation` (§6.2).
         this.trace = new TraceManager(opts?.traceLaunchStart, opts?.traceHostAllowlist);
+        if (!isDev()) this.hangs = new HangDetector(this);
         // The initial view opens here, at SDK init — so no row can ever precede a view (§4.5).
         this.views = new ViewManager(this);
 
@@ -1252,8 +1259,12 @@ export class Telemetry {
             // consumer-controlled, and a 1-2 KB blob on a high-volume event is how the
             // transport budget gets spent by the SDK's own doing. Stringified, because
             // `stringAttr` renders a real array through `fmt.Sprint` as Go map syntax.
-            if (eventName === 'app.crash') {
+            // `app.hang` carries the trail too (#165) — what led to the freeze — but it is not
+            // an error: no counter, no forced flush, no eviction reprieve.
+            if (eventName === 'app.crash' || eventName === 'app.hang') {
                 attributes['error.breadcrumbs'] = this.breadcrumbs.toJSON();
+            }
+            if (eventName === 'app.crash') {
                 crashed = true;
             } else {
                 this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
@@ -1679,6 +1690,7 @@ export class Telemetry {
         if (this.intervalId) clearInterval(this.intervalId);
         this.memoryHandler?.stop?.();
         this.webVitals?.stop();   // #160 — no vital may logMetric after shutdown
+        this.hangs?.stop();
         await this.flush();
     }
 

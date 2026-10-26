@@ -677,6 +677,7 @@ All of this starts in the constructor. You don't call anything to enable it.
 | `network_change` | Connectivity type changes | Both |
 | `user.profile.update` | `identify()` | Both |
 | `task.complete` | A [span](#time-a-journey) ends, or its session ends first | Both |
+| `app.hang` | The JS thread froze for 2–60 s in the foreground (not in dev builds) | Both |
 | `custom_event` | Any `log()` name not in this table | Both |
 
 ### Metrics

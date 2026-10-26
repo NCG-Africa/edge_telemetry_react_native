@@ -74,6 +74,7 @@ src/
 │   ├── viewManager.ts     ← the View entity: view.id/view.name, the `view` event, the ladder
 │   ├── loadingTime.ts     ← shared network-settle: view.loading_time + the 4-value outcome
 │   ├── traceManager.ts    ← §6 trace/span: carrier, the roots, three tiers, the outcome ladder
+│   ├── hangDetector.ts    ← #165 JS-thread stall detector: the 1 s tick, the stall maths
 │   ├── manualSpans.ts     ← #164 open-span registry: bounds, supersede, persisted shape
 │   ├── traceHeader.ts     ← §6.4/§6.5 pure half: allowlist, `traceparent` parse/format, header I/O
 │   ├── navigationRef.ts   ← React Navigation ref listener + root→leaf route-path join, shared
@@ -667,7 +668,7 @@ its child and **a web hard load is `launch`, never `navigation`**. Web's launch 
 **not the same interval** — do not compare native and web launch envelopes.
 
 **Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request`, `ui.interaction`, `task.complete`. Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
-`app.crash`, `app.error` and `custom_event`. ⚠ `custom_event` is the one place RN goes
+`app.crash`, `app.error`, `custom_event` and `app.hang` (read at its last good tick, not at emit). ⚠ `custom_event` is the one place RN goes
 past Android, flagged as an invention. **Tier 3 is trace-free**: *all metrics*, plus
 `app_lifecycle`, `network_change`, the session events and `user.profile.update`. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
 invite a `GROUP BY` over a number that was never attributable — and the join would look valid.
@@ -882,6 +883,27 @@ live root and correctly carries no trace keys at all.
 **`captureConsole` defaults off.** React's own dev-mode `console.warn` output was the dominant
 contributor to v3's crash count, which is what made "is my app crashing more this release?"
 unanswerable. Opted in, `console.error` becomes `app.error` and `console.warn` a breadcrumb.
+
+### `app.hang` — JS-thread stalls
+
+`adapters/hangDetector.ts`, one module on both builds (#165, decision #143): a self-rescheduling
+**1 s** `setTimeout` measured on `performance.now()`. A tick that fires **≥ 2 s** past its schedule
+emits `app.hang` with `hang.duration_ms` = that lateness — the interval itself is never booked —
+and `error.breadcrumbs`. **No stack**: by the time anything can look, the frozen code has
+returned. All three numbers (`HANG_TICK_MS`, `HANG_THRESHOLD_MS`, `HANG_SUSPENSION_MS`) are
+internal constants; `stallMs()` is the pure maths with its own test.
+
+| Rule | Why |
+|---|---|
+| foreground only — `AppLifecycleEmitter.onState` calls `hangs.setActive()` on **every** call, the seed included | background suspension is not a freeze the user sat through |
+| off under `__DEV__` (`isDev()`), the detector is never even constructed | a debugger pause is not a hang |
+| lateness > **60 s** dropped | a sleeping device or frozen tab is a suspension, not a 4-hour hang |
+| attributed to the **last good tick** — its timestamp, `LogSnapshot` and `trace.annotate()` | the row lands on the screen and action where the freeze began, not where the thread woke |
+| Tier 2: annotate, never mint | §6.3 |
+| normal batch: no forced flush, no eviction reprieve, **not** in `view.error_count` / `sdk.error_count` | jank must not move the error rates; `isErrorName()` stays a closed two-name list |
+
+`stop()` is idempotent and resets the baseline, so a resume starts a fresh one; `shutdown()` calls
+it, and so will `disable()` (#172). Asserted at the seam on both builds in `src/hang.test.ts`.
 
 ### Symbolication — `app.build_id` and the stack payload
 
@@ -1320,6 +1342,7 @@ the original name as `event.name`. Currently emitted:
 | `network_change` | connectivity type transition |
 | `user.profile.update` | `identify()` |
 | `task.complete` | a manual span ends, or its session finalizes first (`abandoned`) (#164) |
+| `app.hang` | a JS-thread stall of 2–60 s, in the foreground, outside `__DEV__` (#165) |
 | `custom_event` | any non-allowlisted `log()` name |
 | `frame_render_time` | **metric** — p95 per window; the window closes at 10s **or at a view boundary** (§5.1) |
 | `memory_usage` | **metric** — resident MB, **native only**, sampled every 30 s (§5.2) |
@@ -1647,6 +1670,16 @@ above rather than defects.
   explicit name upgrades the *old* view in place and the route event then bounds it under that
   name. Call `screenStart()` from the screen's own effect, which React runs after the commit the
   route event follows; the ordering is the host's, and the ruling is literal by design.
+- **`app.hang` needs backend allowlist sign-off**, and the processor's `hang.duration_ms` read
+  fix (contract ask A4). It is already in `ALLOWED_NAMES`.
+- **`hang.duration_ms` under-reports by up to one tick.** It is the timer's lateness; a stall
+  that began mid-interval is partly absorbed by the wait the timer would have done anyway. It
+  never over-reports, and a 2.5 s freeze can read as anything from 1.5 s (dropped) up.
+- **A hang that never ends is never reported** — the row is emitted by the tick that wakes up. A
+  freeze the OS kills (iOS watchdog, Android ANR dialog → force-close) leaves no row; that is
+  native capture, which this SDK does not have.
+- **`app.hang` reuses `error.breadcrumbs`** for its trail, though it is not an error — one key,
+  one column, the same JSON shape.
 - **`task.complete` needs backend allowlist sign-off**, plus `trace.root_type: custom` and
   `span.duration_ms` on a root row (#164's contract asks). It is already in `ALLOWED_NAMES`.
 - **A resumed span's `view.name` is `"unknown"`.** `view.id` is frozen and persisted, but the
