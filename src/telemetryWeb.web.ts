@@ -88,6 +88,7 @@ export class TelemetryWeb extends TelemetryBase {
             await telemetry.resumeOrStartSession()
                 .catch(err => debug.warn("Web session resume failed:", err));
 
+            this.resolved = telemetry;
             return telemetry;
         })();
 
@@ -115,7 +116,8 @@ export class TelemetryWeb extends TelemetryBase {
         });
         this.attachBfcacheRestore().catch(err => {
             debug.log("Web attachBfcacheRestore errors", err);
-        });        this.attachCrossTabSync().catch(err => {
+        });
+        this.attachCrossTabSync().catch(err => {
             debug.log("Web attachCrossTabSync errors", err);
         });
     }

@@ -73,7 +73,8 @@ src/
 │   ├── crashCapture.ts    ← §4.7 error surface: error.* keys, app.crash vs app.error
 │   ├── viewManager.ts     ← the View entity: view.id/view.name, the `view` event, the ladder
 │   ├── loadingTime.ts     ← shared network-settle: view.loading_time + the 4-value outcome
-│   ├── traceManager.ts    ← §6 trace/span: carrier, three roots, three tiers, the outcome ladder
+│   ├── traceManager.ts    ← §6 trace/span: carrier, the roots, three tiers, the outcome ladder
+│   ├── manualSpans.ts     ← #164 open-span registry: bounds, supersede, persisted shape
 │   ├── traceHeader.ts     ← §6.4/§6.5 pure half: allowlist, `traceparent` parse/format, header I/O
 │   ├── navigationRef.ts   ← React Navigation ref listener + root→leaf route-path join, shared
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
@@ -145,9 +146,10 @@ type TelemetryOpts = {
 };
 ```
 
-Methods (both classes, all return Promises):
+Methods (both classes, all return Promises — except the three span methods, which are sync):
 
 ```ts
+startSpan(name, attrs?) → { end({outcome?, attributes?}) } / withSpan(name, fn, attrs?) / endSpan(name, outcome?, attrs?)
 log(event, data?) / flush() / shutdown()
 identify({userId?, name?, email?, phone?, avatar?, customAttributes?})  // emits user.profile.update
 setUserId / setUserProfile / setUserDetails / updateUserProfile
@@ -655,6 +657,7 @@ process, which is the hazard that actually exists here. `ViewManager` is owned t
 | `view` | at view **entry**, when no root is live | `navigation` |
 | `http.request` | at **send**, when no root is live | `request` |
 | `ui.interaction` | at **every** click — the one unconditional mint | `interaction` |
+| `task.complete` | at span **start**, when no root is live (#164) | `custom` |
 
 ⚠ **A click mints unconditionally**, replacing whatever root was live rather than joining it: a
 tap is a new user action by definition, which is what makes the request a tap fires a child of the
@@ -663,7 +666,7 @@ its child and **a web hard load is `launch`, never `navigation`**. Web's launch 
 `performance.timeOrigin`, native's at SDK `initialize()`; neither is a fork time and the two are
 **not the same interval** — do not compare native and web launch envelopes.
 
-**Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request`, `ui.interaction`. Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
+**Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request`, `ui.interaction`, `task.complete`. Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
 `app.crash`, `app.error` and `custom_event`. ⚠ `custom_event` is the one place RN goes
 past Android, flagged as an invention. **Tier 3 is trace-free**: *all metrics*, plus
 `app_lifecycle`, `network_change`, the session events and `user.profile.update`. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
@@ -682,6 +685,44 @@ not the one that closed it. Its wire `timestamp` is the exit and its `span.start
 so **a navigation root's row arrives after its own children**. On RN that is the normal case.
 
 **`span.duration_ms` is Tier 1 children only** — a root's is derived server-side at query time.
+⚠ **`task.complete` is the flagged exception** (#164): it ships the key on root *and* child,
+because a manual span's end is declared, not derivable from its children.
+
+#### Manual spans — `startSpan` / `withSpan` / `endSpan` → `task.complete`
+
+`adapters/manualSpans.ts` (the registry) + `Telemetry.startSpan/endSpan` + `TelemetryBase` (#164,
+decision #141). One primitive absorbs iOS `RumAction`/`RumTimer` and Flutter tasks; **no second
+carrier** — `TraceManager.manualSpan()` is `attach("custom")`, so a span joins the live root
+(its start extending the idle clock like any span start) or mints a `custom` root. **No
+nesting**: a span is a leaf, and a request inside it parents to the root — JS has no context stack.
+
+**One row at the terminal**, no start row: `task.name` (unnormalized, cap 255), `task.outcome`
+(`completed` | `failed` | `abandoned`), `span.duration_ms`, the Tier 1 keys frozen at **start**,
+and the row's `timestamp` is the end. `view.id`/`session.id` ride a `LogSnapshot` taken at start,
+`view.name` is resolved by lookup as usual. Caller attributes (start ∪ end) are spread **under**
+the SDK keys and anything in the `task`/`span`/`trace`/`parent`/`rum` namespaces is dropped first,
+so a nested `{ span: { id } }` cannot flatten into a forgery either.
+
+**The three methods are synchronous** — the freeze has to happen at the call. That is why the
+cached resolved core (`resolved`) moved from `TelemetryNative` up to `TelemetryBase` and both
+entries set it; before init, a call chains onto `instancePromise` and freezes emit-time identity
+(`at` is still the call time). Misuse never throws: blank name, a 33rd open span
+(`MAX_OPEN_SPANS`), unknown/double end are inert and reported through `debug()`. Starting an open
+name **supersedes** it — the old span is dropped without a row, and its handle can no longer close
+the successor (`take(name, only)`).
+
+**`abandoned` is emitted only at finalize**, under the session it was frozen to, ended at
+`lastActivity` like `session.duration_ms` — navigation and background are not abandonment. The
+rows go out *before* `session.finalized`, with a `finalizing` flag that keeps them out of `log()`'s
+expiry check (re-entering it would rotate the expired session again). Open spans persist in the
+`telemetry_session` record (attrs as a JSON string, so a cycle cannot break the record) and are
+closable by name after a resume.
+
+A `startSpan` on an **already-expired** session triggers the rotation itself and freezes *after*
+it (`span.ready`), so a journey begun after a long idle belongs to the new session instead of
+being `abandoned` by the very next row. `startSpan` refreshes `lastActivity`; it is **not** an
+action — `view.action_count` counts `ui.interaction` only. Asserted at the seam on both builds in
+`src/spans.test.ts`.
 
 **Expiry is 2 s idle / 10 s cap**, Android's numbers, as **internal constants and never
 `TelemetryOpts` surface**: `injected_expired` exists so the numbers are falsifiable, so ship
@@ -1278,6 +1319,7 @@ the original name as `event.name`. Currently emitted:
 | `app.start` | once per process at init — the `launch` root, and §4.3's launch compensator |
 | `network_change` | connectivity type transition |
 | `user.profile.update` | `identify()` |
+| `task.complete` | a manual span ends, or its session finalizes first (`abandoned`) (#164) |
 | `custom_event` | any non-allowlisted `log()` name |
 | `frame_render_time` | **metric** — p95 per window; the window closes at 10s **or at a view boundary** (§5.1) |
 | `memory_usage` | **metric** — resident MB, **native only**, sampled every 30 s (§5.2) |
@@ -1605,6 +1647,19 @@ above rather than defects.
   explicit name upgrades the *old* view in place and the route event then bounds it under that
   name. Call `screenStart()` from the screen's own effect, which React runs after the commit the
   route event follows; the ordering is the host's, and the ruling is literal by design.
+- **`task.complete` needs backend allowlist sign-off**, plus `trace.root_type: custom` and
+  `span.duration_ms` on a root row (#164's contract asks). It is already in `ALLOWED_NAMES`.
+- **A resumed span's `view.name` is `"unknown"`.** `view.id` is frozen and persisted, but the
+  retired-name ring is in memory, so a span closed after a relaunch resolves its id to nothing.
+  The id still joins to that view's own `view` row.
+- **Spans are per tab on web, and the session record is not.** A tab persisting its open spans
+  overwrites another tab's, so after a reload only the last-writing tab's spans resume; the
+  cross-tab `storage` sync (#161) does not merge them.
+- **A superseded span emits nothing.** `abandoned` is reserved for "the session ended first", so
+  a restarted name loses its predecessor silently — count restarts in host code if they matter.
+- **A span outliving the 10 s root cap still reports its root's ids**, frozen at start — later
+  requests mint their own root (#141), so a long journey's `rum.action.id` holds the span and
+  the requests in its first ten seconds only.
 - **Nested `view.name`s changed shape in v5** (#170): v4 shipped the leaf (`Details`), v5 the
   joined path (`HomeTab/Details`). A dashboard keyed on a nested leaf name breaks at the cutover;
   top-level screens are unchanged. A ref without `getRootState()` falls back to the leaf.

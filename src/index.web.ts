@@ -10,3 +10,5 @@ export { memoryStore, type MemoryStoreOpts } from "./core/memoryStore";
 
 // The scrubbing hook (#93) — public so a consumer can type their beforeSend.
 export type { BeforeSend } from "./core/beforeSend";
+export type { SpanHandle } from "./index.base";
+export type { TaskOutcome } from "./adapters/manualSpans";

@@ -28,8 +28,8 @@ import {
     type TraceOutcome,
 } from "./traceHeader";
 
-/** §6.1's four root types. */
-export type TraceRootType = "launch" | "interaction" | "navigation" | "request";
+/** §6.1's four root types, plus `custom` — a manual span with no live root to join (#164). */
+export type TraceRootType = "launch" | "interaction" | "navigation" | "request" | "custom";
 
 /**
  * Android's numbers unchanged (§6.7), and **internal constants, never `TelemetryOpts`
@@ -150,6 +150,18 @@ export class TraceManager {
     interactionSpan(mintedAt: number): TraceAttributes {
         const root = this.mint("interaction", mintedAt, mintedAt);
         return spanKeys(root, true, mintedAt).keys;
+    }
+
+    /**
+     * Tier 1 for a manual span (`task.complete`, #164), captured at **start**: a child of the
+     * live root — whose idle clock the start extends, like any span start — or else a fresh
+     * `custom` root. A leaf, never a parent: no context stack, so a request inside the span
+     * parents to the root. `span.duration_ms` is added at the end, on root *and* child — the
+     * flagged §6.3 exception, since a declared end is not derivable from children.
+     */
+    manualSpan(startedAt: number): TraceAttributes {
+        const { root, isRoot } = this.attach("custom", startedAt);
+        return spanKeys(root, isRoot, startedAt).keys;
     }
 
     /**

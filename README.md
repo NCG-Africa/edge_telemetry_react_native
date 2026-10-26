@@ -43,6 +43,7 @@ sampling and session management all start on their own — there is nothing else
 
 **How-to guides**
 - [Send a custom event](#send-a-custom-event)
+- [Time a journey](#time-a-journey)
 - [Identify the signed-in user](#identify-the-signed-in-user)
 - [Track screens](#track-screens)
 - [Track taps](#track-taps)
@@ -215,6 +216,34 @@ JSON-stringified.
 > travel under their own name. Any other name — `checkout_started` above — is sent as
 > `custom_event` with your name preserved in `attributes["event.name"]`. Nothing is dropped, so
 > query custom events by `event.name`, not by `event_name`.
+
+---
+
+## Time a journey
+
+```typescript
+const span = telemetry.startSpan("checkout", { cart_value: 42 });
+// …
+span.end();                                   // or span.end({ outcome: "failed" })
+
+await telemetry.withSpan("sync_contacts", () => api.sync());   // throws → "failed", rethrown
+
+telemetry.startSpan("onboarding");            // one screen…
+telemetry.endSpan("onboarding", "completed"); // …closed from another, by name
+```
+
+Each span sends **one** `task.complete` row when it ends: `task.name`, `task.outcome`
+(`completed` | `failed` | `abandoned`) and `span.duration_ms`. The three span methods are
+synchronous — call them without `await`.
+
+- A span started during a tap or navigation joins that action (same `rum.action.id`); otherwise it
+  starts its own, `trace.root_type: "custom"`. Spans don't nest: a request inside one belongs to
+  the action, not the span.
+- Starting a name that is already open replaces it. Ending an unknown name does nothing. At most
+  32 spans can be open; blank names and the 33rd are ignored.
+- Open spans survive an app restart and can still be ended by name. A span still open when its
+  session ends is sent as `abandoned`.
+- Your attributes cannot overwrite `task.*`, `span.*`, `trace.*`, `parent.*` or `rum.*` keys.
 
 ---
 
@@ -647,6 +676,7 @@ All of this starts in the constructor. You don't call anything to enable it.
 | `ui.interaction` | Every click (web) / every `trackTap()` (native) | Both |
 | `network_change` | Connectivity type changes | Both |
 | `user.profile.update` | `identify()` | Both |
+| `task.complete` | A [span](#time-a-journey) ends, or its session ends first | Both |
 | `custom_event` | Any `log()` name not in this table | Both |
 
 ### Metrics
@@ -679,7 +709,7 @@ unreachable — `log("page_load")` now arrives as `custom_event`. Their jobs are
 
 ## API
 
-Every method returns a Promise.
+Every method returns a Promise, except the three span methods, which are synchronous.
 
 ### Core — both platforms
 
@@ -692,6 +722,11 @@ attachNavigation(navigationRef: any): Promise<void>
 trackErrors(options?: { captureConsole?: boolean }): Promise<void>
 getDeviceInfo(): Promise<DeviceInfo>
 getNetworkInfo(): Promise<NetworkInfo>
+
+startSpan(name: string, attributes?: Record<string, unknown>): SpanHandle
+  // SpanHandle.end(opts?: { outcome?: "completed" | "failed" | "abandoned"; attributes? })
+withSpan<T>(name: string, fn: () => T, attributes?: Record<string, unknown>): T
+endSpan(name: string, outcome?: "completed" | "failed" | "abandoned", attributes?: Record<string, unknown>): void
 ```
 
 ### Identity — both platforms
@@ -754,6 +789,7 @@ import {
   memoryStore,              // an in-memory Store, for tests
   type TelemetryOpts,
   type BeforeSend,
+  type SpanHandle, type TaskOutcome,
   type Store, type SyncStore, type AsyncStore, type StoreRead, type StoreWrite,
   type MemoryStoreOpts,
 } from "@nathanclaire/edge-telemetry-sdk";

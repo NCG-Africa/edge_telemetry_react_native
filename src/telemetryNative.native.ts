@@ -8,12 +8,6 @@ import type { BeforeSend } from "./core/beforeSend";
 export class TelemetryNative extends TelemetryBase {
     /** ≥3 named taps in a 1000 ms window, keyed on the name — see `trackTap`. */
     private readonly tapRage = new RageTracker(RAGE_WINDOW_MS);
-    /**
-     * The resolved core, once `instancePromise` settles. `trackTap` is the one public method that
-     * cannot afford an `await` before it reads the world: the host's own press handler
-     * navigates on the very next line (§4.6's mint/emit split).
-     */
-    private resolved?: any;
 
     constructor(opts?: {
         apiKey?: string;

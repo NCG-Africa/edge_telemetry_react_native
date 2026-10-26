@@ -5,6 +5,12 @@
 // because each imports a different platform adapter.
 
 import { debug } from "./core/debug";
+import type { TaskOutcome } from "./adapters/manualSpans";
+
+/** What `startSpan()` returns. `end()` is idempotent, never throws, and returns nothing to await. */
+export type SpanHandle = {
+    end(opts?: { outcome?: TaskOutcome; attributes?: Record<string, unknown> }): void;
+};
 
 type ProfileInput = {
     userId?: string;
@@ -23,6 +29,75 @@ type ProfileInput = {
 
 export abstract class TelemetryBase {
     protected instancePromise!: Promise<any>;
+    /**
+     * The resolved core, once `instancePromise` settles — set by each entry. The synchronous
+     * methods (`startSpan`, native `trackTap`) cannot afford an `await` before they read the
+     * world: the host navigates on the very next line (§4.6's mint/emit split). Before it is
+     * set they fall back to emit-time identity.
+     */
+    protected resolved?: any;
+
+    /** Run `fn` against the core now if it is resolved, else once it is. Never throws. */
+    private now(fn: (inst: any) => unknown, what: string): void {
+        const swallow = (err: unknown) => debug.warn(`${what} failed:`, err);
+        try {
+            if (this.resolved) Promise.resolve(fn(this.resolved)).catch(swallow);
+            else this.instancePromise.then(fn).catch(swallow);
+        } catch (err) { swallow(err); }
+    }
+
+    // ---------- Manual spans (#164) ----------
+
+    /**
+     * Time a journey: one `task.complete` row when the handle is ended. Synchronous — the
+     * trace keys, `view.id` and `session.id` freeze here. A span joins the live action's
+     * root, else mints a `custom` one; requests inside it parent to that root, not the span.
+     * Starting a name that is already open supersedes it. Blank names and a 33rd open span
+     * are inert. Misuse never throws.
+     */
+    startSpan(name: string, attributes?: Record<string, unknown>): SpanHandle {
+        const at = Date.now();
+        let span: unknown;
+        let ended = false;
+        this.now((inst) => { span = inst.startSpan(name, attributes, at); }, "startSpan");
+        return {
+            end: (opts) => {
+                if (ended) return;
+                ended = true;
+                const endAt = Date.now();
+                this.now((inst) => span && inst.endSpan(name, opts?.outcome ?? "completed", opts?.attributes, endAt, span), "span.end");
+            },
+        };
+    }
+
+    /**
+     * `startSpan` + `end` around `fn`, sync or async. A throw (or rejection) ends the span
+     * `failed` and is rethrown untouched — no `app.error` is emitted; your catch decides.
+     */
+    withSpan<T>(name: string, fn: () => T, attributes?: Record<string, unknown>): T {
+        const span = this.startSpan(name, attributes);
+        let result: T;
+        try {
+            result = fn();
+        } catch (err) {
+            span.end({ outcome: "failed" });
+            throw err;
+        }
+        if (result && typeof (result as any).then === "function") {
+            return (result as any).then(
+                (v: unknown) => { span.end(); return v; },
+                (err: unknown) => { span.end({ outcome: "failed" }); throw err; },
+            );
+        }
+        span.end();
+        return result;
+    }
+
+    /** Close an open span by name — for a journey that ends in a different component. */
+    endSpan(name: string, outcome: TaskOutcome = "completed", attributes?: Record<string, unknown>): void {
+        const at = Date.now();
+        this.now((inst) => inst.endSpan(name, outcome, attributes, at), "endSpan");
+    }
 
     async log(event: string, data?: Record<string, any>) {
         const inst = await this.instancePromise;

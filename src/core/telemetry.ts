@@ -2,6 +2,7 @@ import { debug, isDev } from "./debug";
 import { isRejected, statusOf } from "../adapters/batch";
 import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
 import { TraceManager } from "../adapters/traceManager";
+import { SpanRegistry, spanAttributes, taskName, type OpenSpan, type PersistedSpan, type TaskOutcome } from "../adapters/manualSpans";
 import { BreadcrumbBuffer } from "./breadcrumbs";
 import { buildErrorAttributes, type ErrorSource } from "../adapters/crashCapture";
 import { randomHex } from "./utils/uuid";
@@ -112,6 +113,9 @@ type PersistedSession = {
     // at the old one makes every extrapolation off it wrong.
     sampled: boolean;
     sampleRate: number;
+    // Open manual spans (#164): a journey crossing process death is closable by name after
+    // the resume, and one the session outlives is `abandoned` at its finalize.
+    spans?: PersistedSpan[];
 };
 
 /** What hydration decided, so the emitting half stays free of storage concerns. */
@@ -140,6 +144,8 @@ const ALLOWED_NAMES = new Set<string>([
     // ⚠ `app.start` needs backend allowlist sign-off before it ships (#98, §4.3/§6.2) — an
     // unlisted eventName is dropped on ingest. It is listed here, so it is being emitted.
     "app.start",
+    // ⚠ #164's manual span terminal — needs backend allowlist sign-off before it ships.
+    "task.complete",
     "frame_render_time", "memory_usage",
     "LCP", "FCP", "CLS", "INP", "TTFB",
     // ⚠ `page_load`, `resource_timing` and `long_task` are **retired, not deferred**
@@ -479,6 +485,11 @@ export class Telemetry {
     // `app.start` is once per *process* (§6.2), and web re-enters resumeOrStartSession() on a
     // bfcache restore — which resumes a process rather than starting one.
     private appStartEmitted = false;
+    // Open manual spans (#164). Persisted with the session record.
+    private readonly spans = new SpanRegistry();
+    // Set while finalizeSession() emits its `abandoned` rows: they are bookkeeping, and
+    // letting them through log()'s expiry check would rotate an expired session again.
+    private finalizing = false;
 
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
@@ -771,6 +782,7 @@ export class Telemetry {
         this.eventSequence = saved.eventSequence ?? 0;
         this.sessionEventCount = saved.eventCount ?? 0;
         this.errorCount = saved.errorCount ?? 0;
+        this.spans.restore(saved.spans);
         // A resume is not a rotation: the decision and the rate it was rolled at are
         // adopted as-is, so a relaunch can't half-sample a session. A record written
         // before this field existed reads as `undefined` and keeps the fresh roll.
@@ -864,6 +876,7 @@ export class Telemetry {
             errorCount: this.errorCount,
             sampled: this.sampled,
             sampleRate: this.sampleRate,
+            spans: this.spans.toJSON(),
         };
         const write = await this.store.set(SESSION_KEY, JSON.stringify(record));
         // Same first-class `unavailable` path as the read: nothing to retry and nothing to
@@ -893,6 +906,17 @@ export class Telemetry {
      * not the 6 idle hours that followed it.
      */
     public async finalizeSession(reason: SessionEndReason) {
+        // #164: a span still open when its session ends is `abandoned` — here and only here,
+        // under the session it was frozen to. Ended at the last activity, like the session's
+        // own duration, so an idle rotation does not book 30 idle minutes as span width.
+        this.finalizing = true;
+        try {
+            for (const span of this.spans.takeSession(this.sessionId)) {
+                await this.emitTask(span, "abandoned", undefined, Math.max(span.start, this.lastActivity ?? span.start));
+            }
+        } finally {
+            this.finalizing = false;
+        }
         await this.log("session.finalized", {
             "session.duration_ms": Math.max(0, (this.lastActivity ?? this.sessionStart) - this.sessionStart),
             "session.event_count": this.sessionEventCount,
@@ -930,6 +954,69 @@ export class Telemetry {
         // the departing view's `view` event under the *old* id.
         await this.views.beginView("session_rotation");
         await this.startSession(reason);
+    }
+
+    // ---------- Manual spans (#164) ----------
+
+    /**
+     * Open a manual span — **synchronously**, so the trace keys, `view.id` and `session.id`
+     * freeze at the call (§3.1). Inert (`undefined`, reported through `debug()`) for a blank
+     * name or past 32 open spans; never throws. Refreshes `lastActivity` but is not an
+     * action: `view.action_count` counts `ui.interaction` only.
+     *
+     * On a session that has already expired the freeze waits for the rotation the start
+     * itself triggers, so a journey begun after a long idle belongs to the new session
+     * rather than being `abandoned` by the very next row.
+     */
+    public startSpan(name: unknown, attrs?: Record<string, unknown>, at: number = Date.now()): OpenSpan | undefined {
+        const n = taskName(name);
+        if (!n) { debug.warn("startSpan: blank name — span is inert"); return undefined; }
+        const span = this.spans.start(n, at, spanAttributes(attrs));
+        if (!span) { debug.warn(`startSpan: ${n} — more than 32 open spans, span is inert`); return undefined; }
+        const freeze = () => {
+            span.keys = this.trace.manualSpan(at);
+            span.viewId = this.views.id;
+            span.sessionId = this.sessionId;
+            span.sessionStart = this.sessionStart;
+            this.lastActivity = Math.max(this.lastActivity ?? at, at);
+            this.persistSession().catch((err) => debug.warn("startSpan: persist failed:", err));
+        };
+        const reason = this.expiryReason(at);
+        if (reason) {
+            span.ready = this.rotateSession(reason)
+                .catch((err) => debug.warn("startSpan: rotation failed:", err))
+                .then(() => { if (this.spans.has(span)) freeze(); });
+        } else {
+            freeze();
+        }
+        return span;
+    }
+
+    /**
+     * Close a span by name and emit its one `task.complete`. An unknown or already-closed
+     * name is a no-op. With `only`, the close is a handle's, and a superseded handle cannot
+     * close the span that replaced it.
+     */
+    public async endSpan(name: unknown, outcome: TaskOutcome = "completed", attrs?: Record<string, unknown>, at: number = Date.now(), only?: OpenSpan) {
+        const n = taskName(name);
+        const span = n === undefined ? undefined : this.spans.take(n, only);
+        if (!span) { debug.log(`endSpan: no open span named ${String(name)}`); return; }
+        await span.ready;
+        await this.emitTask(span, outcome, spanAttributes(attrs), at);
+    }
+
+    private async emitTask(span: OpenSpan, outcome: TaskOutcome, attrs: Record<string, unknown> | undefined, end: number) {
+        if (!span.keys || !span.viewId || !span.sessionId || span.sessionStart === undefined) return;
+        await this.log("task.complete", {
+            ...span.attrs,
+            ...attrs,
+            ...span.keys,
+            "task.name": span.name,
+            "task.outcome": outcome,
+            // On root *and* child — the flagged §6.3 exception: a declared end is not
+            // derivable from children, so a root's width cannot be left to the server.
+            "span.duration_ms": Math.max(0, end - span.start),
+        }, { at: end, viewId: span.viewId, sessionId: span.sessionId, sessionStart: span.sessionStart });
     }
 
     /** Boundary rotation: finalize the old session then start a fresh one (the pair). */
@@ -1132,7 +1219,7 @@ export class Telemetry {
         // `view` joins the session events here: it is emitted *by* a boundary, from inside
         // rotateSession() among others, so letting it re-enter the expiry check would recurse
         // forever on an already-expired session. It is bookkeeping, not user activity.
-        if (!name.startsWith('session.') && name !== 'view') {
+        if (!name.startsWith('session.') && name !== 'view' && !this.finalizing) {
             const now = Date.now();
             const reason = this.expiryReason(now);
             if (reason) await this.rotateSession(reason);
