@@ -36,7 +36,7 @@ function capString(value: unknown, max: number): string | undefined {
  * process. Consumer keys pass through **verbatim, casing included** (§4.10): the SDK
  * imposes no normalization here, so an over-long key is dropped, never truncated.
  */
-function customValue(value: unknown): string | number | boolean | undefined {
+export function customValue(value: unknown): string | number | boolean | undefined {
   if (value === null || value === undefined) return undefined;
   if (typeof value === "number" || typeof value === "boolean") return value;
   if (typeof value === "string") return value.slice(0, CUSTOM_VALUE_CAP) || undefined;

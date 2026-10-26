@@ -59,6 +59,26 @@ export abstract class TelemetryBase {
         this.now((inst) => { setTimeout(() => inst.views.markReady(at), 0); }, "markScreenReady");
     }
 
+    // ---------- Sibling parity (#167) ----------
+
+    /** Ship your own number. `unit` → `metric.unit`. The SDK's metric names are reserved; a non-finite value is dropped. */
+    async recordMetric(name: string, value: number, attributes?: Record<string, any>, opts?: { unit?: string }) {
+        const inst = await this.instancePromise;
+        return inst.recordMetric(name, value, attributes, opts);
+    }
+
+    /** Add a step to the trail of 20 that rides `app.crash` and `app.hang`. Name ≤64, ≤8 data keys, values ≤255. */
+    async addBreadcrumb(name: string, data?: Record<string, unknown>) {
+        const inst = await this.instancePromise;
+        inst.addBreadcrumb(name, data);
+    }
+
+    /** End the current session and start a fresh one — e.g. on logout. `session.reason: manual`. */
+    async startNewSession() {
+        const inst = await this.instancePromise;
+        return inst.startNewSession();
+    }
+
     // ---------- Manual spans (#164) ----------
 
     /**

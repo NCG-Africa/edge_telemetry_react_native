@@ -85,6 +85,7 @@ describe("public API parity", () => {
     "updateUserProfile", "getUserProfile", "clearUserProfile",
     "setUserName", "setUserContact", "identify",
     "startSpan", "withSpan", "endSpan", "markScreenReady",
+    "recordMetric", "addBreadcrumb", "startNewSession",
   ];
 
   it("both platform classes inherit the shared delegation from TelemetryBase", () => {

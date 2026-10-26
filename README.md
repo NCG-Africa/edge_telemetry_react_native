@@ -765,6 +765,12 @@ startSpan(name: string, attributes?: Record<string, unknown>): SpanHandle
 withSpan<T>(name: string, fn: () => T, attributes?: Record<string, unknown>): T
 endSpan(name: string, outcome?: "completed" | "failed" | "abandoned", attributes?: Record<string, unknown>): void
 markScreenReady(): void
+
+recordMetric(name: string, value: number, attributes?: Record<string, any>, opts?: { unit?: string }): Promise<void>
+  // the SDK's own metric names are reserved; NaN / Infinity are dropped
+addBreadcrumb(name: string, data?: Record<string, unknown>): Promise<void>
+  // into the trail of 20 on app.crash / app.hang — name ≤64 chars, ≤8 keys, values ≤255
+startNewSession(): Promise<void>                // session.reason: "manual"
 ```
 
 ### Identity — both platforms
@@ -946,6 +952,9 @@ The session record is persisted, so **process death, a tab close, a hard reload 
 restore all resume the same session** if the gap is inside the idle window. A resumed session
 deliberately does *not* re-emit `session.started` — otherwise `COUNT(session.started)` would stop
 equalling your session count.
+
+Call `startNewSession()` to end one yourself — on logout, say. Both session events then carry
+`session.reason: "manual"`.
 
 ---
 

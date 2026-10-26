@@ -4,7 +4,7 @@ import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
 import { TraceManager } from "../adapters/traceManager";
 import { HangDetector } from "../adapters/hangDetector";
 import { SpanRegistry, spanAttributes, taskName, type OpenSpan, type PersistedSpan, type TaskOutcome } from "../adapters/manualSpans";
-import { BreadcrumbBuffer } from "./breadcrumbs";
+import { BreadcrumbBuffer, boundCrumb } from "./breadcrumbs";
 import { buildErrorAttributes, type ErrorSource } from "../adapters/crashCapture";
 import { randomHex } from "./utils/uuid";
 import type { Store } from "./store";
@@ -89,7 +89,7 @@ export const DEVICE_ID_KEY = "telemetry_device_id";
 export const SESSION_KEY = "telemetry_session";
 
 /** `session.reason` domains: 3 on session.started, the last 2 on session.finalized (§4.1/§4.2). */
-export type SessionReason = "launch" | "idle" | "max_duration";
+export type SessionReason = "launch" | "idle" | "max_duration" | "manual";
 export type SessionEndReason = Exclude<SessionReason, "launch">;
 
 /**
@@ -590,14 +590,19 @@ export class Telemetry {
      * Extend the breadcrumb trail without emitting anything. §4.7 demotes `console.warn` to
      * exactly this — React's dev-mode warnings were the bulk of v3's `app.crash` volume.
      *
-     * SDK-internal: `public` only so `adapters/crashCapture.ts` can reach it. Not on
-     * `TelemetryBase` and not part of the consumer API — a host app that wants a trail entry
-     * should `log()` an event, which extends the trail anyway.
+     * Also the public `addBreadcrumb()` (#167) — one path, so the SDK's own crumbs and the
+     * host's obey the same bounds (`boundCrumb`). Shows on `app.crash` and `app.hang`.
      */
     public addBreadcrumb(name: string, data?: Record<string, any>) {
-        // `name` and `timestamp` last: a caller's `data` annotates the crumb, it does not
-        // rename it out from under the trail.
-        this.breadcrumbs.add({ ...data, name, timestamp: new Date().toISOString() });
+        this.breadcrumbs.add(boundCrumb(name, data));
+    }
+
+    /**
+     * `startNewSession()` (#167) — logout/login. The same finalize + started pair as an idle
+     * or max-duration rotation, with `session.reason: manual` on both.
+     */
+    public async startNewSession() {
+        await this.rotateSession("manual");
     }
 
     public trackErrors(crashHandler: CrashHandler, options?: CrashHandlerOptions) {
@@ -1468,7 +1473,7 @@ export class Telemetry {
      * don't extend the breadcrumb trail and don't count as session activity — a periodic sampler
      * (memory/frames) must not keep a session alive and defeat the 30-min idle rotation.
      */
-    async logMetric(metricName: string, value: number, data?: Record<string, any>) {
+    async logMetric(metricName: string, value: number, data?: Record<string, any>, unitOverride?: string) {
         this.eventCount++;
         // A metric is a sample, not a user action: it must not refresh `lastActivity` and
         // keep a dead session alive. It is still *checked* against the boundaries, or a
@@ -1482,7 +1487,7 @@ export class Telemetry {
         const attributes = await this.collectContext(data);
         // §5.1 — assembled after caller `data`, so a stray attribute cannot mislabel the
         // unit of the column it lands in. Omitted for a name we have no unit for.
-        const unit = METRIC_UNIT[metricName];
+        const unit = METRIC_UNIT[metricName] ?? unitOverride;
         if (unit) attributes['metric.unit'] = unit;
 
         this.enqueue({
@@ -1596,10 +1601,17 @@ export class Telemetry {
 
 
     /**
-     * Explicit metric helper (optional convenience) — routes through the v3 metric path.
+     * The public metric path (#167). The SDK's own names are **reserved** — a consumer row in
+     * the vitals, frame or memory series would be indistinguishable from ours — and keep their
+     * own unit. A non-finite value is dropped, never shipped as a fabricated number. `unit`
+     * becomes `metric.unit`, stamped after `data` so an attribute cannot mislabel it.
      */
-    recordMetric(name: string, value: number, data?: Record<string, any>) {
-        return this.logMetric(name, value, data);
+    recordMetric(name: string, value: number, data?: Record<string, any>, opts?: { unit?: string }) {
+        if (typeof name !== "string" || name.trim() === "") { debug.warn("recordMetric: blank name — dropped"); return; }
+        if (name in METRIC_UNIT) { debug.warn(`recordMetric: ${name} is reserved by the SDK — dropped`); return; }
+        if (typeof value !== "number" || !Number.isFinite(value)) { debug.warn(`recordMetric: ${name} value is not finite — dropped`); return; }
+        const unit = typeof opts?.unit === "string" && opts.unit !== "" ? opts.unit : undefined;
+        return this.logMetric(name, value, data, unit);
     }
 
     // ---------- Flush / Persistence ----------

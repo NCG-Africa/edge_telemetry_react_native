@@ -283,7 +283,7 @@ describe("recordMetric", () => {
 
     t.recordMetric("load_time", 123, { page: "home" });
 
-    expect(metricSpy).toHaveBeenCalledWith("load_time", 123, { page: "home" });
+    expect(metricSpy).toHaveBeenCalledWith("load_time", 123, { page: "home" }, undefined);
     expect((t as any).getMetricCount).toBeUndefined();
   });
 });

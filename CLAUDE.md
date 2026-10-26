@@ -151,6 +151,7 @@ type TelemetryOpts = {
 Methods (both classes, all return Promises — except the three span methods, which are sync):
 
 ```ts
+recordMetric(name, value, attrs?, {unit?}) / addBreadcrumb(name, data?) / startNewSession()   // #167
 startSpan(name, attrs?) → { end({outcome?, attributes?}) } / withSpan(name, fn, attrs?) / endSpan(name, outcome?, attrs?)
 markScreenReady()                         // sync; view.ready_time / view.ready_outcome (#171)
 log(event, data?) / flush() / shutdown()
@@ -1000,7 +1001,10 @@ timing vitals, `MB` for `memory_usage`, **`score` for `CLS`**. Without the CLS e
 does not special-case `metric_name` renders a CLS of `0.08` as a flat zero line beside an LCP of
 `4000` in the same `value` column. It is stamped **after** caller `data`, so a stray attribute cannot
 mislabel the unit of the column the row lands in, and it is **omitted** for a name not in the map —
-a consumer's own `recordMetric()` name has no unit the SDK can honestly claim.
+a consumer's own `recordMetric()` name has no unit the SDK can honestly claim, unless the consumer
+passes one (`recordMetric(name, value, attrs?, { unit })`, #167). The map's names are **reserved**:
+`recordMetric` drops them (a consumer row in the vitals/frame/memory series would be
+indistinguishable from ours), and drops a non-finite value rather than ship a fabricated number.
 
 **`frame.target_fps` is measured, not assumed** — and `frame.target_hz` is gone. rAF cannot fire
 faster than the display, so the floor of the window's deltas *is* the refresh interval; no new
@@ -1359,8 +1363,9 @@ Metrics are samples, not user actions: they never refresh `lastActivity`, but th
 against both boundaries — otherwise a backgrounded app sampling memory would ship forever under a
 session that expired hours ago, which is the exact thing the 4-hour cap exists to stop.
 
-`session.reason` ships on both: 3 values on `session.started` (`launch|idle|max_duration`), 2 on
-`session.finalized` (`idle|max_duration`). `session.finalized` keeps `duration_ms` and
+`session.reason` ships on both: 4 values on `session.started` (`launch|idle|max_duration|manual`), 3 on
+`session.finalized` (`idle|max_duration|manual`). `manual` is `startNewSession()` (#167) — the same
+`rotateSession()` pair as the two boundaries, for logout/login. `session.finalized` keeps `duration_ms` and
 `event_count` even though the backend discards and derives both — the event survives as the
 carrier for `session.reason` and `sdk.error_count`. `duration_ms` is stamped from `lastActivity`,
 never `now`, so a lazily-detected rotation reports 2 minutes of use and not the 6 idle hours that
@@ -1676,8 +1681,10 @@ above rather than defects.
 - **`web-vitals` is a runtime `dependency` a native consumer also installs on disk** — bundled,
   so their app ships zero bytes of it, but `npm ls` shows it. Making it a devDependency would
   work today and break the moment anything externalizes it; the contract calls it a dependency.
-- **`metric.unit` is omitted for a name the SDK has no unit for** — a consumer's own
-  `recordMetric()` name ships no unit rather than a guessed one.
+- **`metric.unit` is omitted for a consumer metric passed without `{ unit }`** — never guessed.
+  The consumer's unit is free text; nothing normalizes `ms` vs `millis`.
+- **`addBreadcrumb` keeps the *first* 8 data keys** in iteration order and silently drops the rest,
+  like `user.custom.*`'s overflow but without a counter — a crumb is debugging context, not data.
 - **A web app that never wired `attachNavigation` changes shape in v5**: the history path now
   runs (#163), so it emits one `view` row per pushState/popstate route where v4 emitted none.
   More rows, not different ones — every one follows the rung-3 rules that were already documented.
