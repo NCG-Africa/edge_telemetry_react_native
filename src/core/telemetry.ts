@@ -1,4 +1,5 @@
-import { debug } from "./debug";
+import { debug, isDev } from "./debug";
+import { isRejected, statusOf } from "../adapters/batch";
 import { NavigationTracker } from "../adapters/navigationTracker";
 import { ScreenTimingTracker } from "../adapters/screenTiming";
 import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
@@ -40,7 +41,19 @@ const FLATTEN_MAX_DEPTH = 8;
  */
 const QUEUE_MAX_EVENTS = 500;
 
-/** `sdk.drop_reason` (§11). `rejected` has no producer until 4xx-drops-the-batch lands (#113). */
+/**
+ * §2.4's draining `flush()`: at most this many batches per call, sequential, paced to the
+ * collector's 10 req/s burst — it 429s at batch 11 otherwise (§2.3). Internal constants.
+ */
+const DRAIN_MAX_BATCHES = 50;
+const DRAIN_PACE_MS = 100;
+/** A 429 with no usable `X-RateLimit-Reset` still holds off for one burst window. */
+const RATE_LIMIT_DEFAULT_HOLD_MS = 1000;
+
+/** §2.5's one `__DEV__` warning for a rejected batch — once per process. */
+let warnedRejected = false;
+
+/** `sdk.drop_reason` (§11). `rejected` is a 4xx-dropped batch (§2.5, #162). */
 export type DropReason = "queue_full" | "store_full" | "rejected";
 
 /**
@@ -1278,11 +1291,17 @@ export class Telemetry {
             await this.sender.send(batch);
             await this.ackBatch();
         } catch (err) {
+            debug.warn("Telemetry: crash-path send failed:", err);
+            // §2.5 holds here too: a 4xx batch is dropped, never requeued.
+            if (isRejected(err)) { this.recordDrop("rejected", batch.length); return; }
+            if (statusOf(err) === 429) {
+                const resetAt = (err as any)?.resetAt;
+                this.holdUntil = typeof resetAt === "number" ? resetAt : Date.now() + RATE_LIMIT_DEFAULT_HOLD_MS;
+            }
             // Requeue only what the store does not already hold — the rest is safe on disk
             // and requeueing it would send it twice for no gain.
             const unsaved = batch.filter(e => seqOf(e) > this.crashPersistedThrough);
             if (unsaved.length > 0) this.queue.unshift(...unsaved);
-            debug.warn("Telemetry: crash-path send failed:", err);
         }
     }
 
@@ -1495,33 +1514,77 @@ export class Telemetry {
 
     // ---------- Flush / Persistence ----------
 
-    // Retry + backoff live in the Sender (see sendWithRetry in web/native senders),
-    // which is also used by the standalone replay paths. flush() does a single send
-    // and, on failure, hands the batch to the sender to persist (or requeues it).
-    async flush() {
-        if (!this.sender || this.queue.length === 0) return;
+    /**
+     * §2.4's draining flush (#162): batches go **sequentially** until the queue is empty,
+     * stopping at the first failure, at most `DRAIN_MAX_BATCHES` per call and paced to the
+     * collector's 10 req/s burst. Sequential because parallel batches are how a cold backend
+     * gets stampeded by a replay. Retry + backoff live in the Sender (`sendWithRetry`).
+     *
+     * A call landing while a drain is in flight joins it rather than starting a second loop:
+     * the interval and the batch-full trigger both fire `flush()` unawaited, and two loops
+     * would interleave their sends and break the pacing.
+     */
+    flush(): Promise<void> {
+        return this.draining ??= this.drain().finally(() => { this.draining = undefined; });
+    }
 
-        // build a batch of up to batchSize
-        const toSend = this.queue.splice(0, this.batchSize);
+    private draining?: Promise<void>;
+    /** Epoch ms before which no batch may be sent — a 429's `X-RateLimit-Reset` (§2.5). */
+    private holdUntil = 0;
 
-        try {
-            await this.sender.send(toSend);
-            await this.ackBatch();
-        } catch (lastError) {
-            if (this.sender.onFailure) {
-                try {
-                    this.recordDrop("store_full", await this.sender.onFailure(toSend));
-                } catch (persistErr) {
-                    // If persistence fails, requeue to avoid data loss
-                    this.queue.unshift(...toSend);
-                    debug.warn("Sender.onFailure failed, requeued events:", persistErr);
-                }
-            } else {
-                this.queue.unshift(...toSend);
+    private async drain() {
+        for (let i = 0; i < DRAIN_MAX_BATCHES; i++) {
+            if (i > 0 && this.queue.length > 0) await new Promise(r => setTimeout(r, DRAIN_PACE_MS));
+            if (!this.sender || this.queue.length === 0 || Date.now() < this.holdUntil) return;
+
+            const toSend = this.queue.splice(0, this.batchSize);
+            try {
+                await this.sender.send(toSend);
+                await this.ackBatch();
+            } catch (err) {
+                await this.onSendFailure(toSend, err);
+                debug.error("Telemetry flush failed:", err);
+                throw err;
             }
+        }
+    }
 
-            debug.error("Telemetry flush failed:", lastError);
-            throw lastError;
+    /**
+     * §2.5's status table, for a batch the sender gave up on.
+     *
+     * | 4xx | dropped — no persist — booked `rejected`, one `__DEV__` warning per process |
+     * | 429 | requeued at the front; the drain halts until `X-RateLimit-Reset` |
+     * | 5xx / network | persisted through the sender, or requeued when it cannot persist |
+     *
+     * A wrong credential is the realistic 4xx, and persisting it would make it terminal: the
+     * drain halts at batch 1 on every launch forever while the store fills and evicts.
+     */
+    private async onSendFailure(batch: TelemetryEvent[], err: unknown) {
+        if (isRejected(err)) {
+            this.recordDrop("rejected", batch.length);
+            if (isDev() && !warnedRejected) {
+                warnedRejected = true;
+                console.warn(`edge-telemetry: the collector rejected a batch with HTTP ${statusOf(err)} — `
+                    + "dropped, not retried. Check the apiKey and endpoint. (Shown once, in dev only.)");
+            }
+            return;
+        }
+        if (statusOf(err) === 429) {
+            this.queue.unshift(...batch);
+            const resetAt = (err as any)?.resetAt;
+            this.holdUntil = typeof resetAt === "number" ? resetAt : Date.now() + RATE_LIMIT_DEFAULT_HOLD_MS;
+            return;
+        }
+        if (this.sender?.onFailure) {
+            try {
+                this.recordDrop("store_full", await this.sender.onFailure(batch));
+            } catch (persistErr) {
+                // If persistence fails, requeue to avoid data loss
+                this.queue.unshift(...batch);
+                debug.warn("Sender.onFailure failed, requeued events:", persistErr);
+            }
+        } else {
+            this.queue.unshift(...batch);
         }
     }
 

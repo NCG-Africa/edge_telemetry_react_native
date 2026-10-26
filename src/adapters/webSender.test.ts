@@ -131,3 +131,20 @@ describe("webSender — the offline queue through the Store port (#89)", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+describe("webSender — a rejected replay is dropped, not re-persisted (#162, §2.5)", () => {
+  it("replayFailed() on a 401 leaves the store empty", async () => {
+    const store = memoryStore();
+    vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("down"); }));
+    const sender = webSender("https://x/telemetry", "edge_k", store, 1);
+    await sender.onFailure!([event("custom_event")]);
+    expect(decodeFailed(store.get(FAILED_EVENTS_KEY))).toHaveLength(1);
+
+    const fetch401 = vi.fn(async () => ({ ok: false, status: 401, headers: { get: () => null } }) as any);
+    vi.stubGlobal("fetch", fetch401);
+    await expect(sender.replayFailed!()).rejects.toMatchObject({ status: 401 });
+    expect(fetch401).toHaveBeenCalledTimes(1);
+    expect(store.get(FAILED_EVENTS_KEY).status).toBe("miss");
+    vi.unstubAllGlobals();
+  });
+});

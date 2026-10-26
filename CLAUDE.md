@@ -199,7 +199,26 @@ check — that would hard-reject every `edge_<jwt>`. The collector's path is `PO
 
 Built by `adapters/batch.ts` so both senders are byte-identical. Web uses
 `fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the credential headers.
-On failure: retried (3 attempts; native exponential + jitter, web linear), then persisted
+**`flush()` drains** (#162, §2.4): batches go **sequentially** until the queue is empty, stopping
+at the first failure, at most **50 batches** per call, with **≥100 ms** between sends so a backlog
+never trips the collector's 10 req/s burst (§2.3). A `flush()` landing mid-drain joins the
+in-flight one rather than starting a second loop. Constants are internal, never `TelemetryOpts`.
+
+**Status handling is §2.5's table**, one rule in `sendWithRetry()` (`adapters/batch.ts`) shared by
+both senders, read by core through `err.status` — so a consumer's own sender throwing
+`{ status: 401 }` gets the same treatment:
+
+| Status | Behaviour |
+|---|---|
+| **4xx** except 429 | thrown at once, **no retry, no persist**; core drops the batch, books `sdk.drop_reason: rejected`, and says one `isDev()` warning per process. A rejected `replayFailed()` is dropped, not re-persisted |
+| **429** | thrown at once; core requeues the batch at the front and halts the drain until `X-RateLimit-Reset` (epoch seconds *or* seconds-from-now, told apart by magnitude; 1 s when absent) |
+| **5xx / network** | retried (3 attempts; native exponential + jitter, web linear), then persisted |
+
+A wrong credential is the realistic 4xx, and persisting it would be terminal: the drain halts at
+batch 1 on every launch forever while the store fills and evicts. The crash path follows the same
+table for its one batch.
+
+On a 5xx / network failure the batch is persisted
 **through the `Store` port** under key `telemetry_failed_events` and replayed on next init.
 `Sender.onFailure()` returns how many rows the store's cap evicted, because the counter it
 feeds (`sdk.events_dropped`) lives on the Context block and only core assembles that.
@@ -1285,8 +1304,9 @@ ingest.
   reporting *the consumer's own mistake* — a malformed config, an unset runtime knob, a payload
   the SDK had to drop — may write directly, provided it is gated on `isDev()` from the same file
   and said **once per process**. §6.4's malformed-allowlist report, §4.8's
-  `Error.stackTraceLimit` advisory and §4.10's `user.custom.*` overflow warning are the only
-  three, because `debug: true` is exactly what a consumer with a mistake has not set. ⚠ The
+  `Error.stackTraceLimit` advisory, §4.10's `user.custom.*` overflow warning and §2.5's
+  rejected-batch warning (#162 — a 4xx usually means a wrong `apiKey`) are the only
+  four, because `debug: true` is exactly what a consumer with a mistake has not set. ⚠ The
   third one fires from `identify()` — a path a shipped app takes — which the earlier
   *config-wiring-only* wording did not cover; `isDev()` is what keeps it off a shipped app's
   console, and that gate, not the call site, is the actual rule. Anything that can fire more
@@ -1364,9 +1384,17 @@ above rather than defects.
   indistinguishable from a build that never started one. There is no counter for it.
 - Web navigation paths keep their query strings, so tokens and PII in query params ship as-is.
   (`http.request` itself carries no URL — see the `http.request` section.)
-- `flush()` sends **one** batch per call — it does not loop. At 50/30 s a large backlog still
-  drains a batch per interval; the draining `flush()` is contract §12.5 and a separate change.
-- `sdk.drop_reason` has no `rejected` producer: 4xx-drops-the-batch is #113.
+- **A 401 is invisible to the backend by construction** (§2.5): the `rejected` count rides the
+  *next* row that gets through, and with a wrong credential none does. The dev warning is the
+  only signal the consumer gets.
+- **The 429 hold is in memory only.** A relaunch inside the `X-RateLimit-Reset` window sends at
+  once; the collector's per-device budget is what answers that, not the SDK.
+- **A batch the crash path persisted and the collector then rejects** replays next launch and is
+  dropped there — through `replayFailed()`, which has no core in reach, so that drop is not booked
+  on `sdk.events_dropped`. Same lossy-about-its-own-loss residue as the replay eviction below.
+- **`flush()` rejects on a 4xx or 429** exactly as it always has on a network failure, so a
+  `log()` whose lazy rotation flushes can reject with it. Unchanged v4 behaviour, now reachable by
+  two more statuses.
 - A re-persist inside `replayFailed()` can evict without booking it — the sender has no core
   instance in reach. §3.7 already calls these counters lossy about their own loss.
 - **The replay guard is native-only and per-sender.** Web needs none (its store is

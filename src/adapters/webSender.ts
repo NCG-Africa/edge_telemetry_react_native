@@ -3,7 +3,7 @@ import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { SyncStore } from "../core/store";
 import { webStore } from "./web/store.web";
 import { decodeFailed, encodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
-import { buildBatch, buildHeaders, DEFAULT_ENDPOINT } from "./batch";
+import { buildBatch, buildHeaders, DEFAULT_ENDPOINT, isRejected, sendWithRetry } from "./batch";
 
 // The offline queue goes through the Store port (#89), and on web it stays SYNCHRONOUS
 // on purpose. onFailure() runs on the unload path; a synchronous set() has landed before
@@ -33,40 +33,16 @@ function takeFailed(store: SyncStore): TelemetryEvent[] {
     return decodeFailed(read);
 }
 
-// Try sending a batch with retries + backoff.
 // v3 uses fetch({ keepalive: true }) rather than navigator.sendBeacon: the beacon
 // API cannot set the required credential headers. keepalive preserves the
-// survives-page-unload property we relied on sendBeacon for.
-async function sendWithRetry(endpoint: string, apiKey: string | undefined, events: TelemetryEvent[], retryCount: number = 3) {
-    let attempts = 0;
-    let lastError: any;
-
-    while (attempts < retryCount) {
-        try {
-            const res = await fetch(endpoint, {
-                method: "POST",
-                headers: buildHeaders(apiKey),
-                body: buildBatch(events),
-                keepalive: true,
-            });
-
-            if (!res.ok) {
-                throw new Error(`Telemetry send failed: ${res.status}`);
-            }
-
-            return; // ✅ success
-        } catch (err) {
-            lastError = err;
-            attempts++;
-            if (attempts < retryCount) {
-                await new Promise(res => setTimeout(res, attempts * 500)); // backoff
-            }
-        }
-    }
-
-    // ❌ after retries still failed
-    throw lastError;
-}
+// survives-page-unload property we relied on sendBeacon for. Linear backoff.
+const post = (endpoint: string, apiKey: string | undefined, events: TelemetryEvent[], retryCount: number) =>
+    sendWithRetry(() => fetch(endpoint, {
+        method: "POST",
+        headers: buildHeaders(apiKey),
+        body: buildBatch(events),
+        keepalive: true,
+    }), retryCount, attempt => attempt * 500);
 
 export function webSender(
     endpoint: string = DEFAULT_ENDPOINT,
@@ -78,7 +54,7 @@ export function webSender(
         async send(events: TelemetryEvent[]) {
             // Retry + backoff here; persistence on final failure is the core flush()'s
             // job via onFailure() — kept single, so a failed batch isn't persisted twice.
-            await sendWithRetry(endpoint, apiKey, events, retryCount);
+            await post(endpoint, apiKey, events, retryCount);
         },
         async onFailure(events: TelemetryEvent[]) {
             return persistFailed(store, events);
@@ -97,11 +73,12 @@ export function webSender(
             if (stored.length === 0) return;
             debug.log("Replaying failed events, count:", stored.length);
             try {
-                await sendWithRetry(endpoint, apiKey, stored, retryCount);
+                await post(endpoint, apiKey, stored, retryCount);
             } catch (err) {
                 // If replay fails again, re-persist. Exactly one copy: this path never
                 // goes through core's flush(), so onFailure() does not also persist it.
-                persistFailed(store, stored);
+                // A 4xx is the exception (§2.5): a rejected batch is dropped, never kept.
+                if (!isRejected(err)) persistFailed(store, stored);
                 throw err;
             }
         },
