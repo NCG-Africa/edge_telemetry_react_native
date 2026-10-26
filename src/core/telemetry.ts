@@ -273,6 +273,19 @@ export interface MemoryHandler {
     stop?(): void;
 }
 
+/**
+ * #173's device state. `battery()` is synchronous on purpose — a cached last read — so no
+ * failure row ever awaits a native call. Native implements all of it; web only `accessibility`.
+ */
+export interface DeviceStateHandler {
+    battery?(): Record<string, number | boolean>;
+    refresh?(): Promise<void>;
+    start?(): void;
+    stop?(): void;
+    /** Read once per session, onto `session.started`. A failed read omits only its own key. */
+    accessibility(): Promise<Record<string, number | boolean>>;
+}
+
 export interface NavigationHandler {
     start(): Promise<void>;
 }
@@ -345,6 +358,7 @@ type Opts = {
     // fork time, and the two are not comparable — see TraceManager.
     traceLaunchStart?: number;
     deviceInfoHandler?: DeviceInfoHandler;
+    deviceStateHandler?: DeviceStateHandler;   // #173 — battery on failure rows, accessibility on session.started
     networkInfoHandler?: NetworkInfoHandler;
     store?: Store;              // persisted state port (#89); defaulted per build by the entry
     // Constructor-only (§3.6). A runtime setter leaves a window between init and
@@ -428,6 +442,8 @@ export class Telemetry {
     // #165's stall detector. Off under `__DEV__` — a debugger pause is not a hang — and
     // otherwise driven by the lifecycle emitter, so it only ticks in the foreground.
     public readonly hangs?: HangDetector;
+    // #173. Public so the lifecycle emitter can refresh the battery cache on foreground.
+    public readonly deviceState?: DeviceStateHandler;
 
     private networkInfoHandler: NetworkInfoHandler;
     private deviceInfoHandler: DeviceInfoHandler;
@@ -542,6 +558,8 @@ export class Telemetry {
         // the initial view can parent to it. A view that minted its own root instead would
         // make a web hard load report `trace.root_type = navigation` (§6.2).
         this.trace = new TraceManager(opts?.traceLaunchStart, opts?.traceHostAllowlist);
+        this.deviceState = opts?.deviceStateHandler;
+        if (this.enabled) this.deviceState?.start?.();
         if (!isDev()) {
             this.hangs = new HangDetector(this);
             this.hangs.suspend(!this.enabled);
@@ -675,6 +693,7 @@ export class Telemetry {
         this.queue = [];
         if (this.intervalId) { clearInterval(this.intervalId); this.intervalId = null; }
         this.memoryHandler?.stop?.();
+        this.deviceState?.stop?.();
         this.hangs?.suspend(true);
         this.spans.clear();
         for (const key of [FAILED_EVENTS_KEY, SESSION_KEY]) {
@@ -693,6 +712,7 @@ export class Telemetry {
         this.startDelivery();
         if (this.memoryHandler) void this.memoryHandler.start().catch((err) => debug.warn("Telemetry memoryHandler start failed:", err));
         this.hangs?.suspend(false);
+        this.deviceState?.start?.();
         if (this.pendingStart) {
             this.pendingStart = false;
             await this.hydrateAndAnnounce();
@@ -971,7 +991,11 @@ export class Telemetry {
     public async startSession(reason: SessionReason) {
         this.lastActivity = Date.now();
         await this.persistSession();   // durable before it is announced
+        // #173: accessibility, once per session. Its own reads' settle is the only wait, and a
+        // failed read omits only that key — never the event.
+        const a11y = await this.deviceState?.accessibility().catch(() => ({})) ?? {};
         await this.log("session.started", {
+            ...a11y,
             "session.reason": reason,
             // §4.1, count only — never the hosts (#99). Ships on every session so a zero is
             // legible as "nobody opted in" rather than as a stripped header.
@@ -1341,6 +1365,11 @@ export class Telemetry {
             // an error: no counter, no forced flush, no eviction reprieve.
             if (eventName === 'app.crash' || eventName === 'app.hang') {
                 attributes['error.breadcrumbs'] = this.breadcrumbs.toJSON();
+            }
+            // #173: the cached battery read on failure rows only — the 39-key Context block is
+            // untouched. Synchronous: a crash never waits on a native call. Native only.
+            if (eventName === 'app.crash' || eventName === 'app.error' || eventName === 'app.hang') {
+                Object.assign(attributes, this.deviceState?.battery?.());
             }
             if (eventName === 'app.crash') {
                 crashed = true;
@@ -1780,6 +1809,7 @@ export class Telemetry {
         this.memoryHandler?.stop?.();
         this.webVitals?.stop();   // #160 — no vital may logMetric after shutdown
         this.hangs?.stop();
+        this.deviceState?.stop?.();
         await this.flush();
     }
 

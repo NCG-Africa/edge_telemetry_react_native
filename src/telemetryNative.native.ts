@@ -54,6 +54,7 @@ export class TelemetryNative extends TelemetryBase {
                 ({ Platform: { OS: platform } } = await import("react-native") as any);
             } catch { /* non-RN context (e.g. tests) — omit the suffix */ }
 
+            const { DeviceStateNative } = await import("./adapters/native/deviceState.native");
             const networkInfoTrackerNative = new NetworkInfoTrackerNative();
             const deviceInfoTrackerNative = new DeviceInfoTrackerNative();
 
@@ -76,6 +77,7 @@ export class TelemetryNative extends TelemetryBase {
                 traceHostAllowlist: opts?.traceHostAllowlist,
                 buildId: opts?.buildId,
                 enabled: opts?.enabled,
+                deviceStateHandler: new DeviceStateNative(),
             });
 
             // The offline queue drains through `sender.replayFailed()`, which the core

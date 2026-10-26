@@ -35,6 +35,7 @@ export class TelemetryWeb extends TelemetryBase {
 
             const { DeviceInfoTrackerWeb } = await import("./adapters/web/deviceInfo.web");
             const { NetworkInfoTrackerWeb } = await import("./adapters/web/networkInfo.web");
+            const { DeviceStateWeb } = await import("./adapters/web/deviceState.web");
             const deviceInfoTrackerWeb = new DeviceInfoTrackerWeb();
             const networkInfoTrackerWeb = new NetworkInfoTrackerWeb();
 
@@ -63,6 +64,7 @@ export class TelemetryWeb extends TelemetryBase {
                 traceHostAllowlist: opts?.traceHostAllowlist,
                 buildId: opts?.buildId,
                 enabled: opts?.enabled,
+                deviceStateHandler: new DeviceStateWeb(),
             });
 
             // Resume or start the session before the instance is visible (#92). On web the

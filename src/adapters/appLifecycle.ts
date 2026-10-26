@@ -24,6 +24,8 @@ export class AppLifecycleEmitter {
     // Every call, the seed included and not only transitions: the stall detector must tick
     // from the first foreground, and stop the moment the app leaves it (#165).
     this.telemetry.hangs?.setActive(isActive);
+    // #173: a foreground is a fresh chance the battery moved; the cache is never awaited.
+    if (isActive) this.telemetry.deviceState?.refresh?.().catch(() => {});
     const previous = this.active;
     this.active = isActive;
     if (previous === undefined || previous === isActive) return;

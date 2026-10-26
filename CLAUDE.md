@@ -312,6 +312,26 @@ device-info adapter no longer calls `getFingerprint()` or `getDeviceName()` at a
 **`device.orientation`, `network.*` and device state stay log-time** (§3.1), because a request
 that failed when the network dropped is better described by the network at completion.
 
+**Device state rides outside the block** (#173, decision #149) — the 39-key freeze is untouched.
+`DeviceStateHandler` in `core/telemetry.ts`, the pure rules in `adapters/deviceState.ts`, one
+adapter per build (`deviceState.native.ts` / `deviceState.web.ts`), handed to core by the entry.
+
+| Keys | Rides | Source |
+|---|---|---|
+| `device.battery_level` (int 0–100), `device.battery_charging`, `device.power_save` | **`app.crash`, `app.error`, `app.hang` only — native only** | `react-native-device-info` (`getBatteryLevel` ×100, `isBatteryCharging`, `getPowerState().lowPowerMode`) — Android's names and shape |
+| `device.reduce_motion` | `session.started`, both builds | native `AccessibilityInfo.isReduceMotionEnabled()`; web `matchMedia('(prefers-reduced-motion: reduce)')` |
+| `device.screen_reader`, `device.font_scale` | `session.started`, **native only** | `AccessibilityInfo.isScreenReaderEnabled()` (VoiceOver *and* TalkBack), `PixelRatio.getFontScale()` |
+
+Battery is a **cached** read — refreshed at init, on foreground (the lifecycle emitter calls
+`deviceState.refresh()`) and every 60 s — and `battery()` is **synchronous**, so a crash never
+awaits a native call; assigned after `collectContext`, so caller data cannot forge it. `-1`
+(simulator), non-finite, out-of-range, a missing method (older device-info) or a throw **omits
+that key**, never a sentinel. The refresh timer stops on `disable()` and `shutdown()`. Web ships no
+battery: `navigator.getBattery` is Chromium-only (§5.2's defect), and no screen reader or font
+scale, which RN-Web answers with constants. Accessibility is read **once per session**, awaited
+inside `startSession()` behind its own reads' settle only; a failed read omits only its key. All six
+keys are Tier C. Asserted at the seam in `src/deviceState.test.ts`.
+
 Caller `data` is flattened dot-notation on top — so it can override any `app.*`, `device.*` or
 `network.*` key, but **not** the identity keys, which are assembled after it. Keep attribute
 values primitive.
@@ -1752,6 +1772,14 @@ above rather than defects.
   explicit name upgrades the *old* view in place and the route event then bounds it under that
   name. Call `screenStart()` from the screen's own effect, which React runs after the commit the
   route event follows; the ordering is the host's, and the ruling is literal by design.
+- **Battery on a failure row is up to 60 s stale** — a cached read by design; the capture path
+  never waits.
+- **Battery coverage = `react-native-device-info` coverage.** Absent keys cannot tell "peer not
+  installed" from "read failed" from "simulator".
+- **A mid-session accessibility toggle is missed until the next session**, and a *resumed*
+  session emits no `session.started`, so it carries the launch's state. No listeners, by design.
+- **`device.screen_reader` and `device.font_scale` are RN inventions** and need backend columns;
+  the battery keys reuse Android's (§10.3 amended). Thermal state stays deferred — no source.
 - **`disable()` lasts one process.** The SDK persists no consent state — that is the host's
   record to keep; construct with `enabled: false` on the next launch.
 - **A batch already in flight at `disable()` still completes.** Its send began before the flip;

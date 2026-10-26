@@ -898,6 +898,17 @@ key — but **not** the identity keys, which are stamped afterwards.
 **Network and device state are read at log time**, not at init: a request that failed when the
 Wi-Fi dropped is better described by the network at the moment it completed.
 
+**Two small sets of device state ride outside the block**, on the rows that need them:
+
+| Keys | On | Platform |
+|---|---|---|
+| `device.battery_level` (0–100), `device.battery_charging`, `device.power_save` | `app.crash`, `app.error`, `app.hang` | Native only (needs `react-native-device-info`) |
+| `device.reduce_motion` | `session.started` | Both |
+| `device.screen_reader`, `device.font_scale` | `session.started` | Native only |
+
+Battery is a cached reading (refreshed every 60 s and on foreground), so reporting a crash never
+waits on it. A reading the device can't give — a simulator's `-1`, say — is left out, not faked.
+
 ---
 
 ## Wire format
