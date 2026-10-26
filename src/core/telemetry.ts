@@ -930,6 +930,7 @@ export class Telemetry {
         if (rec.start < this.sessionStart) return;
 
         await this.views.endView();
+        await this.abandonSpans();   // the sibling finalized it; our open journeys end with it
         this.sessionId = rec.id;
         this.sessionStart = rec.start;
         this.lastActivity = rec.lastActivity;
@@ -1016,6 +1017,18 @@ export class Telemetry {
         // #164: a span still open when its session ends is `abandoned` — here and only here,
         // under the session it was frozen to. Ended at the last activity, like the session's
         // own duration, so an idle rotation does not book 30 idle minutes as span width.
+        await this.abandonSpans();
+        await this.log("session.finalized", {
+            "session.duration_ms": Math.max(0, (this.lastActivity ?? this.sessionStart) - this.sessionStart),
+            "session.event_count": this.sessionEventCount,
+            "sdk.error_count": this.errorCount,
+            "session.reason": reason,
+        });
+        await this.flush();
+    }
+
+    /** Every span frozen to the session being left ships `abandoned` under it — before the switch. */
+    private async abandonSpans() {
         this.finalizing = true;
         try {
             for (const span of this.spans.takeSession(this.sessionId)) {
@@ -1024,13 +1037,6 @@ export class Telemetry {
         } finally {
             this.finalizing = false;
         }
-        await this.log("session.finalized", {
-            "session.duration_ms": Math.max(0, (this.lastActivity ?? this.sessionStart) - this.sessionStart),
-            "session.event_count": this.sessionEventCount,
-            "sdk.error_count": this.errorCount,
-            "session.reason": reason,
-        });
-        await this.flush();
     }
 
     /** Begin a fresh session: new id/start, reset per-session counters, emit session.started. */
@@ -1430,6 +1436,22 @@ export class Telemetry {
         }
     }
 
+    /** §2.5 4xx: drop the batch, book it, and tell a dev once — it is usually a wrong apiKey. */
+    private reject(err: unknown, count: number) {
+        this.recordDrop("rejected", count);
+        if (isDev() && !warnedRejected) {
+            warnedRejected = true;
+            console.warn(`edge-telemetry: the collector rejected a batch with HTTP ${statusOf(err)} — `
+                + "dropped, not retried. Check the apiKey and endpoint. (Shown once, in dev only.)");
+        }
+    }
+
+    /** §2.5 429: halt the drain until `X-RateLimit-Reset`, 1 s when the header is absent. */
+    private holdFor(err: unknown) {
+        const resetAt = (err as { resetAt?: unknown } | undefined)?.resetAt;
+        this.holdUntil = typeof resetAt === "number" ? resetAt : Date.now() + RATE_LIMIT_DEFAULT_HOLD_MS;
+    }
+
     /**
      * The crash path (§2 / §9.4): persist the whole queue, then send **one** batch reordered
      * so the crash rides in it. Not a drain — a dying process gets one round trip.
@@ -1485,11 +1507,8 @@ export class Telemetry {
         } catch (err) {
             debug.warn("Telemetry: crash-path send failed:", err);
             // §2.5 holds here too: a 4xx batch is dropped, never requeued.
-            if (isRejected(err)) { this.recordDrop("rejected", batch.length); return; }
-            if (statusOf(err) === 429) {
-                const resetAt = (err as any)?.resetAt;
-                this.holdUntil = typeof resetAt === "number" ? resetAt : Date.now() + RATE_LIMIT_DEFAULT_HOLD_MS;
-            }
+            if (isRejected(err)) { this.reject(err, batch.length); return; }
+            if (statusOf(err) === 429) this.holdFor(err);
             // Requeue only what the store does not already hold — the rest is safe on disk
             // and requeueing it would send it twice for no gain.
             const unsaved = batch.filter(e => seqOf(e) > this.crashPersistedThrough);
@@ -1762,19 +1781,10 @@ export class Telemetry {
      */
     private async onSendFailure(batch: TelemetryEvent[], err: unknown) {
         if (!this.enabled) return;   // #172: a batch in flight at disable() is not kept
-        if (isRejected(err)) {
-            this.recordDrop("rejected", batch.length);
-            if (isDev() && !warnedRejected) {
-                warnedRejected = true;
-                console.warn(`edge-telemetry: the collector rejected a batch with HTTP ${statusOf(err)} — `
-                    + "dropped, not retried. Check the apiKey and endpoint. (Shown once, in dev only.)");
-            }
-            return;
-        }
+        if (isRejected(err)) { this.reject(err, batch.length); return; }
         if (statusOf(err) === 429) {
             this.queue.unshift(...batch);
-            const resetAt = (err as any)?.resetAt;
-            this.holdUntil = typeof resetAt === "number" ? resetAt : Date.now() + RATE_LIMIT_DEFAULT_HOLD_MS;
+            this.holdFor(err);
             return;
         }
         if (this.sender?.onFailure) {

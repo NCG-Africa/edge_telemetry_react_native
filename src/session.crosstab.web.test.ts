@@ -103,6 +103,24 @@ describe("#161 cross-tab session sync", () => {
         expect(bViews.map(v => v.attributes!["view.id"])).not.toContain(bView2);
     });
 
+    it("a span open in tab B when A rotates ships abandoned under the old session, not orphaned", async () => {
+        const store = memoryStore();
+        const a = openTab(store); await ready(a);
+        const b = openTab(store); await ready(b);
+        const s1 = JSON.parse(record(store)).id;
+        b.t.startSpan("checkout");
+
+        vi.setSystemTime(Date.now() + 31 * MIN);
+        await a.t.log("custom_event");
+        await b.fire(record(store));
+        b.t.endSpan("checkout");                 // too late: it ended with S1
+        for (let i = 0; i < 50; i++) await Promise.resolve();
+        await b.t.flush();
+
+        const tasks = names(b.sent, "task.complete").map(e => [e.attributes!["task.outcome"], e.attributes!["session.id"]]);
+        expect(tasks).toEqual([["abandoned", s1]]);
+    });
+
     it("ignores a stale record from before this tab's session, and garbage", async () => {
         const store = memoryStore();
         const b = openTab(store); await ready(b);

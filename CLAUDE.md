@@ -150,7 +150,8 @@ type TelemetryOpts = {
 };
 ```
 
-Methods (both classes, all return Promises — except the three span methods, which are sync):
+Methods (both classes, all return Promises — except the span methods, `disable`/`enable` and
+`markScreenReady`, which are sync because each must act at the call):
 
 ```ts
 recordMetric(name, value, attrs?, {unit?}) / addBreadcrumb(name, data?) / startNewSession()   // #167
@@ -230,7 +231,8 @@ both senders, read by core through `err.status` — so a consumer's own sender t
 
 A wrong credential is the realistic 4xx, and persisting it would be terminal: the drain halts at
 batch 1 on every launch forever while the store fills and evicts. The crash path follows the same
-table for its one batch.
+table for its one batch — dev warning included — but **ignores an active 429 hold**: a dying
+process gets its one round trip regardless.
 
 On a 5xx / network failure the batch is persisted
 **through the `Store` port** under key `telemetry_failed_events` and replayed on next init.
@@ -790,7 +792,11 @@ the successor (`take(name, only)`).
 rows go out *before* `session.finalized`, with a `finalizing` flag that keeps them out of `log()`'s
 expiry check (re-entering it would rotate the expired session again). Open spans persist in the
 `telemetry_session` record (attrs as a JSON string, so a cycle cannot break the record) and are
-closable by name after a resume.
+closable by name after a resume. A sibling tab's rotation (#161) abandons them too, under the old
+session, before the record is adopted — the sibling already finalized it.
+
+A span **started before init** chains onto `instancePromise`; its handle's `end()` waits for that
+start when it has not run yet, so an end landing after `resolved` is set still closes it.
 
 A `startSpan` on an **already-expired** session triggers the rotation itself and freezes *after*
 it (`span.ready`), so a journey begun after a long idle belongs to the new session instead of
@@ -1222,7 +1228,7 @@ books nothing. A >64-char key is **dropped**, because truncating it would be the
 64 is dropped in iteration order.
 
 **Overflow is dropped, counted and warned — never a throw.** The warning is `isDev()`-gated and
-said **once per process**: it is the third of the Conventions' three console carve-outs, and it
+said **once per process**: it is the third of the Conventions' four console carve-outs, and it
 exists for the same reason as the other two — a consumer with a bad `identify()` payload is
 exactly the consumer who has not set `debug: true`.
 
@@ -1554,8 +1560,8 @@ above rather than defects.
 - **`user.custom_dropped` counts keys, not causes.** A cyclic value, an over-long key and the
   65th key all book `1` with nothing on the row telling them apart. The dev warning names the
   bounds; splitting the counter three ways would spend three columns on a debugging aid.
-- **The `user.custom.*` overflow warning is the third console carve-out** — dev-only, once per
-  process, outside the `debug()` gate, for the same reason as the other two.
+- **The `user.custom.*` overflow warning is the third console carve-out** (of four) — dev-only,
+  once per process, outside the `debug()` gate, for the same reason as the others.
 - **Arrays on the caller-`data` path changed shape**: `log("x", { tags: ["a","b"] })` shipped a
   raw array in v3 and ships `'["a","b"]'` now. The collector `fmt.Sprint`s a raw array into Go
   map syntax, so this is a better wire shape, but it *is* a value change on an existing key for
@@ -1612,7 +1618,7 @@ above rather than defects.
   item 7). Symbolication itself is greenfield backend-side.
 - **The `Error.stackTraceLimit` advisory writes to the console outside the `debug()` gate** —
   dev-only, once per process, and from the stack-capture chokepoint so #23's "construct → log →
-  flush is silent by default" still holds. It is the second of the two carve-outs the
+  flush is silent by default" still holds. It is the second of the four carve-outs the
   Conventions bullet names, not an exception to it.
 - **`ui.interaction` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.

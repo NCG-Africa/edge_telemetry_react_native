@@ -5,6 +5,7 @@
 // because each imports a different platform adapter.
 
 import { debug } from "./core/debug";
+import type { Telemetry } from "./core/telemetry";
 import type { TaskOutcome } from "./adapters/manualSpans";
 
 /** What `startSpan()` returns. `end()` is idempotent, never throws, and returns nothing to await. */
@@ -35,15 +36,15 @@ export abstract class TelemetryBase {
      * world: the host navigates on the very next line (§4.6's mint/emit split). Before it is
      * set they fall back to emit-time identity.
      */
-    protected resolved?: any;
+    protected resolved?: Telemetry;
 
-    /** Run `fn` against the core now if it is resolved, else once it is. Never throws. */
-    private now(fn: (inst: any) => unknown, what: string): void {
-        const swallow = (err: unknown) => debug.warn(`${what} failed:`, err);
+    /** Run `fn` against the core now if it is resolved, else once it is. Never throws or rejects. */
+    private now(fn: (inst: Telemetry) => unknown, what: string): Promise<void> {
+        const swallow = (err: unknown) => { debug.warn(`${what} failed:`, err); };
         try {
-            if (this.resolved) Promise.resolve(fn(this.resolved)).catch(swallow);
-            else this.instancePromise.then(fn).catch(swallow);
-        } catch (err) { swallow(err); }
+            return (this.resolved ? Promise.resolve(fn(this.resolved)) : this.instancePromise.then(fn))
+                .then(() => undefined, swallow);
+        } catch (err) { swallow(err); return Promise.resolve(); }
     }
 
     /**
@@ -109,13 +110,17 @@ export abstract class TelemetryBase {
         const at = Date.now();
         let span: unknown;
         let ended = false;
-        this.now((inst) => { span = inst.startSpan(name, attributes, at); }, "startSpan");
+        let startRan = false;
+        const started = this.now((inst) => { span = inst.startSpan(name, attributes, at); startRan = true; }, "startSpan");
         return {
             end: (opts) => {
                 if (ended) return;
                 ended = true;
                 const endAt = Date.now();
-                this.now((inst) => span && inst.endSpan(name, opts?.outcome ?? "completed", opts?.attributes, endAt, span), "span.end");
+                const close = () => this.now((inst) => span && inst.endSpan(name, opts?.outcome ?? "completed", opts?.attributes, endAt, span as any), "span.end");
+                // A pre-init start is still queued when `resolved` lands; an end in that gap
+                // must wait for it, or it sees no span. Otherwise close now, in call order.
+                if (startRan) close(); else void started.then(close);
             },
         };
     }

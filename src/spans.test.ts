@@ -107,6 +107,26 @@ for (const build of ["native", "web"] as const) {
       expect(sent.some((e) => e.eventName === "app.error")).toBe(false);
     });
 
+    it("an end landing after init but before a pre-init start has run still closes the span", async () => {
+      const { createTelemetry } = build === "native"
+        ? await import("./createTelemetry.native")
+        : await import("./createTelemetry.web");
+      const sent: TelemetryEvent[] = [];
+      const t = createTelemetry({
+        apiKey: "edge_span", endpoint: "https://x/telemetry",
+        sender: { send: async (e: TelemetryEvent[]) => { sent.push(...e); } },
+        store: memoryStore() as any, batchSize: 500, flushIntervalMs: 0,
+      });
+      // Queued between the entry's `resolved` assignment and the start's own continuation.
+      let handle: ReturnType<typeof t.startSpan> | undefined;
+      (t as any).instancePromise.then(() => handle!.end());
+      handle = t.startSpan("early");
+      await (t as any).instancePromise;
+      await settle();
+      await t.flush();
+      expect(tasks(sent).map((r) => [r["task.name"], r["task.outcome"]])).toEqual([["early", "completed"]]);
+    });
+
     it("endSpan closes by name; unknown, blank, superseded and over-cap are inert and never throw", async () => {
       const { t, sent } = await launch();
       t.startSpan("journey");
