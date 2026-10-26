@@ -108,7 +108,7 @@ describe("event.sequence (§2.4)", () => {
       sender: r.sender, batchSize: 50, flushIntervalMs: 0,
     });
 
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.log("custom_event");
     await t.flush();
 
@@ -128,13 +128,13 @@ describe("event.sequence (§2.4)", () => {
 
     await t.log("custom_event", { secret: true });
     await t.log("custom_event", { secret: true });
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
 
     // session.started took 0 and app.start 1; the two scrubbed rows take nothing, so
     // navigation is 2, not 4. A gap here would be indistinguishable from real loss, which
     // is what §2.4 forbids.
-    expect(seq(r.sent().find(e => e.eventName === "navigation")!)).toBe(2);
+    expect(seq(r.sent().find(e => e.eventName === "custom_event")!)).toBe(2);
   });
 
   it("continues across a resume — a restart at 0 would forge duplicate dedup keys", async () => {
@@ -156,7 +156,7 @@ describe("event.sequence (§2.4)", () => {
       sender: r.sender, batchSize: 50, flushIntervalMs: 0, store,
     });
 
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
 
     // Resumed: no session.started, and the ordinal picks up where the record left off.
@@ -164,7 +164,7 @@ describe("event.sequence (§2.4)", () => {
     // — so it takes 42 and navigation follows at 43.
     expect(r.sent().some(e => e.eventName === "session.started")).toBe(false);
     expect(seq(r.sent().find(e => e.eventName === "app.start")!)).toBe(42);
-    expect(seq(r.sent().find(e => e.eventName === "navigation")!)).toBe(43);
+    expect(seq(r.sent().find(e => e.eventName === "custom_event")!)).toBe(43);
   });
 
   it("cannot be forged or deleted by beforeSend — it is Tier A", async () => {
@@ -180,7 +180,7 @@ describe("event.sequence (§2.4)", () => {
       },
     });
 
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
     expect(r.sent().map(seq)).toEqual([0, 1, 2]);   // session.started, app.start, navigation
   });
@@ -195,7 +195,7 @@ describe("drop accounting (§3.7 / §11)", () => {
       sender: r.sender, batchSize: 5000, flushIntervalMs: 0,
     });
 
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
     const clean = r.sent();
     expect(clean.every(e => e.attributes!["sdk.events_dropped"] === 0)).toBe(true);
@@ -204,7 +204,7 @@ describe("drop accounting (§3.7 / §11)", () => {
     // Overflow the queue, then emit one more so the counters have a row to ride on:
     // they are reported by the *next* event, never the one whose enqueue caused the drop.
     for (let i = 0; i < 600; i++) await t.log("custom_event", { i });
-    await t.log("navigation", { after: true });
+    await t.log("custom_event", { after: true });
     await t.flush();
 
     const last = r.sent().find(e => e.attributes?.after === true)!;

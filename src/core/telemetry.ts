@@ -1,9 +1,11 @@
-import { debug } from "./debug";
-import { NavigationTracker } from "../adapters/navigationTracker";
-import { ScreenTimingTracker } from "../adapters/screenTiming";
+import { debug, isDev } from "./debug";
+import { isRejected, statusOf } from "../adapters/batch";
 import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
 import { TraceManager } from "../adapters/traceManager";
-import { BreadcrumbBuffer } from "./breadcrumbs";
+import { HangDetector } from "../adapters/hangDetector";
+import { FAILED_EVENTS_KEY } from "../adapters/failedEvents";
+import { SpanRegistry, spanAttributes, taskName, type OpenSpan, type PersistedSpan, type TaskOutcome } from "../adapters/manualSpans";
+import { BreadcrumbBuffer, boundCrumb } from "./breadcrumbs";
 import { buildErrorAttributes, type ErrorSource } from "../adapters/crashCapture";
 import { randomHex } from "./utils/uuid";
 import type { Store } from "./store";
@@ -20,8 +22,8 @@ export type { Orientation };
 // v3 wire contract constants
 // §3.3 / §12's item 10 — `react-native-{Platform.OS}`, joining Flutter's `flutter-{os}` shape.
 // ⚠ NOT a closed three-value enum: RN-Windows emits `react-native-windows`. The bare
-// framework name survives only for a direct `new Telemetry()` with no entry-declared
-// platform, which is the same gap `apiKey` already has.
+// framework name survives only for a core `new Telemetry()` with no entry-declared
+// platform — tests only: neither core nor the entry classes are constructible publicly (#159).
 const sdkPlatform = (platform?: string) => platform ? `react-native-${platform}` : "react-native";
 const SDK_VERSION = PKG_VERSION;       // sdk.version follows the published package version
 const SESSION_IDLE_MS = 30 * 60 * 1000; // rotate the session after 30 min of inactivity (iOS ADR-004)
@@ -40,7 +42,19 @@ const FLATTEN_MAX_DEPTH = 8;
  */
 const QUEUE_MAX_EVENTS = 500;
 
-/** `sdk.drop_reason` (§11). `rejected` has no producer until 4xx-drops-the-batch lands (#113). */
+/**
+ * §2.4's draining `flush()`: at most this many batches per call, sequential, paced to the
+ * collector's 10 req/s burst — it 429s at batch 11 otherwise (§2.3). Internal constants.
+ */
+const DRAIN_MAX_BATCHES = 50;
+const DRAIN_PACE_MS = 100;
+/** A 429 with no usable `X-RateLimit-Reset` still holds off for one burst window. */
+const RATE_LIMIT_DEFAULT_HOLD_MS = 1000;
+
+/** §2.5's one `__DEV__` warning for a rejected batch — once per process. */
+let warnedRejected = false;
+
+/** `sdk.drop_reason` (§11). `rejected` is a 4xx-dropped batch (§2.5, #162). */
 export type DropReason = "queue_full" | "store_full" | "rejected";
 
 /**
@@ -76,7 +90,7 @@ export const DEVICE_ID_KEY = "telemetry_device_id";
 export const SESSION_KEY = "telemetry_session";
 
 /** `session.reason` domains: 3 on session.started, the last 2 on session.finalized (§4.1/§4.2). */
-export type SessionReason = "launch" | "idle" | "max_duration";
+export type SessionReason = "launch" | "idle" | "max_duration" | "manual";
 export type SessionEndReason = Exclude<SessionReason, "launch">;
 
 /**
@@ -101,6 +115,9 @@ type PersistedSession = {
     // at the old one makes every extrapolation off it wrong.
     sampled: boolean;
     sampleRate: number;
+    // Open manual spans (#164): a journey crossing process death is closable by name after
+    // the resume, and one the session outlives is `abandoned` at its finalize.
+    spans?: PersistedSpan[];
 };
 
 /** What hydration decided, so the emitting half stays free of storage concerns. */
@@ -115,8 +132,11 @@ const USER_ID_MAX = 255;
 // original name carried as `event.name`. Includes metric names so the metric path
 // (slice: native metrics) isn't remapped.
 const ALLOWED_NAMES = new Set<string>([
-    "session.started", "session.finalized", "app_lifecycle", "navigation",
-    "screen.duration", "http.request", "network_change",
+    // `navigation` and `screen.duration` are **removed in v5** (#163, §4.0): the `view` entity
+    // is the only screen feed. Off this list, a consumer's `log("navigation")` is rewritten to
+    // `custom_event` like any unknown name.
+    "session.started", "session.finalized", "app_lifecycle",
+    "http.request", "network_change",
     "user.profile.update", "custom_event", "app.crash", "view",
     // ⚠ `app.error` needs backend allowlist sign-off before it ships (#100, §4.7).
     "app.error",
@@ -126,6 +146,10 @@ const ALLOWED_NAMES = new Set<string>([
     // ⚠ `app.start` needs backend allowlist sign-off before it ships (#98, §4.3/§6.2) — an
     // unlisted eventName is dropped on ingest. It is listed here, so it is being emitted.
     "app.start",
+    // ⚠ #164's manual span terminal — needs backend allowlist sign-off before it ships.
+    "task.complete",
+    // ⚠ #165's JS-thread stall — needs backend allowlist sign-off before it ships.
+    "app.hang",
     "frame_render_time", "memory_usage",
     "LCP", "FCP", "CLS", "INP", "TTFB",
     // ⚠ `page_load`, `resource_timing` and `long_task` are **retired, not deferred**
@@ -249,6 +273,19 @@ export interface MemoryHandler {
     stop?(): void;
 }
 
+/**
+ * #173's device state. `battery()` is synchronous on purpose — a cached last read — so no
+ * failure row ever awaits a native call. Native implements all of it; web only `accessibility`.
+ */
+export interface DeviceStateHandler {
+    battery?(): Record<string, number | boolean>;
+    refresh?(): Promise<void>;
+    start?(): void;
+    stop?(): void;
+    /** Read once per session, onto `session.started`. A failed read omits only its own key. */
+    accessibility(): Promise<Record<string, number | boolean>>;
+}
+
 export interface NavigationHandler {
     start(): Promise<void>;
 }
@@ -321,6 +358,7 @@ type Opts = {
     // fork time, and the two are not comparable — see TraceManager.
     traceLaunchStart?: number;
     deviceInfoHandler?: DeviceInfoHandler;
+    deviceStateHandler?: DeviceStateHandler;   // #173 — battery on failure rows, accessibility on session.started
     networkInfoHandler?: NetworkInfoHandler;
     store?: Store;              // persisted state port (#89); defaulted per build by the entry
     // Constructor-only (§3.6). A runtime setter leaves a window between init and
@@ -338,13 +376,23 @@ type Opts = {
     // CodePush the binary is unchanged, so that fallback resolves against the wrong map and
     // produces frames that are plausible and wrong, with nothing on the row marking them.
     buildId?: string;
-    // The deprecated native screen feeds — `navigation` and `screen.duration` (§4.11) — on
-    // the ROUTE path. Defaults on, because shared core's v3 behaviour *is* the native one;
-    // the web entry opts out, having never emitted `screen.duration` at all. It does not
-    // silence web's own history path, which still emits `navigation`. Config from the entry,
-    // which is the platform split point — not a branch inside shared code.
-    deprecatedScreenFeeds?: boolean;
+    // #172 — `false` constructs dark until `enable()`. Default true.
+    enabled?: boolean;
 };
+
+const validRate = (r: unknown): r is number =>
+    typeof r === "number" && Number.isFinite(r) && r >= 0 && r <= 1;
+
+/** The durable session record, or nothing when it is absent, corrupt or untrustworthy. */
+function parseSessionRecord(raw: string | null | undefined): Partial<PersistedSession> & Pick<PersistedSession, "id" | "start" | "lastActivity"> | undefined {
+    if (typeof raw !== "string") return undefined;
+    let saved: Partial<PersistedSession>;
+    try { saved = JSON.parse(raw); } catch { return undefined; }
+    if (typeof saved?.id !== "string"
+        || typeof saved.start !== "number"
+        || typeof saved.lastActivity !== "number") return undefined;
+    return saved as any;
+}
 
 /**
  * A bad rate must not silently mute a deployment: `Math.random() < NaN` is always false,
@@ -374,9 +422,6 @@ export class Telemetry {
     private intervalId: any = null;
     private endpoint?: string;
     private crashHandler?: CrashHandler;
-    private navigationTracker?: NavigationTracker;
-    // single screen-tracking API (timed); used by the native screenStart/screenEnd
-    public screens: ScreenTimingTracker;
     // The View entity (§4.5, #96): view.id/view.name on every row, the `view` event at each
     // of the four exit boundaries, and the name ladder. Public because the route, lifecycle
     // and interaction adapters all feed it.
@@ -393,10 +438,12 @@ export class Telemetry {
     // The web vitals tracker, parked here for the same reason (§5.3, #106): `trackWebVitals()`
     // must reuse it, or a second call double-subscribes and doubles every vital row. Unset on
     // native, which emits no vitals ever.
-    public webVitals?: { start(): Promise<void> };
-    private readonly deprecatedScreenFeeds: boolean;
-    // last-known screen; best-effort context for the deprecated screen feeds (#33)
-    public currentScreen?: string;
+    public webVitals?: { start(): Promise<void>; stop(): void };
+    // #165's stall detector. Off under `__DEV__` — a debugger pause is not a hang — and
+    // otherwise driven by the lifecycle emitter, so it only ticks in the foreground.
+    public readonly hangs?: HangDetector;
+    // #173. Public so the lifecycle emitter can refresh the battery cache on foreground.
+    public readonly deviceState?: DeviceStateHandler;
 
     private networkInfoHandler: NetworkInfoHandler;
     private deviceInfoHandler: DeviceInfoHandler;
@@ -463,6 +510,17 @@ export class Telemetry {
     // `app.start` is once per *process* (§6.2), and web re-enters resumeOrStartSession() on a
     // bfcache restore — which resumes a process rather than starting one.
     private appStartEmitted = false;
+    /** `app.start.js_ready_ms` (§4.3, #171) — native only; the entry's reader, run at emit. */
+    public jsReadyMs?: () => number | undefined;
+    // Open manual spans (#164). Persisted with the session record.
+    private readonly spans = new SpanRegistry();
+    // Set while finalizeSession() emits its `abandoned` rows: they are bookkeeping, and
+    // letting them through log()'s expiry check would rotate an expired session again.
+    private finalizing = false;
+    // #172's kill-switch. Off: nothing is emitted, sent or written, and the timers are stopped.
+    private enabled: boolean;
+    // A dark start owes the session it skipped — announced at the first `enable()`.
+    private pendingStart = false;
 
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
@@ -478,6 +536,10 @@ export class Telemetry {
         // "Omitted when unset, never `\"\"`" (§4.8): an empty-string build id would reproduce
         // §9.3's `rum_apps` collapse inside symbolication, where absence is itself the signal.
         this.buildId = typeof opts?.buildId === "string" && opts.buildId !== "" ? opts.buildId : undefined;
+        this.enabled = opts?.enabled !== false;
+        // A dark-started process skips `app.start` for good: it documents a launch, and a
+        // launch the user had not consented to be measured is not one to fabricate later.
+        if (!this.enabled) this.appStartEmitted = true;
         this.configuredSampleRate = normalizeSampleRate(opts?.sessionSampleRate);
         this.sampleRate = this.configuredSampleRate;
         // Rolled here so a bare `new Telemetry()` — no resumeOrStartSession() — is decided
@@ -490,25 +552,18 @@ export class Telemetry {
         this.sessionStart = Date.now();
         this.sdkVersion = opts?.sdkVersion ?? SDK_VERSION;
 
-        // auto replay if supported
-        if (this.sender?.replayFailed) {
-            // don't block constructor; best-effort
-            this.sender.replayFailed().catch((err: any) => {
-                debug.warn("Telemetry replay failed Telemetry class:", err);
-            });
-        }
+        if (this.enabled) this.startDelivery();
 
-        if (this.flushIntervalMs > 0) {
-            this.intervalId = setInterval(() => this.flush().catch(() => { }), this.flushIntervalMs);
-        }
-
-        this.navigationTracker = new NavigationTracker(this);
-        this.screens = new ScreenTimingTracker(this);
-        this.deprecatedScreenFeeds = opts?.deprecatedScreenFeeds ?? true;
         // Before the ViewManager, not after: the launch root is minted in this constructor so
         // the initial view can parent to it. A view that minted its own root instead would
         // make a web hard load report `trace.root_type = navigation` (§6.2).
         this.trace = new TraceManager(opts?.traceLaunchStart, opts?.traceHostAllowlist);
+        this.deviceState = opts?.deviceStateHandler;
+        if (this.enabled) this.deviceState?.start?.();
+        if (!isDev()) {
+            this.hangs = new HangDetector(this);
+            this.hangs.suspend(!this.enabled);
+        }
         // The initial view opens here, at SDK init — so no row can ever precede a view (§4.5).
         this.views = new ViewManager(this);
 
@@ -557,14 +612,19 @@ export class Telemetry {
      * Extend the breadcrumb trail without emitting anything. §4.7 demotes `console.warn` to
      * exactly this — React's dev-mode warnings were the bulk of v3's `app.crash` volume.
      *
-     * SDK-internal: `public` only so `adapters/crashCapture.ts` can reach it. Not on
-     * `TelemetryBase` and not part of the consumer API — a host app that wants a trail entry
-     * should `log()` an event, which extends the trail anyway.
+     * Also the public `addBreadcrumb()` (#167) — one path, so the SDK's own crumbs and the
+     * host's obey the same bounds (`boundCrumb`). Shows on `app.crash` and `app.hang`.
      */
     public addBreadcrumb(name: string, data?: Record<string, any>) {
-        // `name` and `timestamp` last: a caller's `data` annotates the crumb, it does not
-        // rename it out from under the trail.
-        this.breadcrumbs.add({ ...data, name, timestamp: new Date().toISOString() });
+        this.breadcrumbs.add(boundCrumb(name, data));
+    }
+
+    /**
+     * `startNewSession()` (#167) — logout/login. The same finalize + started pair as an idle
+     * or max-duration rotation, with `session.reason: manual` on both.
+     */
+    public async startNewSession() {
+        await this.rotateSession("manual");
     }
 
     public trackErrors(crashHandler: CrashHandler, options?: CrashHandlerOptions) {
@@ -602,13 +662,73 @@ export class Telemetry {
         });
     }
 
+    /** The offline replay and the flush timer — at construction, and again at each `enable()`. */
+    private startDelivery() {
+        // auto replay if supported — best-effort, never blocks
+        if (this.sender?.replayFailed) {
+            this.sender.replayFailed().catch((err: any) => {
+                debug.warn("Telemetry replay failed Telemetry class:", err);
+            });
+        }
+        if (this.flushIntervalMs > 0 && !this.intervalId) {
+            this.intervalId = setInterval(() => this.flush().catch(() => { }), this.flushIntervalMs);
+        }
+    }
+
+    isEnabled(): boolean {
+        return this.enabled;
+    }
+
+    /**
+     * The consent kill-switch (#172). Synchronous: the flag is off before this returns. The
+     * in-memory queue, the offline store and the session record are dropped — an opt-out
+     * means nothing is sent **and nothing is kept**, open spans included — and every timer
+     * stops; the rAF loop keeps running but `logMetric` discards its samples. While off the
+     * network patches pass through untouched. `device.id` is kept: it is not telemetry, and
+     * minting a new one at re-consent would read as a new install.
+     */
+    disable(): void {
+        if (!this.enabled) return;
+        this.enabled = false;
+        this.queue = [];
+        if (this.intervalId) { clearInterval(this.intervalId); this.intervalId = null; }
+        this.memoryHandler?.stop?.();
+        this.deviceState?.stop?.();
+        this.hangs?.suspend(true);
+        this.spans.clear();
+        for (const key of [FAILED_EVENTS_KEY, SESSION_KEY]) {
+            Promise.resolve(this.store.remove(key)).catch((err) => debug.warn("disable: store remove failed:", err));
+        }
+    }
+
+    /**
+     * Resume collection (#172) and run the lazy session-expiry check — a session can expire
+     * while disabled. A dark-started process announces its session here (`session.started`,
+     * unless a live record resumes) and never emits `app.start`.
+     */
+    async enable(): Promise<void> {
+        if (this.enabled) return;
+        this.enabled = true;
+        this.startDelivery();
+        if (this.memoryHandler) void this.memoryHandler.start().catch((err) => debug.warn("Telemetry memoryHandler start failed:", err));
+        this.hangs?.suspend(false);
+        this.deviceState?.start?.();
+        if (this.pendingStart) {
+            this.pendingStart = false;
+            await this.hydrateAndAnnounce();
+            return;
+        }
+        const reason = this.expiryReason(Date.now());
+        if (reason) await this.rotateSession(reason);
+    }
+
     public trackMemoryUsage(memoryHandler: MemoryHandler) {
         // Re-registration retires the incumbent's timer. `trackMemoryUsage()` is auto-started
         // in the native constructor *and* public, so a consumer calling it hands core a second
         // tracker — without this, two 30-second loops and double the sample volume.
         this.memoryHandler?.stop?.();
         this.memoryHandler = memoryHandler;
-        void memoryHandler.start().catch((err) => {
+        if (this.enabled) void memoryHandler.start().catch((err) => {
             debug.warn("Telemetry memoryHandler start failed:", err);
         });
     }
@@ -694,6 +814,8 @@ export class Telemetry {
      * (§4.1), or `COUNT(session.started)` stops equalling session count.
      */
     public async resumeOrStartSession() {
+        // Dark (#172): no record read, no session announced, nothing written until `enable()`.
+        if (!this.enabled) { this.pendingStart = true; return; }
         await this.hydrateAndAnnounce();
         // Once per process and on every path — a resume emits no `session.started` at all
         // (§4.1), so `session.reason: "launch"` undercounts launches and `app.start` is the
@@ -725,7 +847,11 @@ export class Telemetry {
     private async emitAppStart() {
         if (this.appStartEmitted) return;
         this.appStartEmitted = true;
-        await this.log("app.start", this.trace.launchRootAttributes());
+        const jsReady = this.jsReadyMs?.();
+        await this.log("app.start", {
+            ...this.trace.launchRootAttributes(),
+            ...(jsReady === undefined ? {} : { "app.start.js_ready_ms": jsReady }),
+        });
     }
 
     /**
@@ -747,12 +873,9 @@ export class Telemetry {
         }
         if (read.status === "miss") return { kind: "nothing" };
 
-        let saved: Partial<PersistedSession>;
-        try { saved = JSON.parse(read.value); } catch { return { kind: "nothing" }; }
         // A record we can't trust is not a session to resume; mint rather than guess.
-        if (typeof saved?.id !== "string"
-            || typeof saved.start !== "number"
-            || typeof saved.lastActivity !== "number") return { kind: "nothing" };
+        const saved = parseSessionRecord(read.value);
+        if (!saved) return { kind: "nothing" };
 
         this.sessionId = saved.id;
         this.sessionStart = saved.start;
@@ -761,6 +884,7 @@ export class Telemetry {
         this.eventSequence = saved.eventSequence ?? 0;
         this.sessionEventCount = saved.eventCount ?? 0;
         this.errorCount = saved.errorCount ?? 0;
+        this.spans.restore(saved.spans);
         // A resume is not a rotation: the decision and the rate it was rolled at are
         // adopted as-is, so a relaunch can't half-sample a session. A record written
         // before this field existed reads as `undefined` and keeps the fresh roll.
@@ -768,14 +892,59 @@ export class Telemetry {
         // browser-wide localStorage — so an out-of-range value would ship as a divisor and
         // silently mis-scale every count taken off it. A record we can't trust here loses
         // its decision too, and the fresh constructor roll stands.
-        if (typeof saved.sampled === "boolean"
-            && Number.isFinite(saved.sampleRate) && saved.sampleRate! >= 0 && saved.sampleRate! <= 1) {
+        if (typeof saved.sampled === "boolean" && validRate(saved.sampleRate)) {
             this.sampled = saved.sampled;
             this.sampleRate = saved.sampleRate!;
         }
 
         const reason = this.expiryReason(Date.now());
         return reason ? { kind: "expired", reason } : { kind: "resumed" };
+    }
+
+    /**
+     * Another tab wrote the shared session record (#161, web's `storage` event). Two tabs keep
+     * their own in-memory `lastActivity`, so without this one can idle-expire a session the
+     * other is still using, or both can finalize the same `session.id`.
+     *
+     * Same id: fold in the other tab's progress — activity and the ordinals only ever move
+     * forward, so `max` is the merge. A different id is the other tab's rotation: this tab's
+     * live view is emitted under the session it belongs to, then the successor session is
+     * adopted **silently** — its `session.started` already shipped from the tab that rotated,
+     * and the retired one's `session.finalized` too, which is the whole point.
+     *
+     * Shared core, no platform branch: the entry decides what feeds it.
+     */
+    public async adoptSessionRecord(raw: string | null | undefined) {
+        const rec = parseSessionRecord(raw);
+        if (!rec) return;
+        if (rec.id === this.sessionId) {
+            this.lastActivity = Math.max(this.lastActivity ?? rec.lastActivity, rec.lastActivity);
+            this.sessionSequence = Math.max(this.sessionSequence, rec.sequence ?? 0);
+            this.eventSequence = Math.max(this.eventSequence, rec.eventSequence ?? 0);
+            this.sessionEventCount = Math.max(this.sessionEventCount, rec.eventCount ?? 0);
+            this.errorCount = Math.max(this.errorCount, rec.errorCount ?? 0);
+            return;
+        }
+        // An older record landing late (a slow tab persisting its pre-rotation state) must not
+        // drag this tab back into a session it has already left.
+        if (rec.start < this.sessionStart) return;
+
+        await this.views.endView();
+        await this.abandonSpans();   // the sibling finalized it; our open journeys end with it
+        this.sessionId = rec.id;
+        this.sessionStart = rec.start;
+        this.lastActivity = rec.lastActivity;
+        this.sessionSequence = rec.sequence ?? 0;
+        this.eventSequence = rec.eventSequence ?? 0;
+        this.sessionEventCount = rec.eventCount ?? 0;
+        this.errorCount = rec.errorCount ?? 0;
+        this.crashPersistedThrough = -1;
+        if (typeof rec.sampled === "boolean" && validRate(rec.sampleRate)) {
+            this.sampled = rec.sampled;
+            this.sampleRate = rec.sampleRate!;
+        }
+        this.trace.clear();   // `trace.id` never spans a `session.id` (§6.6)
+        await this.views.beginView("session_rotation");
     }
 
     /**
@@ -800,6 +969,7 @@ export class Telemetry {
      * is an AsyncStorage round-trip — debounce here if it ever shows up in a trace.
      */
     private async persistSession() {
+        if (!this.enabled) return;   // #172: nothing is written while disabled
         const record: PersistedSession = {
             id: this.sessionId,
             start: this.sessionStart,
@@ -810,6 +980,7 @@ export class Telemetry {
             errorCount: this.errorCount,
             sampled: this.sampled,
             sampleRate: this.sampleRate,
+            spans: this.spans.toJSON(),
         };
         const write = await this.store.set(SESSION_KEY, JSON.stringify(record));
         // Same first-class `unavailable` path as the read: nothing to retry and nothing to
@@ -821,7 +992,11 @@ export class Telemetry {
     public async startSession(reason: SessionReason) {
         this.lastActivity = Date.now();
         await this.persistSession();   // durable before it is announced
+        // #173: accessibility, once per session. Its own reads' settle is the only wait, and a
+        // failed read omits only that key — never the event.
+        const a11y = await this.deviceState?.accessibility().catch(() => ({})) ?? {};
         await this.log("session.started", {
+            ...a11y,
             "session.reason": reason,
             // §4.1, count only — never the hosts (#99). Ships on every session so a zero is
             // legible as "nobody opted in" rather than as a stripped header.
@@ -839,6 +1014,10 @@ export class Telemetry {
      * not the 6 idle hours that followed it.
      */
     public async finalizeSession(reason: SessionEndReason) {
+        // #164: a span still open when its session ends is `abandoned` — here and only here,
+        // under the session it was frozen to. Ended at the last activity, like the session's
+        // own duration, so an idle rotation does not book 30 idle minutes as span width.
+        await this.abandonSpans();
         await this.log("session.finalized", {
             "session.duration_ms": Math.max(0, (this.lastActivity ?? this.sessionStart) - this.sessionStart),
             "session.event_count": this.sessionEventCount,
@@ -846,6 +1025,18 @@ export class Telemetry {
             "session.reason": reason,
         });
         await this.flush();
+    }
+
+    /** Every span frozen to the session being left ships `abandoned` under it — before the switch. */
+    private async abandonSpans() {
+        this.finalizing = true;
+        try {
+            for (const span of this.spans.takeSession(this.sessionId)) {
+                await this.emitTask(span, "abandoned", undefined, Math.max(span.start, this.lastActivity ?? span.start));
+            }
+        } finally {
+            this.finalizing = false;
+        }
     }
 
     /** Begin a fresh session: new id/start, reset per-session counters, emit session.started. */
@@ -876,6 +1067,70 @@ export class Telemetry {
         // the departing view's `view` event under the *old* id.
         await this.views.beginView("session_rotation");
         await this.startSession(reason);
+    }
+
+    // ---------- Manual spans (#164) ----------
+
+    /**
+     * Open a manual span — **synchronously**, so the trace keys, `view.id` and `session.id`
+     * freeze at the call (§3.1). Inert (`undefined`, reported through `debug()`) for a blank
+     * name or past 32 open spans; never throws. Refreshes `lastActivity` but is not an
+     * action: `view.action_count` counts `ui.interaction` only.
+     *
+     * On a session that has already expired the freeze waits for the rotation the start
+     * itself triggers, so a journey begun after a long idle belongs to the new session
+     * rather than being `abandoned` by the very next row.
+     */
+    public startSpan(name: unknown, attrs?: Record<string, unknown>, at: number = Date.now()): OpenSpan | undefined {
+        if (!this.enabled) return undefined;   // #172: inert while disabled
+        const n = taskName(name);
+        if (!n) { debug.warn("startSpan: blank name — span is inert"); return undefined; }
+        const span = this.spans.start(n, at, spanAttributes(attrs));
+        if (!span) { debug.warn(`startSpan: ${n} — more than 32 open spans, span is inert`); return undefined; }
+        const freeze = () => {
+            span.keys = this.trace.manualSpan(at);
+            span.viewId = this.views.id;
+            span.sessionId = this.sessionId;
+            span.sessionStart = this.sessionStart;
+            this.lastActivity = Math.max(this.lastActivity ?? at, at);
+            this.persistSession().catch((err) => debug.warn("startSpan: persist failed:", err));
+        };
+        const reason = this.expiryReason(at);
+        if (reason) {
+            span.ready = this.rotateSession(reason)
+                .catch((err) => debug.warn("startSpan: rotation failed:", err))
+                .then(() => { if (this.spans.has(span)) freeze(); });
+        } else {
+            freeze();
+        }
+        return span;
+    }
+
+    /**
+     * Close a span by name and emit its one `task.complete`. An unknown or already-closed
+     * name is a no-op. With `only`, the close is a handle's, and a superseded handle cannot
+     * close the span that replaced it.
+     */
+    public async endSpan(name: unknown, outcome: TaskOutcome = "completed", attrs?: Record<string, unknown>, at: number = Date.now(), only?: OpenSpan) {
+        const n = taskName(name);
+        const span = n === undefined ? undefined : this.spans.take(n, only);
+        if (!span) { debug.log(`endSpan: no open span named ${String(name)}`); return; }
+        await span.ready;
+        await this.emitTask(span, outcome, spanAttributes(attrs), at);
+    }
+
+    private async emitTask(span: OpenSpan, outcome: TaskOutcome, attrs: Record<string, unknown> | undefined, end: number) {
+        if (!span.keys || !span.viewId || !span.sessionId || span.sessionStart === undefined) return;
+        await this.log("task.complete", {
+            ...span.attrs,
+            ...attrs,
+            ...span.keys,
+            "task.name": span.name,
+            "task.outcome": outcome,
+            // On root *and* child — the flagged §6.3 exception: a declared end is not
+            // derivable from children, so a root's width cannot be left to the server.
+            "span.duration_ms": Math.max(0, end - span.start),
+        }, { at: end, viewId: span.viewId, sessionId: span.sessionId, sessionStart: span.sessionStart });
     }
 
     /** Boundary rotation: finalize the old session then start a fresh one (the pair). */
@@ -1068,6 +1323,7 @@ export class Telemetry {
      * Automatically attaches userId and sessionId to every queued event.
      */
     async log(name: string, data?: Record<string, any>, snapshot?: LogSnapshot) {
+        if (!this.enabled) return;   // #172: nothing is emitted while disabled
         this.eventCount++;
         let activity = false;
         let crashed = false;
@@ -1078,7 +1334,7 @@ export class Telemetry {
         // `view` joins the session events here: it is emitted *by* a boundary, from inside
         // rotateSession() among others, so letting it re-enter the expiry check would recurse
         // forever on an already-expired session. It is bookkeeping, not user activity.
-        if (!name.startsWith('session.') && name !== 'view') {
+        if (!name.startsWith('session.') && name !== 'view' && !this.finalizing) {
             const now = Date.now();
             const reason = this.expiryReason(now);
             if (reason) await this.rotateSession(reason);
@@ -1111,8 +1367,17 @@ export class Telemetry {
             // consumer-controlled, and a 1-2 KB blob on a high-volume event is how the
             // transport budget gets spent by the SDK's own doing. Stringified, because
             // `stringAttr` renders a real array through `fmt.Sprint` as Go map syntax.
-            if (eventName === 'app.crash') {
+            // `app.hang` carries the trail too (#165) — what led to the freeze — but it is not
+            // an error: no counter, no forced flush, no eviction reprieve.
+            if (eventName === 'app.crash' || eventName === 'app.hang') {
                 attributes['error.breadcrumbs'] = this.breadcrumbs.toJSON();
+            }
+            // #173: the cached battery read on failure rows only — the 39-key Context block is
+            // untouched. Synchronous: a crash never waits on a native call. Native only.
+            if (eventName === 'app.crash' || eventName === 'app.error' || eventName === 'app.hang') {
+                Object.assign(attributes, this.deviceState?.battery?.());
+            }
+            if (eventName === 'app.crash') {
                 crashed = true;
             } else {
                 this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
@@ -1171,6 +1436,22 @@ export class Telemetry {
         }
     }
 
+    /** §2.5 4xx: drop the batch, book it, and tell a dev once — it is usually a wrong apiKey. */
+    private reject(err: unknown, count: number) {
+        this.recordDrop("rejected", count);
+        if (isDev() && !warnedRejected) {
+            warnedRejected = true;
+            console.warn(`edge-telemetry: the collector rejected a batch with HTTP ${statusOf(err)} — `
+                + "dropped, not retried. Check the apiKey and endpoint. (Shown once, in dev only.)");
+        }
+    }
+
+    /** §2.5 429: halt the drain until `X-RateLimit-Reset`, 1 s when the header is absent. */
+    private holdFor(err: unknown) {
+        const resetAt = (err as { resetAt?: unknown } | undefined)?.resetAt;
+        this.holdUntil = typeof resetAt === "number" ? resetAt : Date.now() + RATE_LIMIT_DEFAULT_HOLD_MS;
+    }
+
     /**
      * The crash path (§2 / §9.4): persist the whole queue, then send **one** batch reordered
      * so the crash rides in it. Not a drain — a dying process gets one round trip.
@@ -1194,6 +1475,7 @@ export class Telemetry {
      * counter this change adds.
      */
     private async flushCrash() {
+        if (!this.enabled) return;
         if (!this.sender || this.queue.length === 0) return;
 
         // Move crashes to the front, relative order intact: at batchSize 50 a crash enqueued
@@ -1223,11 +1505,14 @@ export class Telemetry {
             await this.sender.send(batch);
             await this.ackBatch();
         } catch (err) {
+            debug.warn("Telemetry: crash-path send failed:", err);
+            // §2.5 holds here too: a 4xx batch is dropped, never requeued.
+            if (isRejected(err)) { this.reject(err, batch.length); return; }
+            if (statusOf(err) === 429) this.holdFor(err);
             // Requeue only what the store does not already hold — the rest is safe on disk
             // and requeueing it would send it twice for no gain.
             const unsaved = batch.filter(e => seqOf(e) > this.crashPersistedThrough);
             if (unsaved.length > 0) this.queue.unshift(...unsaved);
-            debug.warn("Telemetry: crash-path send failed:", err);
         }
     }
 
@@ -1304,7 +1589,8 @@ export class Telemetry {
      * don't extend the breadcrumb trail and don't count as session activity — a periodic sampler
      * (memory/frames) must not keep a session alive and defeat the 30-min idle rotation.
      */
-    async logMetric(metricName: string, value: number, data?: Record<string, any>) {
+    async logMetric(metricName: string, value: number, data?: Record<string, any>, unitOverride?: string) {
+        if (!this.enabled) return;   // #172 — this is where the rAF loop's samples are discarded
         this.eventCount++;
         // A metric is a sample, not a user action: it must not refresh `lastActivity` and
         // keep a dead session alive. It is still *checked* against the boundaries, or a
@@ -1318,7 +1604,7 @@ export class Telemetry {
         const attributes = await this.collectContext(data);
         // §5.1 — assembled after caller `data`, so a stray attribute cannot mislabel the
         // unit of the column it lands in. Omitted for a name we have no unit for.
-        const unit = METRIC_UNIT[metricName];
+        const unit = METRIC_UNIT[metricName] ?? unitOverride;
         if (unit) attributes['metric.unit'] = unit;
 
         this.enqueue({
@@ -1347,7 +1633,8 @@ export class Telemetry {
      * counter answers neither.
      */
     private enqueue(e: TelemetryEvent) {
-        if (!this.sampled) return;
+        // `enabled` re-checked here: `log()` awaits the Context block, and a `disable()` can land in between.
+        if (!this.sampled || !this.enabled) return;
 
         let kept = e;
         if (this.beforeSend) {
@@ -1432,41 +1719,84 @@ export class Telemetry {
 
 
     /**
-     * Explicit metric helper (optional convenience) — routes through the v3 metric path.
+     * The public metric path (#167). The SDK's own names are **reserved** — a consumer row in
+     * the vitals, frame or memory series would be indistinguishable from ours — and keep their
+     * own unit. A non-finite value is dropped, never shipped as a fabricated number. `unit`
+     * becomes `metric.unit`, stamped after `data` so an attribute cannot mislabel it.
      */
-    recordMetric(name: string, value: number, data?: Record<string, any>) {
-        return this.logMetric(name, value, data);
+    recordMetric(name: string, value: number, data?: Record<string, any>, opts?: { unit?: string }) {
+        if (typeof name !== "string" || name.trim() === "") { debug.warn("recordMetric: blank name — dropped"); return; }
+        if (Object.prototype.hasOwnProperty.call(METRIC_UNIT, name)) { debug.warn(`recordMetric: ${name} is reserved by the SDK — dropped`); return; }
+        if (typeof value !== "number" || !Number.isFinite(value)) { debug.warn(`recordMetric: ${name} value is not finite — dropped`); return; }
+        const unit = typeof opts?.unit === "string" && opts.unit !== "" ? opts.unit : undefined;
+        return this.logMetric(name, value, data, unit);
     }
 
     // ---------- Flush / Persistence ----------
 
-    // Retry + backoff live in the Sender (see sendWithRetry in web/native senders),
-    // which is also used by the standalone replay paths. flush() does a single send
-    // and, on failure, hands the batch to the sender to persist (or requeues it).
-    async flush() {
-        if (!this.sender || this.queue.length === 0) return;
+    /**
+     * §2.4's draining flush (#162): batches go **sequentially** until the queue is empty,
+     * stopping at the first failure, at most `DRAIN_MAX_BATCHES` per call and paced to the
+     * collector's 10 req/s burst. Sequential because parallel batches are how a cold backend
+     * gets stampeded by a replay. Retry + backoff live in the Sender (`sendWithRetry`).
+     *
+     * A call landing while a drain is in flight joins it rather than starting a second loop:
+     * the interval and the batch-full trigger both fire `flush()` unawaited, and two loops
+     * would interleave their sends and break the pacing.
+     */
+    flush(): Promise<void> {
+        return this.draining ??= this.drain().finally(() => { this.draining = undefined; });
+    }
 
-        // build a batch of up to batchSize
-        const toSend = this.queue.splice(0, this.batchSize);
+    private draining?: Promise<void>;
+    /** Epoch ms before which no batch may be sent — a 429's `X-RateLimit-Reset` (§2.5). */
+    private holdUntil = 0;
 
-        try {
-            await this.sender.send(toSend);
-            await this.ackBatch();
-        } catch (lastError) {
-            if (this.sender.onFailure) {
-                try {
-                    this.recordDrop("store_full", await this.sender.onFailure(toSend));
-                } catch (persistErr) {
-                    // If persistence fails, requeue to avoid data loss
-                    this.queue.unshift(...toSend);
-                    debug.warn("Sender.onFailure failed, requeued events:", persistErr);
-                }
-            } else {
-                this.queue.unshift(...toSend);
+    private async drain() {
+        for (let i = 0; i < DRAIN_MAX_BATCHES; i++) {
+            if (i > 0 && this.queue.length > 0) await new Promise(r => setTimeout(r, DRAIN_PACE_MS));
+            if (!this.sender || this.queue.length === 0 || Date.now() < this.holdUntil) return;
+
+            const toSend = this.queue.splice(0, this.batchSize);
+            try {
+                await this.sender.send(toSend);
+                await this.ackBatch();
+            } catch (err) {
+                await this.onSendFailure(toSend, err);
+                debug.error("Telemetry flush failed:", err);
+                throw err;
             }
+        }
+    }
 
-            debug.error("Telemetry flush failed:", lastError);
-            throw lastError;
+    /**
+     * §2.5's status table, for a batch the sender gave up on.
+     *
+     * | 4xx | dropped — no persist — booked `rejected`, one `__DEV__` warning per process |
+     * | 429 | requeued at the front; the drain halts until `X-RateLimit-Reset` |
+     * | 5xx / network | persisted through the sender, or requeued when it cannot persist |
+     *
+     * A wrong credential is the realistic 4xx, and persisting it would make it terminal: the
+     * drain halts at batch 1 on every launch forever while the store fills and evicts.
+     */
+    private async onSendFailure(batch: TelemetryEvent[], err: unknown) {
+        if (!this.enabled) return;   // #172: a batch in flight at disable() is not kept
+        if (isRejected(err)) { this.reject(err, batch.length); return; }
+        if (statusOf(err) === 429) {
+            this.queue.unshift(...batch);
+            this.holdFor(err);
+            return;
+        }
+        if (this.sender?.onFailure) {
+            try {
+                this.recordDrop("store_full", await this.sender.onFailure(batch));
+            } catch (persistErr) {
+                // If persistence fails, requeue to avoid data loss
+                this.queue.unshift(...batch);
+                debug.warn("Sender.onFailure failed, requeued events:", persistErr);
+            }
+        } else {
+            this.queue.unshift(...batch);
         }
     }
 
@@ -1487,10 +1817,11 @@ export class Telemetry {
     async shutdown() {
         if (this.intervalId) clearInterval(this.intervalId);
         this.memoryHandler?.stop?.();
+        this.webVitals?.stop();   // #160 — no vital may logMetric after shutdown
+        this.hangs?.stop();
+        this.deviceState?.stop?.();
         await this.flush();
     }
-
-    // Screen tracking lives in ScreenTimingTracker (this.screens), the single timed API.
 
     // Expose some internal counters (optional)
     getEventCount() {
@@ -1498,25 +1829,10 @@ export class Telemetry {
     }
 
     /**
-     * A route change: the view boundary (§4.5) plus, on native only, the two deprecated
-     * feeds (§4.11). v3's two native screen paths were disjoint — `attachNavigation` never
-     * touched `inst.screens`, so a React Navigation consumer emitted `navigation` on every
-     * route change and never a single `screen.duration`. Unifying them here is what fixes
-     * that, which is why a *deprecated* event starts firing where it never has.
+     * A route change (§4.5): rung 2 of the name ladder. The two deprecated feeds it used to
+     * emit alongside — `navigation` and `screen.duration` — are gone in v5 (#163).
      */
-    async recordRouteChange(from: string, to: string) {
-        this.currentScreen = to;   // best-effort screen for the deprecated feeds (#33)
-        if (this.deprecatedScreenFeeds) {
-            // Both rows describe the transition, so both are emitted — and awaited — before
-            // the view boundary: they belong to the view being left.
-            await this.navigationTracker?.recordRouteChange(from, to);
-            await this.screens.endScreen(from);
-            // Arm the dwell clock for the arriving screen. `markStart`, not `startScreen`:
-            // the latter emits its own `navigation`, and the line above already emitted this
-            // transition's. This is the join that was missing — v3's `attachNavigation` never
-            // touched `screens`, so `screen.duration` never fired for a React Navigation app.
-            this.screens.markStart(to);
-        }
+    async recordRouteChange(to: string) {
         await this.enterView(to, "route");
     }
 

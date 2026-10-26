@@ -33,7 +33,7 @@ describe("offline replay — web (#113)", () => {
         vi.stubGlobal("fetch", fetchMock);
         const store = seeded();
 
-        const { TelemetryWeb } = await import("./index.web");
+        const { TelemetryWeb } = await import("./telemetryWeb.web");
         class Probe extends TelemetryWeb { core() { return this.instancePromise; } }
         await new Probe({ apiKey: "edge_test", flushIntervalMs: 0, store }).core();
         await vi.waitFor(() => expect(recoveredBatches(fetchMock)).toBeGreaterThan(0));

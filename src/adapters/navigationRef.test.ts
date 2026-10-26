@@ -1,67 +1,71 @@
 import { describe, it, expect, vi } from "vitest";
-import { NavigationRefTracker } from "./navigationRef";
+import { NavigationRefTracker, routePath } from "./navigationRef";
 
-// The ref listener itself: which route name it resolves, and when it decides a route changed.
-// Shared by both builds as of #96, so the recursion below is the only place either build
-// turns a React Navigation state tree into a `view.name`.
+// The ref listener itself (#170): which route path it resolves, and when it decides a route
+// changed. The proof against a *real* React Navigation container is navigation.real.test.tsx.
 
-function harness() {
-  const routes: Array<[string, string]> = [];
-  const telemetry = {
-    recordRouteChange: vi.fn(async (from: string, to: string) => { routes.push([from, to]); }),
-  } as any;
-  let listener: (() => void) | undefined;
-  let current: any;
+function harness(ready = true) {
+  const routes: string[] = [];
+  const telemetry = { recordRouteChange: vi.fn(async (to: string) => { routes.push(to); }) } as any;
+  const listeners: Record<string, () => void> = {};
+  let root: any;
   const ref = {
-    addListener: (_t: string, fn: () => void) => { listener = fn; },
-    getCurrentRoute: () => current,
+    addListener: (t: string, fn: () => void) => { listeners[t] = fn; },
+    getRootState: () => root,
+    isReady: () => ready,
   };
-  new NavigationRefTracker(telemetry).attach(ref);
-  return { routes, go: (route: any) => { current = route; listener?.(); } };
+  const set = (state: any) => { root = state; };
+  return { routes, ref, set, telemetry, fire: (t: string) => listeners[t]?.() };
 }
 
+const stack = (index: number, ...routes: any[]) => ({ index, routes });
+
+describe("routePath — the root-to-leaf join (#170)", () => {
+  it("joins focused route names with `/`, never normalized, params never read", () => {
+    const ref = {
+      getRootState: () => stack(1,
+        { name: "Login" },
+        { name: "Tabs", state: stack(0, { name: "Step 2 of 3", params: { id: "acc_91" } }) }),
+    };
+    expect(routePath(ref)).toBe("Tabs/Step 2 of 3");
+  });
+
+  it("yields the Expo Router file-path template", () => {
+    const ref = { getRootState: () => stack(0, { name: "(tabs)", state: stack(1, { name: "index" }, { name: "settings/index" }) }) };
+    expect(routePath(ref)).toBe("(tabs)/settings/index");
+  });
+
+  it("takes the last route of a partial state with no index, and falls back to the leaf, then `unknown`", () => {
+    expect(routePath({ getRootState: () => ({ routes: [{ name: "A" }, { name: "B" }] }) })).toBe("B");
+    expect(routePath({ getCurrentRoute: () => ({ name: "Leaf" }) })).toBe("Leaf");
+    expect(routePath({})).toBe("unknown");
+  });
+});
+
 describe("NavigationRefTracker", () => {
-  it("reports the first route as coming from `init`", () => {
-    const { routes, go } = harness();
-    go({ name: "Home" });
-    expect(routes).toEqual([["init", "Home"]]);
+  it("names the current screen at once when the ref is ready", () => {
+    const h = harness(true);
+    h.set(stack(0, { name: "Home" }));
+    new NavigationRefTracker(h.telemetry).attach(h.ref);
+    expect(h.routes).toEqual(["Home"]);
   });
 
-  it("resolves the deepest focused route of a nested navigator", () => {
-    const { routes, go } = harness();
-    go({
-      name: "Root",
-      state: {
-        index: 1,
-        routes: [
-          { name: "Login" },
-          { name: "Tabs", state: { index: 2, routes: [{ name: "Feed" }, { name: "Search" }, { name: "Profile" }] } },
-        ],
-      },
-    });
-    expect(routes).toEqual([["init", "Profile"]]);
-  });
-
-  it("falls back to `unknown` rather than throwing when there is no current route", () => {
-    const { routes, go } = harness();
-    go(undefined);
-    expect(routes).toEqual([["init", "unknown"]]);
+  it("waits for the ref's `ready` event when it is not ready yet", () => {
+    const h = harness(false);
+    new NavigationRefTracker(h.telemetry).attach(h.ref);
+    expect(h.routes).toEqual([]);
+    h.set(stack(0, { name: "Home" }));
+    h.fire("ready");
+    expect(h.routes).toEqual(["Home"]);
   });
 
   it("fires once per actual change — a state event on the same route is ignored", () => {
-    const { routes, go } = harness();
-    go({ name: "Home" });
-    go({ name: "Home" });        // a re-render, not a navigation
-    go({ name: "Cart" });
-    expect(routes).toEqual([["init", "Home"], ["Home", "Cart"]]);
-  });
-
-  it("advances `from` even though recordRouteChange is async — it never re-reports a stale one", () => {
-    const { routes, go } = harness();
-    go({ name: "A" });
-    go({ name: "B" });
-    go({ name: "C" });
-    expect(routes.map(([from]) => from)).toEqual(["init", "A", "B"]);
+    const h = harness(false);
+    new NavigationRefTracker(h.telemetry).attach(h.ref);
+    h.set(stack(0, { name: "Home" })); h.fire("state");
+    h.set(stack(0, { name: "Home", params: { x: 1 } })); h.fire("state");
+    h.set(stack(1, { name: "Home" }, { name: "Cart" })); h.fire("state");
+    expect(h.routes).toEqual(["Home", "Cart"]);
   });
 
   it("does nothing at all without a ref", () => {

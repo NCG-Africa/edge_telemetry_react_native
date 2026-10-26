@@ -39,7 +39,7 @@ function silenceConsole() {
 describe("Store injection — the native build", () => {
     it("defaults to the asynchronous AsyncStorage store", async () => {
         silenceConsole();
-        const { TelemetryNative } = await import("./index.native");
+        const { TelemetryNative } = await import("./telemetryNative.native");
         class Probe extends TelemetryNative { core() { return this.instancePromise; } }
 
         const core = await new Probe({ apiKey: "edge_test", flushIntervalMs: 0 }).core();
@@ -53,7 +53,7 @@ describe("Store injection — the native build", () => {
 
     it("lets a consumer override it through the constructor", async () => {
         silenceConsole();
-        const { TelemetryNative } = await import("./index.native");
+        const { TelemetryNative } = await import("./telemetryNative.native");
         class Probe extends TelemetryNative { core() { return this.instancePromise; } }
 
         const store = memoryStore({ async: true });

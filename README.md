@@ -43,6 +43,7 @@ sampling and session management all start on their own — there is nothing else
 
 **How-to guides**
 - [Send a custom event](#send-a-custom-event)
+- [Time a journey](#time-a-journey)
 - [Identify the signed-in user](#identify-the-signed-in-user)
 - [Track screens](#track-screens)
 - [Track taps](#track-taps)
@@ -50,6 +51,7 @@ sampling and session management all start on their own — there is nothing else
 - [Make crash stacks readable](#make-crash-stacks-readable)
 - [Strip PII before it leaves the device](#strip-pii-before-it-leaves-the-device)
 - [Sample a percentage of sessions](#sample-a-percentage-of-sessions)
+- [Respect a user's opt-out](#respect-a-users-opt-out)
 - [Connect your traces to your backend](#connect-your-traces-to-your-backend)
 
 **Reference**
@@ -167,8 +169,10 @@ Everything is passed to `createTelemetry()`. There are no runtime setters for th
 | `debug` | `boolean` | `false` | Prints the SDK's internal diagnostics. Off means completely silent. |
 | `buildId` | `string` | omitted | Your build's identifier, for [symbolicating crashes](#make-crash-stacks-readable). |
 | `beforeSend` | `(event) => event \| null` | none | [Scrubbing hook](#strip-pii-before-it-leaves-the-device). Constructor-only. |
+| `enabled` | `boolean` | `true` | `false` starts the SDK dark until [`enable()`](#respect-a-users-opt-out). |
 | `sessionSampleRate` | `number` | `1` | [Fraction of sessions to keep](#sample-a-percentage-of-sessions), `0`–`1`. Constructor-only. |
 | `traceHostAllowlist` | `string[]` | `[]` (empty) | [Hosts allowed to receive `traceparent`](#connect-your-traces-to-your-backend). Constructor-only. |
+| `autoTrackTaps` | `boolean` | `false` | **Native only.** [Capture every `onPress` / `onLongPress`](#native--or-capture-every-press-automatically). Constructor-only. |
 | `store` | `Store` | platform default | Replaces `localStorage` / `AsyncStorage`. Mostly for tests. |
 | `sender` | `Sender` | platform default | Replaces the HTTP transport. Mostly for tests. |
 
@@ -215,6 +219,34 @@ JSON-stringified.
 > travel under their own name. Any other name — `checkout_started` above — is sent as
 > `custom_event` with your name preserved in `attributes["event.name"]`. Nothing is dropped, so
 > query custom events by `event.name`, not by `event_name`.
+
+---
+
+## Time a journey
+
+```typescript
+const span = telemetry.startSpan("checkout", { cart_value: 42 });
+// …
+span.end();                                   // or span.end({ outcome: "failed" })
+
+await telemetry.withSpan("sync_contacts", () => api.sync());   // throws → "failed", rethrown
+
+telemetry.startSpan("onboarding");            // one screen…
+telemetry.endSpan("onboarding", "completed"); // …closed from another, by name
+```
+
+Each span sends **one** `task.complete` row when it ends: `task.name`, `task.outcome`
+(`completed` | `failed` | `abandoned`) and `span.duration_ms`. The three span methods are
+synchronous — call them without `await`.
+
+- A span started during a tap or navigation joins that action (same `rum.action.id`); otherwise it
+  starts its own, `trace.root_type: "custom"`. Spans don't nest: a request inside one belongs to
+  the action, not the span.
+- Starting a name that is already open replaces it. Ending an unknown name does nothing. At most
+  32 spans can be open; blank names and the 33rd are ignored.
+- Open spans survive an app restart and can still be ended by name. A span still open when its
+  session ends is sent as `abandoned`.
+- Your attributes cannot overwrite `task.*`, `span.*`, `trace.*`, `parent.*` or `rum.*` keys.
 
 ---
 
@@ -265,36 +297,70 @@ with its name, dwell time, request count and load time.
 
 ```tsx
 import { NavigationContainer, useNavigationContainerRef } from "@react-navigation/native";
+import { useEffect } from "react";
 import { telemetry } from "./telemetry";
 
 export default function App() {
   const navRef = useNavigationContainerRef();
+  useEffect(() => { telemetry.attachNavigation(navRef); }, [navRef]);
 
-  return (
-    <NavigationContainer
-      ref={navRef}
-      onReady={() => { telemetry.attachNavigation(navRef); }}
-    >
-      {/* your screens */}
-    </NavigationContainer>
-  );
+  return <NavigationContainer ref={navRef}>{/* your screens */}</NavigationContainer>;
 }
 ```
 
-One call covers native **and** web — `getCurrentRoute()` is a navigation-tree API, not a native
-one.
+One call covers native **and** web. Attach whenever you like: a ready ref names the current
+screen at once, and a not-yet-ready one names it on its `ready` event — the first screen is never
+`unknown`.
+
+`view.name` is the focused route names **joined root to leaf with `/`** (v5) — `HomeTab/Details`
+and `SearchTab/Details` stay distinct. Names are never normalized and route params are never read.
+
+### Expo Router
+
+No extra dependency and no extra API — Expo Router is React Navigation underneath, and its route
+names are the file paths, so `view.name` comes out as `(tabs)/settings/index`. In the root
+`app/_layout.tsx`:
+
+```tsx
+import { Stack, useNavigationContainerRef } from "expo-router";
+import { useEffect } from "react";
+import { telemetry } from "../telemetry";
+
+export default function RootLayout() {
+  const navRef = useNavigationContainerRef();
+  useEffect(() => { telemetry.attachNavigation(navRef); }, [navRef]);
+  return <Stack />;
+}
+```
 
 ### Naming screens manually
 
 ```typescript
-await telemetry.screenStart("Checkout");   // native only
-await telemetry.screenEnd("Checkout");     // native only
+await telemetry.screenStart("Checkout");   // native only — names the current view
 ```
 
-> **Warning — don't mix `screenStart()` with `attachNavigation()`.** Screen names have ranks:
-> an explicit name outranks a route name, which outranks a URL. A lower-ranked name never
-> overwrites a higher-ranked one — so a single `screenStart()` call pins the view to that name
-> and later route changes stop opening new views. Pick one approach per screen.
+> **Mixing `screenStart()` with `attachNavigation()` is fine (v5).** Screen names have ranks — an
+> explicit name outranks a route name, which outranks a URL — but a route change always opens a
+> new view, so a `screenStart()` name only renames the screen it was called on. Call it from that
+> screen's own effect.
+
+### Mark a screen ready
+
+```tsx
+import { useScreenReady } from "@nathanclaire/edge-telemetry-sdk";
+
+function ProfileScreen() {
+  const { data } = useProfile();
+  useScreenReady(telemetry, !!data);   // or call telemetry.markScreenReady() yourself
+  // …
+}
+```
+
+The `view` row then carries `view.ready_time` (ms from opening the screen to the mark) and
+`view.ready_outcome: "ready"`. The app's first screen is measured from **process start**, so its
+`view.ready_time` is cold-start-to-usable. If the user leaves a screen you have marked before
+without it becoming ready, the row says `"abandoned"`; screens you never mark carry neither key,
+and leaving by backgrounding is never judged. The first mark per screen wins.
 
 ### Reading the results
 
@@ -385,6 +451,20 @@ The name ships uncapped and unnormalized, exactly as you wrote it.
 **The tap's identity is captured at the tap, not at send.** A tap that navigates is still
 attributed to the screen it happened on, not the one it opened.
 
+### Native — or capture every press automatically
+
+```typescript
+const telemetry = createTelemetry({ apiKey, endpoint, autoTrackTaps: true });   // native only
+```
+
+Opt in and every `onPress` sends a `ui.interaction` (`ui.type: "tap"`), and every `onLongPress` a
+`"long_press"` — no annotation needed. It fires when a press activates, never on a scroll.
+
+Names come from **`testID` only** (normalized: `"Checkout Button!"` → `checkout_button`), never
+from the button's text or accessibility label, which is where names and amounts live. A press with
+no `testID` arrives as `unnamed` — add one to name it. A `trackTap()` call inside the handler
+wins, and nested pressables produce one row.
+
 ---
 
 ## Report handled errors
@@ -401,6 +481,24 @@ try {
 
 It takes `unknown` on purpose — real `catch` blocks receive strings and axios rejection objects,
 and you shouldn't have to prove to TypeScript that it's an `Error` first.
+
+### Render errors — `<EdgeErrorBoundary>`
+
+```tsx
+import { EdgeErrorBoundary } from "@nathanclaire/edge-telemetry-sdk";
+
+<EdgeErrorBoundary
+  telemetry={telemetry}
+  fallback={({ error, resetError }) => <ErrorScreen onRetry={resetError} />}   // or a plain element
+  onError={(error, info) => { /* runs after the SDK reports; a throw here is ignored */ }}
+>
+  <App />
+</EdgeErrorBoundary>
+```
+
+A caught render error is sent once, as `app.error` with `error.source: "boundary"` and
+`error.component_stack`. React's own console report and the global error handlers skip it, so
+turning on `captureConsole` does not double-count it.
 
 ### Two event names, and why it matters
 
@@ -532,6 +630,23 @@ a working scrubber from a broken one.
 
 ---
 
+## Respect a user's opt-out
+
+```typescript
+telemetry.disable();   // takes effect immediately
+telemetry.enable();    // resume
+
+// No consent yet at launch? Start dark — nothing is collected until enable():
+const telemetry = createTelemetry({ apiKey, endpoint, enabled: hasConsent() });
+```
+
+`disable()` drops everything queued and stored on the device, stops every timer, and leaves your
+network requests untouched — no `traceparent` header is added while disabled. Nothing is sent or
+written until `enable()`. The SDK does not remember the choice across launches: store it yourself
+and pass `enabled` at startup. A launch that starts dark never sends `app.start`.
+
+---
+
 ## Sample a percentage of sessions
 
 ```typescript
@@ -631,8 +746,8 @@ All of this starts in the constructor. You don't call anything to enable it.
 | `ui.interaction` | Every click (web) / every `trackTap()` (native) | Both |
 | `network_change` | Connectivity type changes | Both |
 | `user.profile.update` | `identify()` | Both |
-| `navigation` | Route change or `screenStart()` | Both *(deprecated)* |
-| `screen.duration` | `screenEnd()` | Native *(deprecated)* |
+| `task.complete` | A [span](#time-a-journey) ends, or its session ends first | Both |
+| `app.hang` | The JS thread froze for 2–60 s in the foreground (not in dev builds) | Both |
 | `custom_event` | Any `log()` name not in this table | Both |
 
 ### Metrics
@@ -665,7 +780,7 @@ unreachable — `log("page_load")` now arrives as `custom_event`. Their jobs are
 
 ## API
 
-Every method returns a Promise.
+Every method returns a Promise, except the span methods, `markScreenReady()`, `disable()` and `enable()`, which are synchronous.
 
 ### Core — both platforms
 
@@ -678,6 +793,19 @@ attachNavigation(navigationRef: any): Promise<void>
 trackErrors(options?: { captureConsole?: boolean }): Promise<void>
 getDeviceInfo(): Promise<DeviceInfo>
 getNetworkInfo(): Promise<NetworkInfo>
+
+startSpan(name: string, attributes?: Record<string, unknown>): SpanHandle
+  // SpanHandle.end(opts?: { outcome?: "completed" | "failed" | "abandoned"; attributes? })
+withSpan<T>(name: string, fn: () => T, attributes?: Record<string, unknown>): T
+endSpan(name: string, outcome?: "completed" | "failed" | "abandoned", attributes?: Record<string, unknown>): void
+markScreenReady(): void
+
+recordMetric(name: string, value: number, attributes?: Record<string, any>, opts?: { unit?: string }): Promise<void>
+  // the SDK's own metric names are reserved; NaN / Infinity are dropped
+addBreadcrumb(name: string, data?: Record<string, unknown>): Promise<void>
+  // into the trail of 20 on app.crash / app.hang — name ≤64 chars, ≤8 keys, values ≤255
+startNewSession(): Promise<void>                // session.reason: "manual"
+disable(): void / enable(): void              // consent; synchronous
 ```
 
 ### Identity — both platforms
@@ -713,13 +841,12 @@ setUserContact(email?: string, phone?: string): Promise<void>
 ```typescript
 trackTap(name: string): Promise<void>        // → ui.interaction. Never rejects.
 trackMemoryUsage(): Promise<void>            // auto-started
-screenStart(name: string): Promise<void>     // → navigation      (deprecated feed)
-screenEnd(name: string): Promise<void>       // → screen.duration (deprecated feed)
-trackRoute(from: string, to: string): Promise<void>   //            (deprecated feed)
+screenStart(name: string): Promise<void>     // names the current view (explicit rung)
+screenEnd(name: string): Promise<void>       // @deprecated no-op since v5 — deleted in v6
+trackRoute(from: string, to: string): Promise<void>   // @deprecated no-op since v5 — deleted in v6
 ```
 
-Prefer `attachNavigation()` over `screenStart` / `screenEnd` / `trackRoute` — those three feed
-`navigation` and `screen.duration`, both superseded by the `view` event.
+`navigation` and `screen.duration` are removed in v5 — the `view` event replaces both.
 
 ### Web only
 
@@ -741,14 +868,17 @@ import {
   memoryStore,              // an in-memory Store, for tests
   type TelemetryOpts,
   type BeforeSend,
+  type SpanHandle, type TaskOutcome,
+  EdgeErrorBoundary,        // the render-error boundary
+  useScreenReady,           // marks the current screen ready
+  type EdgeErrorBoundaryProps,
   type Store, type SyncStore, type AsyncStore, type StoreRead, type StoreWrite,
   type MemoryStoreOpts,
 } from "@nathanclaire/edge-telemetry-sdk";
 ```
 
-`TelemetryWeb` and `TelemetryNative` are also exported, but **use `createTelemetry()`** — it is
-the only path that validates your `apiKey` and your trace allowlist. Constructing a class
-directly skips both checks.
+`TelemetryWeb` and `TelemetryNative` are exported **as types only** (v5): `createTelemetry()` is
+the only way to construct one, so your `apiKey` and trace allowlist are always validated.
 
 > `TelemetryEvent`, `DeviceInfo`, `NetworkInfo` and `UserProfile` are documented in this README as
 > wire and return shapes, but are **not currently exported as types**. For a `beforeSend` hook,
@@ -782,6 +912,17 @@ key — but **not** the identity keys, which are stamped afterwards.
 
 **Network and device state are read at log time**, not at init: a request that failed when the
 Wi-Fi dropped is better described by the network at the moment it completed.
+
+**Two small sets of device state ride outside the block**, on the rows that need them:
+
+| Keys | On | Platform |
+|---|---|---|
+| `device.battery_level` (0–100), `device.battery_charging`, `device.power_save` | `app.crash`, `app.error`, `app.hang` | Native only (needs `react-native-device-info`) |
+| `device.reduce_motion` | `session.started` | Both |
+| `device.screen_reader`, `device.font_scale` | `session.started` | Native only |
+
+Battery is a cached reading (refreshed every 60 s and on foreground), so reporting a crash never
+waits on it. A reading the device can't give — a simulator's `-1`, say — is left out, not faked.
 
 ---
 
@@ -858,6 +999,9 @@ restore all resume the same session** if the gap is inside the idle window. A re
 deliberately does *not* re-emit `session.started` — otherwise `COUNT(session.started)` would stop
 equalling your session count.
 
+Call `startNewSession()` to end one yourself — on logout, say. Both session events then carry
+`session.reason: "manual"`.
+
 ---
 
 ## Delivery and reliability
@@ -918,8 +1062,8 @@ backend configuration question, not an SDK one.
 | No Core Web Vitals on native | Correct — they're web-only, by design. |
 | No `memory_usage` on web | Correct — it's native-only, by design. |
 | No dead-click data on native | Correct — no DOM, so no mutation signal. Filter dead-click rates to web. |
-| `screen.duration` never fires | You're using `attachNavigation()`. Use the `view` event instead — it supersedes both deprecated feeds. |
-| A screen's name is stuck on an old value | You mixed `screenStart()` with `attachNavigation()`. An explicit name outranks a route name and pins the view. |
+| `navigation` / `screen.duration` stopped arriving | Removed in v5. Use the `view` event — `view.time_spent` is the dwell. |
+| The *previous* screen got my `screenStart()` name | It ran before the route event. Call it from the new screen's own `useEffect`. |
 | `view.loading_time` is null | Read `view.loading_time_outcome` — it tells you which of the three reasons applies. |
 
 ### Requests the SDK can't see

@@ -50,6 +50,8 @@ export class NetworkTrackerWeb {
                 input: RequestInfo | URL,
                 init?: RequestInit
             ): Promise<Response> => {
+                // Disabled (#172): pass through untouched — no settle hold, no root, no header.
+                if (telemetry.isEnabled?.() === false) return originalFetch(input, init);
                 const start = Date.now();
                 const url = typeof input === "string" ? input : input.toString();
                 const isCollector = isCollectorUrl(url, telemetry.getEndpoint?.());

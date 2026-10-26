@@ -216,12 +216,12 @@ describe("ui.interaction (web) — the wire (§4.6)", () => {
 
         // Name the current view first, so the arriving route is the *same* rung and
         // therefore a genuine navigation that mints a successor (§4.5.1).
-        await inst.recordRouteChange("", "Home");
+        await inst.recordRouteChange("Home");
         const before = { id: inst.views.id, name: inst.views.name, at: Date.now() };
 
         dom.click([el("button", {}, "Go to cart")]);
         // The host's own handler navigates — while the dead-click window is still open.
-        await inst.recordRouteChange("Home", "Cart");
+        await inst.recordRouteChange("Cart");
         expect(inst.views.id).not.toBe(before.id);
         expect(inst.views.name).toBe("Cart");
 

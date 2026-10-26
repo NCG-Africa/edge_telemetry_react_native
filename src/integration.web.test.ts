@@ -30,12 +30,12 @@ describe("createTelemetry (web) — public API → wire", () => {
       flushIntervalMs: 0,
     });
 
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.flush();
 
     // session.started rides on init (#29); assert the navigation event is contract-valid
     expect(sent.some((e) => e.eventName === "session.started")).toBe(true);
-    const e = sent.find((ev) => ev.eventName === "navigation")!;
+    const e = sent.find((ev) => ev.eventName === "custom_event")!;
     expect(e).toBeDefined();
     expect(e.type).toBe("event");
     expect(typeof e.timestamp).toBe("string");
@@ -107,9 +107,9 @@ describe("createTelemetry (web) — Context keys are snake_case on the wire (#88
       flushIntervalMs: 0,
       captureConsole: false,
     });
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.flush();
-    return sent.find((e) => e.eventName === "navigation")!.attributes!;
+    return sent.find((e) => e.eventName === "custom_event")!.attributes!;
   }
 
   it("ships all seven respelled keys", async () => {

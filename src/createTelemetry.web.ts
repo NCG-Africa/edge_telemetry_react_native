@@ -1,4 +1,4 @@
-import { TelemetryWeb } from "./index.web";
+import { TelemetryWeb } from "./telemetryWeb.web";
 import type { SyncStore } from "./core/store";
 import type { BeforeSend } from "./core/beforeSend";
 import { normalizeAllowlist } from "./adapters/traceHeader";
@@ -26,6 +26,8 @@ export type TelemetryOpts = {
     // (the SDK has zero OTA awareness), **omitted when unset, never `""`**, and never
     // derived from app.version + app.build_number under any circumstances.
     buildId?: string;
+    // #172 — consent. `false` constructs dark: nothing is sent or stored until `enable()`.
+    enabled?: boolean;
 };
 
 // Deliberately loose: `apiKey` is the *credential*, and under AUTH_MODE=jwt it is

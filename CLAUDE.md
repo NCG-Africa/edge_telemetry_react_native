@@ -53,8 +53,10 @@ No monorepo. One `src/` tree, split by platform at the file level:
 ```
 src/
 ├── createTelemetry.web.ts / .native.ts   ← factory + assertApiKey (bundler picks one)
-├── index.web.ts / index.native.ts        ← TelemetryWeb / TelemetryNative (public entries)
+├── index.web.ts / index.native.ts        ← public entries: createTelemetry + types only (#159)
+├── telemetryWeb.web.ts / telemetryNative.native.ts ← TelemetryWeb / TelemetryNative
 ├── index.base.ts                         ← TelemetryBase: shared delegation for both
+├── react.ts                              ← <EdgeErrorBoundary> + useScreenReady — the React module, main entry, no JSX
 ├── core/
 │   ├── telemetry.ts       ← Telemetry: queue, batch, retry, session lifecycle, log/logMetric
 │   ├── breadcrumbs.ts     ← ring buffer (last 20) for error.breadcrumbs
@@ -72,9 +74,11 @@ src/
 │   ├── crashCapture.ts    ← §4.7 error surface: error.* keys, app.crash vs app.error
 │   ├── viewManager.ts     ← the View entity: view.id/view.name, the `view` event, the ladder
 │   ├── loadingTime.ts     ← shared network-settle: view.loading_time + the 4-value outcome
-│   ├── traceManager.ts    ← §6 trace/span: carrier, three roots, three tiers, the outcome ladder
+│   ├── traceManager.ts    ← §6 trace/span: carrier, the roots, three tiers, the outcome ladder
+│   ├── hangDetector.ts    ← #165 JS-thread stall detector: the 1 s tick, the stall maths
+│   ├── manualSpans.ts     ← #164 open-span registry: bounds, supersede, persisted shape
 │   ├── traceHeader.ts     ← §6.4/§6.5 pure half: allowlist, `traceparent` parse/format, header I/O
-│   ├── navigationRef.ts   ← React Navigation ref listener, shared (getCurrentRoute works on web)
+│   ├── navigationRef.ts   ← React Navigation ref listener + root→leaf route-path join, shared
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
 │   │                        idempotent, and one listener per instance — see below
@@ -84,7 +88,6 @@ src/
 │   ├── frameTracker.ts    ← the shared rAF loop; the window resets at every view boundary
 │   ├── uiInteraction.ts   ← §4.6 role gate, the five-rung name ladder, the rage window
 │   ├── networkChange.ts   ← edge-triggered network_change emitter
-│   ├── navigationTracker.ts / screenTiming.ts
 │   ├── webSender.ts / nativeSender.ts
 │   ├── web/               ← *.web.ts capture adapters (+ store.web.ts over localStorage,
 │   │                        webVitals.web.ts — the only `web-vitals` importer in the tree)
@@ -114,10 +117,14 @@ const telemetry = createTelemetry({
 
 await telemetry.identify({ name: "Ada", email: "ada@x.io" });
 await telemetry.log("checkout_started", { cart_value: 42 });
-telemetry.attachNavigation(navigationRef);   // native only, React Navigation ref
+telemetry.attachNavigation(navigationRef);   // both builds; React Navigation / Expo Router ref
 ```
 
-`createTelemetry()` returns `TelemetryWeb` or `TelemetryNative`. **Every public method is
+`createTelemetry()` returns `TelemetryWeb` or `TelemetryNative`, and is **the only way to build
+one** (#159): both entries export the classes as **types only**, so `new TelemetryWeb()` from the
+package is a type error and the `apiKey` / `traceHostAllowlist` validation cannot be bypassed.
+The classes live in `telemetryWeb.web.ts` / `telemetryNative.native.ts`, which only the factory
+and tests import. **Every public method is
 `async`** — both classes lazily build the core `Telemetry` behind an `instancePromise`.
 
 ---
@@ -138,12 +145,19 @@ type TelemetryOpts = {
   sessionSampleRate?: number; // 0.0-1.0, sticky per session; default 1
   traceHostAllowlist?: string[]; // bare hosts, exact, ports ignored; EMPTY by default (§6.4)
   buildId?: string;         // app.build_id — symbolication join key; omitted when unset (§4.8)
+  enabled?: boolean;        // #172 consent — false constructs dark until enable(); default true
+  autoTrackTaps?: boolean;  // #174 NATIVE ONLY, constructor-only, default false — onPress/onLongPress capture
 };
 ```
 
-Methods (both classes, all return Promises):
+Methods (both classes, all return Promises — except the span methods, `disable`/`enable` and
+`markScreenReady`, which are sync because each must act at the call):
 
 ```ts
+recordMetric(name, value, attrs?, {unit?}) / addBreadcrumb(name, data?) / startNewSession()   // #167
+disable() / enable()                       // sync flag flip; #172 consent kill-switch
+startSpan(name, attrs?) → { end({outcome?, attributes?}) } / withSpan(name, fn, attrs?) / endSpan(name, outcome?, attrs?)
+markScreenReady()                         // sync; view.ready_time / view.ready_outcome (#171)
 log(event, data?) / flush() / shutdown()
 identify({userId?, name?, email?, phone?, avatar?, customAttributes?})  // emits user.profile.update
 setUserId / setUserProfile / setUserDetails / updateUserProfile
@@ -153,11 +167,20 @@ captureError(error: unknown, context?)   // emits app.error — never app.crash
 ```
 
 `attachNavigation(ref)` lives on `TelemetryBase` and works on **both** builds: React Navigation's
-`getCurrentRoute()` is a navigation-tree API, not a native one, so one wiring gives web and native
-the same `view.name`.
+`getRootState()` is a navigation-tree API, not a native one, so one wiring gives web and native
+the same `view.name`. That name is the focused route names **joined root to leaf with `/`** (#170)
+— rung 2, never normalized, params never read — so nested screens sharing a leaf name stay
+distinct, and under Expo Router (whose route names are file paths) it is `(tabs)/settings/index`
+with no Expo dependency. A ready ref is read **on attach**; an unready one **on its `ready`
+event**, so the first screen is named without waiting for a navigation. Proven against a real
+nested navigator in `src/navigation.real.test.tsx`.
 
-Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `screenEnd(name)`,
-`trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory_usage` is (§5.2).
+Native-only on `TelemetryNative`: `screenStart(name)` (rung 1, `explicit`), `trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory_usage` is (§5.2).
+`screenEnd(name)` and `trackRoute(from, to)` are **`@deprecated` no-ops** since v5 (#163), deleted
+in v6.
+
+`trackErrors` is declared `abstract` on `TelemetryBase` and implemented **per entry** (#160), so
+shared code imports neither build's crash handler.
 
 `trackErrors`, `trackFrameDrops`, `trackNetworkRequests`, `autoTrackNavigation`, (native)
 `trackMemoryUsage` and (web) `trackInteractions` + `trackWebVitals` are auto-started in the
@@ -191,7 +214,27 @@ check — that would hard-reject every `edge_<jwt>`. The collector's path is `PO
 
 Built by `adapters/batch.ts` so both senders are byte-identical. Web uses
 `fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the credential headers.
-On failure: retried (3 attempts; native exponential + jitter, web linear), then persisted
+**`flush()` drains** (#162, §2.4): batches go **sequentially** until the queue is empty, stopping
+at the first failure, at most **50 batches** per call, with **≥100 ms** between sends so a backlog
+never trips the collector's 10 req/s burst (§2.3). A `flush()` landing mid-drain joins the
+in-flight one rather than starting a second loop. Constants are internal, never `TelemetryOpts`.
+
+**Status handling is §2.5's table**, one rule in `sendWithRetry()` (`adapters/batch.ts`) shared by
+both senders, read by core through `err.status` — so a consumer's own sender throwing
+`{ status: 401 }` gets the same treatment:
+
+| Status | Behaviour |
+|---|---|
+| **4xx** except 429 | thrown at once, **no retry, no persist**; core drops the batch, books `sdk.drop_reason: rejected`, and says one `isDev()` warning per process. A rejected `replayFailed()` is dropped, not re-persisted |
+| **429** | thrown at once; core requeues the batch at the front and halts the drain until `X-RateLimit-Reset` (epoch seconds *or* seconds-from-now, told apart by magnitude; 1 s when absent) |
+| **5xx / network** | retried (3 attempts; native exponential + jitter, web linear), then persisted |
+
+A wrong credential is the realistic 4xx, and persisting it would be terminal: the drain halts at
+batch 1 on every launch forever while the store fills and evicts. The crash path follows the same
+table for its one batch — dev warning included — but **ignores an active 429 hold**: a dying
+process gets its one round trip regardless.
+
+On a 5xx / network failure the batch is persisted
 **through the `Store` port** under key `telemetry_failed_events` and replayed on next init.
 `Sender.onFailure()` returns how many rows the store's cap evicted, because the counter it
 feeds (`sdk.events_dropped`) lives on the Context block and only core assembles that.
@@ -271,6 +314,26 @@ device-info adapter no longer calls `getFingerprint()` or `getDeviceName()` at a
 
 **`device.orientation`, `network.*` and device state stay log-time** (§3.1), because a request
 that failed when the network dropped is better described by the network at completion.
+
+**Device state rides outside the block** (#173, decision #149) — the 39-key freeze is untouched.
+`DeviceStateHandler` in `core/telemetry.ts`, the pure rules in `adapters/deviceState.ts`, one
+adapter per build (`deviceState.native.ts` / `deviceState.web.ts`), handed to core by the entry.
+
+| Keys | Rides | Source |
+|---|---|---|
+| `device.battery_level` (int 0–100), `device.battery_charging`, `device.power_save` | **`app.crash`, `app.error`, `app.hang` only — native only** | `react-native-device-info` (`getBatteryLevel` ×100, `isBatteryCharging`, `getPowerState().lowPowerMode`) — Android's names and shape |
+| `device.reduce_motion` | `session.started`, both builds | native `AccessibilityInfo.isReduceMotionEnabled()`; web `matchMedia('(prefers-reduced-motion: reduce)')` |
+| `device.screen_reader`, `device.font_scale` | `session.started`, **native only** | `AccessibilityInfo.isScreenReaderEnabled()` (VoiceOver *and* TalkBack), `PixelRatio.getFontScale()` |
+
+Battery is a **cached** read — refreshed at init, on foreground (the lifecycle emitter calls
+`deviceState.refresh()`) and every 60 s — and `battery()` is **synchronous**, so a crash never
+awaits a native call; assigned after `collectContext`, so caller data cannot forge it. `-1`
+(simulator), non-finite, out-of-range, a missing method (older device-info) or a throw **omits
+that key**, never a sentinel. The refresh timer stops on `disable()` and `shutdown()`. Web ships no
+battery: `navigator.getBattery` is Chromium-only (§5.2's defect), and no screen reader or font
+scale, which RN-Web answers with constants. Accessibility is read **once per session**, awaited
+inside `startSession()` behind its own reads' settle only; a failed read omits only its key. All six
+keys are Tier C. Asserted at the seam in `src/deviceState.test.ts`.
 
 Caller `data` is flattened dot-notation on top — so it can override any `app.*`, `device.*` or
 `network.*` key, but **not** the identity keys, which are assembled after it. Keep attribute
@@ -397,10 +460,18 @@ not charged as dwell to whatever screen was left open.
 
 | Arriving rung vs. current | Result |
 |---|---|
+| a `route` / `url` event naming a **different route** than the one this view is bound to | **always a navigation** (#169): emit `view`, mint a successor — whatever rung the display name came from |
 | higher | re-stamps `view.name`; **`view.id` unchanged** — an upgrade, not a navigation |
-| lower | ignored outright, whenever it arrives |
+| lower | name ignored (its route is recorded for the row above) |
 | same, different name | a genuine navigation: emit the `view` event, mint a successor |
 | same, same name | nothing |
+
+**Rank-beats-order applies only within one route** — the v5 ladder ruling (#169, amends §4.5.1,
+no wire change). Each view records the `route` and `url` names it was bound to; a route event
+naming a different one is a boundary even when the view's display name came from `screenStart()`.
+That is what stops an explicit name pinning a view across route changes. A route-change successor
+is bound to the route that minted it; a `resume` / `session_rotation` successor keeps the
+departing view's bindings, because the user never left the screen.
 
 Rungs 1 and 2 are **never normalized** — a host naming a screen `"Step 2 of 3"` must not receive
 `"Step {id} of {id}"`. Rung 3 (web history only) reuses `normalizeRoute()` and drops the query.
@@ -458,14 +529,42 @@ platform's own startup time.
 both are booked by the interceptors at **send** time, not by `log()` at completion. A request in
 flight across a view boundary belongs to the old view and does not hold the new one open.
 
-**`navigation` and `screen.duration` are unified onto this module on native**, which fixes the v3
-defect where `attachNavigation` never touched `inst.screens` — so a React Navigation consumer
-emitted `navigation` on every route change and **never a single `screen.duration`**. A deprecated
-event therefore starts firing where it never has, and its v4 volume goes *up*. Both are gated on
-the `deprecatedScreenFeeds` opt, which the **web** entry sets `false` so a now-shared
-`attachNavigation` cannot start `screen.duration` on a build that has never had it. ⚠ The flag does
-**not** silence `navigation` on web — `navigationWeb.web.ts`'s history path emits it directly, as
-it always has. §4.0 says web should emit neither; closing that is a separate change.
+**`navigation` and `screen.duration` are removed in v5** (#163, §4.0) — the `view` entity is the
+only screen feed. Both names are off `ALLOWED_NAMES`, no path on either build emits them, and the
+`deprecatedScreenFeeds` opt is deleted. A route change is `Telemetry.recordRouteChange(to)` → rung 2;
+`screenStart(name)` → rung 1; web's history path → rung 3. `screenEnd()` and `trackRoute()` are
+`@deprecated` no-ops until v6.
+
+⚠ **Web's history path ran for the first time in v5.** v4's `TelemetryWeb.autoTrackNavigation()`
+handed the tracker to `inst.start()` — a method core never had — so the rejection was swallowed and
+rung 3 (`url`) never fed a single web view. #163 wires it through `autoTrackNavigation()`, so a web
+app without `attachNavigation` now gets `view` rows named by normalized path where it had one
+`"unknown"` view per page load.
+
+**Screen-ready marks** (#171, decisions #145/#146) **complement** `view.loading_time` on the same
+`view` row — never average the two. `markScreenReady()` is sync, no-arg, on `TelemetryBase`, and
+marks the **current** view; `useScreenReady(telemetry, ready = true)` in `src/react.ts` is a
+`useEffect` around it.
+
+| Rule | Why |
+|---|---|
+| T stamped **synchronously**, bound to a view **one macrotask later** (`setTimeout(0)` → `ViewManager.markReady`) | React runs a screen's mount effect *before* the container's effect fires `state`, and `recordRouteChange()` mints behind awaits — a sync bind lands on the screen being **left**. Proven against real React Navigation in `src/navigation.real.test.tsx` |
+| `view.ready_time = max(0, T − anchor)`, present ⇔ `view.ready_outcome = ready` | a static screen honestly reports ~0 |
+| anchor: route views at entry; the **initial view at process start** (`anchorInitial`: web `performance.timeOrigin`, native `rnStartupTiming.startTime`) | the launch screen's ready time *is* cold-start-to-ready, with no second method |
+| no process-start marker ⇒ initial view **not judged** | one column, one anchor — never silently re-anchored at SDK init |
+| first mark per view wins, **no cap** | view exit bounds it |
+| only `initial_load` / `route_change` views carry a token; `resume` and `session_rotation` successors never do | a mark after background is a no-op |
+| `abandoned` only on a route-change or rotation exit **and** only for a `view.name` this process has seen marked (in-memory `markedNames`) | an uninstrumented screen never reads as abandoned |
+| a background exit is **not judged** — neither key | background is not abandonment |
+| pre-init mark buffered on `instancePromise`, bound a macrotask after settle | the initial view keeps its cold-start-to-ready row |
+
+`endView(cause)` now takes the exit's successor load type so it can tell background from route
+change; core's two direct callers (rotation, cross-tab adoption) default to `session_rotation`.
+
+**`app.start.js_ready_ms`** (§4.3) ships on **native only**, = `executeJavaScriptBundleEntryPointEnd −
+startTime`, read **when `app.start` is emitted** (after the resume's AsyncStorage round-trip, which
+is past the bundle-end stamp) and omitted when either field is missing. Never awaited: init must
+not block on a timer for one key. **Web never ships it** — its marker is `load`, after `app.start`.
 
 **`ViewManager.onBoundary()` is the view-boundary seam** (§5.1, #104). A subscriber is awaited
 inside `beginView` while the departing view is still current — that is what lets the frame window
@@ -586,6 +685,28 @@ either way.
 name *is* the element. Running it over `unnamed` would invent a frustration event that never
 happened, so ⚠ **a low native rage count means few named taps, not happy users**.
 
+**`autoTrackTaps`** (#174, decisions #150/#154) — opt-in, **native-only, constructor-only, default
+`false`**: upgrading must not mutate every consumer's JSX runtime on day one. `TelemetryNative`
+patches the **exports objects** of `react/jsx-runtime`, `react/jsx-dev-runtime` (`jsx`/`jsxs`/
+`jsxDEV`) and `react` (`createElement`) — `.default` behind the import interop, because Babel's
+`(0, _jsxRuntime.jsx)` reads properties at call time — so an element with a function `onPress`
+(`ui.type: tap`) or `onLongPress` (`long_press`, Android's value) gets a wrapper
+(`adapters/native/autoTaps.native.ts`). Both runtimes are in `vite.config.ts`'s externals.
+
+| Rule | Why |
+|---|---|
+| fires on **activation**, not touch | a scroll drag emits nothing; actionability *is* the prop, so still no `surface` |
+| ladder: `trackTap` (`edge_action`) > `testID` (`test_id`, `normalizeUiName`, cap 64) > `unnamed` (`none`) | **never text or accessibility labels** — `"Pay John Kamau KES 5,000"` is exactly what a label rung ships |
+| wrapper cache keyed on **(handler, testID)** | stable `onPress` identity across renders (no `React.memo` breakage), and a handler shared by list rows keeps each row's name |
+| per-event `WeakSet` across both props | `AppButton → Pressable` is one row; the innermost wrapper is called first and claims it |
+| snapshot + interaction root **before** the handler, row **after** | a navigating tap lands on its own screen, and the requests it fires are its children |
+| skipped when the handler called `trackTap` | explicit intent wins (counted by `explicitTaps`) |
+| rage name-keyed over `test_id`/`edge_action`, recorded only for a row that ships | the shared `tapRage`; unreachable on a long press, so not run |
+
+The factories are patched **once per process**; the wrappers report to a module-level sink, so a
+second opted-in instance takes over rather than stacking a second wrapper. Rendered through Seam 3
+in `src/autoTaps.native.test.tsx`.
+
 ### Trace and span
 
 `adapters/traceManager.ts`, shared by both builds (§6, #98/#99). It owns the live-root
@@ -612,6 +733,7 @@ process, which is the hazard that actually exists here. `ViewManager` is owned t
 | `view` | at view **entry**, when no root is live | `navigation` |
 | `http.request` | at **send**, when no root is live | `request` |
 | `ui.interaction` | at **every** click — the one unconditional mint | `interaction` |
+| `task.complete` | at span **start**, when no root is live (#164) | `custom` |
 
 ⚠ **A click mints unconditionally**, replacing whatever root was live rather than joining it: a
 tap is a new user action by definition, which is what makes the request a tap fires a child of the
@@ -620,11 +742,10 @@ its child and **a web hard load is `launch`, never `navigation`**. Web's launch 
 `performance.timeOrigin`, native's at SDK `initialize()`; neither is a fork time and the two are
 **not the same interval** — do not compare native and web launch envelopes.
 
-**Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request`, `ui.interaction`. Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
-`app.crash`, `app.error` and `custom_event`. ⚠ `custom_event` is the one place RN goes
+**Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request`, `ui.interaction`, `task.complete`. Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
+`app.crash`, `app.error`, `custom_event` and `app.hang` (read at its last good tick, not at emit). ⚠ `custom_event` is the one place RN goes
 past Android, flagged as an invention. **Tier 3 is trace-free**: *all metrics*, plus
-`app_lifecycle`, `network_change`, the session events, `user.profile.update` and the deprecated
-feeds. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
+`app_lifecycle`, `network_change`, the session events and `user.profile.update`. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
 invite a `GROUP BY` over a number that was never attributable — and the join would look valid.
 
 **Tier 2 never mints**: with no live root it carries no trace keys at all, rather than inventing a
@@ -640,6 +761,48 @@ not the one that closed it. Its wire `timestamp` is the exit and its `span.start
 so **a navigation root's row arrives after its own children**. On RN that is the normal case.
 
 **`span.duration_ms` is Tier 1 children only** — a root's is derived server-side at query time.
+⚠ **`task.complete` is the flagged exception** (#164): it ships the key on root *and* child,
+because a manual span's end is declared, not derivable from its children.
+
+#### Manual spans — `startSpan` / `withSpan` / `endSpan` → `task.complete`
+
+`adapters/manualSpans.ts` (the registry) + `Telemetry.startSpan/endSpan` + `TelemetryBase` (#164,
+decision #141). One primitive absorbs iOS `RumAction`/`RumTimer` and Flutter tasks; **no second
+carrier** — `TraceManager.manualSpan()` is `attach("custom")`, so a span joins the live root
+(its start extending the idle clock like any span start) or mints a `custom` root. **No
+nesting**: a span is a leaf, and a request inside it parents to the root — JS has no context stack.
+
+**One row at the terminal**, no start row: `task.name` (unnormalized, cap 255), `task.outcome`
+(`completed` | `failed` | `abandoned`), `span.duration_ms`, the Tier 1 keys frozen at **start**,
+and the row's `timestamp` is the end. `view.id`/`session.id` ride a `LogSnapshot` taken at start,
+`view.name` is resolved by lookup as usual. Caller attributes (start ∪ end) are spread **under**
+the SDK keys and anything in the `task`/`span`/`trace`/`parent`/`rum` namespaces is dropped first,
+so a nested `{ span: { id } }` cannot flatten into a forgery either.
+
+**The three methods are synchronous** — the freeze has to happen at the call. That is why the
+cached resolved core (`resolved`) moved from `TelemetryNative` up to `TelemetryBase` and both
+entries set it; before init, a call chains onto `instancePromise` and freezes emit-time identity
+(`at` is still the call time). Misuse never throws: blank name, a 33rd open span
+(`MAX_OPEN_SPANS`), unknown/double end are inert and reported through `debug()`. Starting an open
+name **supersedes** it — the old span is dropped without a row, and its handle can no longer close
+the successor (`take(name, only)`).
+
+**`abandoned` is emitted only at finalize**, under the session it was frozen to, ended at
+`lastActivity` like `session.duration_ms` — navigation and background are not abandonment. The
+rows go out *before* `session.finalized`, with a `finalizing` flag that keeps them out of `log()`'s
+expiry check (re-entering it would rotate the expired session again). Open spans persist in the
+`telemetry_session` record (attrs as a JSON string, so a cycle cannot break the record) and are
+closable by name after a resume. A sibling tab's rotation (#161) abandons them too, under the old
+session, before the record is adopted — the sibling already finalized it.
+
+A span **started before init** chains onto `instancePromise`; its handle's `end()` waits for that
+start when it has not run yet, so an end landing after `resolved` is set still closes it.
+
+A `startSpan` on an **already-expired** session triggers the rotation itself and freezes *after*
+it (`span.ready`), so a journey begun after a long idle belongs to the new session instead of
+being `abandoned` by the very next row. `startSpan` refreshes `lastActivity`; it is **not** an
+action — `view.action_count` counts `ui.interaction` only. Asserted at the seam on both builds in
+`src/spans.test.ts`.
 
 **Expiry is 2 s idle / 10 s cap**, Android's numbers, as **internal constants and never
 `TelemetryOpts` surface**: `injected_expired` exists so the numbers are falsifiable, so ship
@@ -681,6 +844,11 @@ review. Every extra header is another line the customer's server team must add t
 means `Access-Control-Allow-Headers: traceparent` is missing on that host, not that the SDK is
 broken. Adding the header also converts previously-*simple* cross-origin GETs into preflighted
 ones — set `Access-Control-Max-Age`.
+
+**A synchronously-throwing XHR `send()` discards the `request` root it minted** (#160,
+`RequestTrace.discard()`): it never reaches `loadend`, so nothing would ever describe that root,
+and the next request must mint its own rather than join an action that never happened. A
+*joined* root is left alone — one failed send does not end the action it belongs to.
 
 **Never-strip**: the SDK never removes or rewrites a header it did not add. Ownership is a
 **per-request presence flag set at the consumer's write time** — the `setRequestHeader` patch
@@ -740,7 +908,7 @@ behaviour change the SDK was never entitled to make.
 | | `app.crash` | `app.error` |
 |---|---|---|
 | Means | unhandled / fatal-ish | handled / non-fatal |
-| Producers | `ErrorUtils` / `window.onerror`, unhandled rejection | `captureError()`, opted-in `console.error` |
+| Producers | `ErrorUtils` / `window.onerror`, unhandled rejection | `captureError()`, opted-in `console.error`, `<EdgeErrorBoundary>` |
 | `error.breadcrumbs` | ✓ | — |
 | `error.fatal` | native only | — |
 
@@ -760,7 +928,8 @@ them** — the SDK's omitted-means-absent discipline is now universal.
 | Key | Rule |
 |---|---|
 | `error.type` | from **`error.name` only, never `constructor.name`** — minification turns `class PaymentError` into `"a"`, refragmenting grouping on every deploy. Cap 255; un-named classes report `"Error"` |
-| `error.source` | 5 values: `global_handler`, `unhandled_rejection`, `cross_origin` (web), `console`, `reported` |
+| `error.source` | 6 values: `global_handler`, `unhandled_rejection`, `cross_origin` (web), `console`, `reported`, `boundary` (#166) |
+| `error.component_stack` | `<EdgeErrorBoundary>` rows only. Raw, cap 2000, cut on a line boundary by the same truncator as the stack |
 | `error.message` | omitted when absent. Cap 1000 |
 | `error.stacktrace` | omitted when absent. **Raw and byte-for-byte** under the cap. Cap 2000, **tail-truncated on a frame boundary** |
 | `error.fatal` | **native only, omitted on web** — always `false` on `app.error` |
@@ -794,6 +963,41 @@ live root and correctly carries no trace keys at all.
 **`captureConsole` defaults off.** React's own dev-mode `console.warn` output was the dominant
 contributor to v3's crash count, which is what made "is my app crashing more this release?"
 unanswerable. Opted in, `console.error` becomes `app.error` and `console.warn` a breadcrumb.
+
+**`<EdgeErrorBoundary telemetry fallback? onError?>`** (`src/react.ts`, #166, decision #144) is the
+React module, exported from the **main entry** — no subpath, no Provider, no context; the instance
+is a prop. Written with no JSX so the build emits no `react/jsx-runtime` import the externals list
+would miss. A caught render error is `app.error`, `error.source: boundary` — **never** `app.crash`,
+the boundary handled it — via `TelemetryBase.captureBoundaryError()` (`@internal`; the public path
+stays `captureError()`). `fallback` is a node or `({ error, resetError })`; `onError` runs after the
+emit is started and its throw is swallowed.
+
+**One error, one row.** `getDerivedStateFromError` — the render phase, before React's own reporting
+— adds the error to a module-level `WeakSet` in `crashCapture.ts`; `captureConsole`, `window.onerror`
+/ `onunhandledrejection` and the native `ErrorUtils` handler skip a marked error. RN's own default
+handler still runs (the red box is the dev's). Rendered through `react-test-renderer` on both builds
+in `src/boundary.test.tsx` — **Seam 3**, which #171 and #174 reuse.
+
+### `app.hang` — JS-thread stalls
+
+`adapters/hangDetector.ts`, one module on both builds (#165, decision #143): a self-rescheduling
+**1 s** `setTimeout` measured on `performance.now()`. A tick that fires **≥ 2 s** past its schedule
+emits `app.hang` with `hang.duration_ms` = that lateness — the interval itself is never booked —
+and `error.breadcrumbs`. **No stack**: by the time anything can look, the frozen code has
+returned. All three numbers (`HANG_TICK_MS`, `HANG_THRESHOLD_MS`, `HANG_SUSPENSION_MS`) are
+internal constants; `stallMs()` is the pure maths with its own test.
+
+| Rule | Why |
+|---|---|
+| foreground only — `AppLifecycleEmitter.onState` calls `hangs.setActive()` on **every** call, the seed included | background suspension is not a freeze the user sat through |
+| off under `__DEV__` (`isDev()`), the detector is never even constructed | a debugger pause is not a hang |
+| lateness > **60 s** dropped | a sleeping device or frozen tab is a suspension, not a 4-hour hang |
+| attributed to the **last good tick** — its timestamp, `LogSnapshot` and `trace.annotate()` | the row lands on the screen and action where the freeze began, not where the thread woke |
+| Tier 2: annotate, never mint | §6.3 |
+| normal batch: no forced flush, no eviction reprieve, **not** in `view.error_count` / `sdk.error_count` | jank must not move the error rates; `isErrorName()` stays a closed two-name list |
+
+`stop()` is idempotent and resets the baseline, so a resume starts a fresh one; `shutdown()` calls
+it, and `disable()` suspends it (`suspend()`, #172) independently of the lifecycle state. Asserted at the seam on both builds in `src/hang.test.ts`.
 
 ### Symbolication — `app.build_id` and the stack payload
 
@@ -848,7 +1052,10 @@ timing vitals, `MB` for `memory_usage`, **`score` for `CLS`**. Without the CLS e
 does not special-case `metric_name` renders a CLS of `0.08` as a flat zero line beside an LCP of
 `4000` in the same `value` column. It is stamped **after** caller `data`, so a stray attribute cannot
 mislabel the unit of the column the row lands in, and it is **omitted** for a name not in the map —
-a consumer's own `recordMetric()` name has no unit the SDK can honestly claim.
+a consumer's own `recordMetric()` name has no unit the SDK can honestly claim, unless the consumer
+passes one (`recordMetric(name, value, attrs?, { unit })`, #167). The map's names are **reserved**:
+`recordMetric` drops them (a consumer row in the vitals/frame/memory series would be
+indistinguishable from ours), and drops a non-finite value rather than ship a fabricated number.
 
 **`frame.target_fps` is measured, not assumed** — and `frame.target_hz` is gone. rAF cannot fire
 faster than the display, so the floor of the window's deltas *is* the refresh interval; no new
@@ -910,10 +1117,10 @@ has been discarded on arrival for every RN sample ever sent, and the third is su
 `metric.unit`. ⚠ **A read that throws or returns a non-finite number emits nothing** rather than a
 fabricated `0`, which would drag every percentile down and read as a memory *win*.
 
-⚠ **This is the one tracker `shutdown()` tears down**, via an optional `stop()` on `MemoryHandler`.
+⚠ **`shutdown()` tears this tracker down**, via an optional `stop()` on `MemoryHandler`.
 It owns a `setInterval`; the rAF-driven `FrameDropTracker` does not, and a leaked 30-second timer
 calling `logMetric` on a shut-down instance is not the same residue as a rAF loop the platform
-already parks on background.
+already parks on background. The web vitals tracker is torn down too (#160) — see Core Web Vitals.
 
 ### Core Web Vitals — web only, on the metric path
 
@@ -955,6 +1162,9 @@ the wire** — which is *the* reason `beforeSend` covers metrics (§3.6). §4.6'
 rejected for it on the record: the role gate blanks `<img>`, `<h1>` and banners, which is most vital
 targets, and un-gating the ladder would rebuild the `textContent` hole the gate closes. A selector
 is developer-authored structure — tags, ids, classes — never user content.
+
+**`shutdown()` stops the tracker** (#160): it unsubscribes from `onBoundary` and gates emission,
+so no view boundary can `logMetric` on a shut-down instance.
 
 **CLS and INP subscribe with `reportAllChanges: true` as a running-value *subscription, not an
 emission trigger*.** The latest value is held in memory and shipped at the `ViewManager`'s
@@ -1018,7 +1228,7 @@ books nothing. A >64-char key is **dropped**, because truncating it would be the
 64 is dropped in iteration order.
 
 **Overflow is dropped, counted and warned — never a throw.** The warning is `isDev()`-gated and
-said **once per process**: it is the third of the Conventions' three console carve-outs, and it
+said **once per process**: it is the third of the Conventions' four console carve-outs, and it
 exists for the same reason as the other two — a consumer with a bad `identify()` payload is
 exactly the consumer who has not set `debug: true`.
 
@@ -1107,6 +1317,31 @@ spliced out **before** the send, not after — both the interval and the batch-f
 Native's is an AsyncStorage round-trip a SIGKILL can outrun, so it only *narrows*. Awaiting
 harder does not change that.
 
+### Consent — `disable()` / `enable()` and `enabled`
+
+Core's `enabled` flag (#172, decision #148). **`disable()` is synchronous** — the flag is off before
+it returns — and an opt-out means **nothing is sent and nothing is kept**:
+
+| On `disable()` | How |
+|---|---|
+| in-memory queue dropped | `queue = []` |
+| offline store **and** session record dropped | `store.remove(FAILED_EVENTS_KEY)` + `store.remove(SESSION_KEY)`; open spans cleared |
+| flush, memory and hang timers stopped | `clearInterval`, `memoryHandler.stop()`, `hangs.suspend(true)` |
+| rAF loop's samples discarded | it keeps running; `logMetric` returns at the top |
+| network patches pass through | `isEnabled?.() === false` at the top of the XHR `send` and fetch patches — no settle hold, no root, **no `traceparent`** |
+| nothing emitted or written | `log`, `logMetric`, `enqueue`, `persistSession`, `flushCrash`, `onSendFailure` all return early; `startSpan` is inert |
+
+The invariant, asserted on both builds in `src/consent.test.ts`: **while disabled, the `Sender`
+receives nothing and the `Store` is written nothing.** `device.id` is kept — it is not telemetry,
+and re-minting at re-consent would read as a new install.
+
+**`enable()`** restarts delivery (offline replay + flush timer), the memory sampler and the hang
+detector, then runs the lazy expiry check — a session can expire while disabled. **`enabled:
+false`** constructs dark: `resumeOrStartSession()` reads nothing and only sets `pendingStart`, so
+the first `enable()` runs the hydrate/announce (`session.started`, unless a live record resumes)
+and **`app.start` is skipped for the life of the process** — a launch measured without consent is
+not one to fabricate later.
+
 ### `beforeSend` and `sessionSampleRate`
 
 Both are **constructor-only**, in shared core, on both builds (§3.6). There is deliberately no
@@ -1186,6 +1421,15 @@ never land behind the host app's first event. It resolves one of three ways:
 - expired record → adopt it, emit `session.finalized` **under the old `session.id` and
   `session.start_time`**, then start a fresh one carrying the same reason.
 
+**Web tabs stay in sync live** (#161): the web entry listens for `storage` on `telemetry_session`
+and hands the sibling's write to `Telemetry.adoptSessionRecord()` (shared core, no platform
+branch — native simply never calls it). Same `session.id`: `lastActivity` and the counters take
+the `max`, so a busy sibling keeps this tab from idle-finalizing a session in use. A different id
+is the sibling's rotation: this tab emits its live `view` under the old session, adopts the new
+one **silently** (its `session.started` and the old `session.finalized` already shipped from the
+tab that rotated), clears the trace carrier and mints a fresh view. A record older than this
+tab's own session is ignored, so a slow sibling cannot drag it back.
+
 On web a `pageshow` with `persisted: true` re-runs the same decision, because a bfcache freeze
 can outlast the idle window and a sibling tab may have rotated the shared record meanwhile. That
 re-entry is idempotent: when storage has nothing to say it keeps the live session rather than
@@ -1195,8 +1439,9 @@ Metrics are samples, not user actions: they never refresh `lastActivity`, but th
 against both boundaries — otherwise a backgrounded app sampling memory would ship forever under a
 session that expired hours ago, which is the exact thing the 4-hour cap exists to stop.
 
-`session.reason` ships on both: 3 values on `session.started` (`launch|idle|max_duration`), 2 on
-`session.finalized` (`idle|max_duration`). `session.finalized` keeps `duration_ms` and
+`session.reason` ships on both: 4 values on `session.started` (`launch|idle|max_duration|manual`), 3 on
+`session.finalized` (`idle|max_duration|manual`). `manual` is `startNewSession()` (#167) — the same
+`rotateSession()` pair as the two boundaries, for logout/login. `session.finalized` keeps `duration_ms` and
 `event_count` even though the backend discards and derives both — the event survives as the
 carrier for `session.reason` and `sdk.error_count`. `duration_ms` is stamped from `lastActivity`,
 never `now`, so a lazily-detected rotation reports 2 minutes of use and not the 6 idle hours that
@@ -1211,8 +1456,6 @@ the original name as `event.name`. Currently emitted:
 |---|---|
 | `session.started` / `session.finalized` | init (unless the session resumes), 30-min idle rotation, 4-hour cap |
 | `app_lifecycle` | foreground/background transition |
-| `navigation` | route change or `screenStart()` |
-| `screen.duration` | `screenEnd()` |
 | `http.request` | XHR only on native (fetch *is* XHR there); fetch + XHR on web |
 | `app.crash` | JS error or unhandled rejection — **unhandled only**, no public path (§4.7) |
 | `app.error` | `captureError()`, an opted-in `console.error`, and a re-routed public `log("app.crash")` |
@@ -1221,6 +1464,8 @@ the original name as `event.name`. Currently emitted:
 | `app.start` | once per process at init — the `launch` root, and §4.3's launch compensator |
 | `network_change` | connectivity type transition |
 | `user.profile.update` | `identify()` |
+| `task.complete` | a manual span ends, or its session finalizes first (`abandoned`) (#164) |
+| `app.hang` | a JS-thread stall of 2–60 s, in the foreground, outside `__DEV__` (#165) |
 | `custom_event` | any non-allowlisted `log()` name |
 | `frame_render_time` | **metric** — p95 per window; the window closes at 10s **or at a view boundary** (§5.1) |
 | `memory_usage` | **metric** — resident MB, **native only**, sampled every 30 s (§5.2) |
@@ -1237,6 +1482,9 @@ APIs are Chromium-only while `frame_render_time` detects jank on every runtime. 
 **allowlisted but never produced**, so none adds anything to the migration story. With `view`,
 `ui.interaction`, `app.error` and `app.start` in, the allowlist's v4 movement is **net zero**.
 Asserted on both builds — `src/integration.web.test.ts`, `src/integration.native.test.ts`.
+
+**v5 is net zero too** (#156 §4): `navigation` and `screen.duration` come off (#163), and
+`task.complete` and `app.hang` go on.
 
 **Adding a new `eventName` requires backend sign-off** — unlisted names are dropped on
 ingest.
@@ -1260,8 +1508,9 @@ ingest.
   reporting *the consumer's own mistake* — a malformed config, an unset runtime knob, a payload
   the SDK had to drop — may write directly, provided it is gated on `isDev()` from the same file
   and said **once per process**. §6.4's malformed-allowlist report, §4.8's
-  `Error.stackTraceLimit` advisory and §4.10's `user.custom.*` overflow warning are the only
-  three, because `debug: true` is exactly what a consumer with a mistake has not set. ⚠ The
+  `Error.stackTraceLimit` advisory, §4.10's `user.custom.*` overflow warning and §2.5's
+  rejected-batch warning (#162 — a 4xx usually means a wrong `apiKey`) are the only
+  four, because `debug: true` is exactly what a consumer with a mistake has not set. ⚠ The
   third one fires from `identify()` — a path a shipped app takes — which the earlier
   *config-wiring-only* wording did not cover; `isDev()` is what keeps it off a shipped app's
   console, and that gate, not the call site, is the actual rule. Anything that can fire more
@@ -1281,6 +1530,17 @@ ingest.
 - CI (`.github/workflows/ci.yml`): on push/PR to master + merge_group — `npm ci`, typecheck,
   test, build. Actions pinned by SHA. No lint step (no lint script in the repo).
 - Publishing is **manual** (`npm publish`) — no release workflow.
+- **Size budget (§5, #158):** `src/size.budget.test.ts` walks each entry's built chunk graph,
+  esbuild-minifies (esbuild ships with vite — no new dependency), gzips and fails above
+  **20 KB gz native / 26 KB gz web**. Measured at #158: native **15.1 KB**, web **22.1 KB**; at #174 (all of v5): native **19.9 KB**,
+  web **25.5 KB** — ⚠ native has ~0.1 KB of slack left, so the next native feature needs a cut or a cap ruling
+  (v4: 23.7 / 22.7). A feature costing more than ~1 KB gz justifies itself against the slack.
+- `vite.config.ts`'s `external` is an **explicit allowlist**: `react`, `react-dom`,
+  `react-native`, AsyncStorage, and — since #158 — `react-native-device-info`,
+  `@react-native-community/netinfo` and `react-native-get-random-values`. Those three are
+  native-module JS the consumer already installed; bundling them ran our copy against *their*
+  native module. `web-vitals` is deliberately **not** on it (§5.3). The size test asserts no
+  reachable native chunk was built from a `node_modules/<pkg>/` source, via the sourcemaps.
 - `dist/` and `*.tgz` are git-ignored and must stay untracked. If they show up in
   `git status`, something re-added them.
 
@@ -1301,8 +1561,8 @@ above rather than defects.
 - **`user.custom_dropped` counts keys, not causes.** A cyclic value, an over-long key and the
   65th key all book `1` with nothing on the row telling them apart. The dev warning names the
   bounds; splitting the counter three ways would spend three columns on a debugging aid.
-- **The `user.custom.*` overflow warning is the third console carve-out** — dev-only, once per
-  process, outside the `debug()` gate, for the same reason as the other two.
+- **The `user.custom.*` overflow warning is the third console carve-out** (of four) — dev-only,
+  once per process, outside the `debug()` gate, for the same reason as the others.
 - **Arrays on the caller-`data` path changed shape**: `log("x", { tags: ["a","b"] })` shipped a
   raw array in v3 and ships `'["a","b"]'` now. The collector `fmt.Sprint`s a raw array into Go
   map syntax, so this is a better wire shape, but it *is* a value change on an existing key for
@@ -1327,11 +1587,17 @@ above rather than defects.
   is share-of-device, not share-of-budget. iOS kills an app well below the device total.
 - **A device-info read that throws emits nothing**, so a sampler failing on every tick is
   indistinguishable from a build that never started one. There is no counter for it.
-- Web navigation paths keep their query strings, so tokens and PII in query params ship as-is.
-  (`http.request` itself carries no URL — see the `http.request` section.)
-- `flush()` sends **one** batch per call — it does not loop. At 50/30 s a large backlog still
-  drains a batch per interval; the draining `flush()` is contract §12.5 and a separate change.
-- `sdk.drop_reason` has no `rejected` producer: 4xx-drops-the-batch is #113.
+- **A 401 is invisible to the backend by construction** (§2.5): the `rejected` count rides the
+  *next* row that gets through, and with a wrong credential none does. The dev warning is the
+  only signal the consumer gets.
+- **The 429 hold is in memory only.** A relaunch inside the `X-RateLimit-Reset` window sends at
+  once; the collector's per-device budget is what answers that, not the SDK.
+- **A batch the crash path persisted and the collector then rejects** replays next launch and is
+  dropped there — through `replayFailed()`, which has no core in reach, so that drop is not booked
+  on `sdk.events_dropped`. Same lossy-about-its-own-loss residue as the replay eviction below.
+- **`flush()` rejects on a 4xx or 429** exactly as it always has on a network failure, so a
+  `log()` whose lazy rotation flushes can reject with it. Unchanged v4 behaviour, now reachable by
+  two more statuses.
 - A re-persist inside `replayFailed()` can evict without booking it — the sender has no core
   instance in reach. §3.7 already calls these counters lossy about their own loss.
 - **The replay guard is native-only and per-sender.** Web needs none (its store is
@@ -1353,14 +1619,23 @@ above rather than defects.
   item 7). Symbolication itself is greenfield backend-side.
 - **The `Error.stackTraceLimit` advisory writes to the console outside the `debug()` gate** —
   dev-only, once per process, and from the stack-capture chokepoint so #23's "construct → log →
-  flush is silent by default" still holds. It is the second of the two carve-outs the
+  flush is silent by default" still holds. It is the second of the four carve-outs the
   Conventions bullet names, not an exception to it.
 - **`ui.interaction` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
   `user.interaction` came off the list in the same change.
-- **Native interaction coverage equals native instrumentation coverage.** `trackTap(name)` is the
-  only producer, so `view.action_count` counts *named taps*, not taps; an uninstrumented screen is
-  indistinguishable from an unused one. Same reason `ui.rage` is gated to `edge_action`.
+- **Native interaction coverage equals native instrumentation coverage — unless `autoTrackTaps`.**
+  Without it `trackTap(name)` is the only producer, so `view.action_count` counts *named taps*;
+  with it, every `onPress`/`onLongPress` activation, so the column **changes meaning per app**.
+- **`autoTrackTaps` emits for non-tap `onPress` callbacks too** — map markers, third-party
+  libraries. Real user presses in practice; accepted residue.
+- **`autoTrackTaps`'s dedupe needs an object event.** A component that calls `onPress()` with no
+  argument through two wrapped layers emits two rows. Pressable always passes one.
+- **`autoTrackTaps` only reaches code that reads the factories at call time** — Babel's CJS
+  output does; an ESM build of a dependency that bound `jsx` at import does not. Elements created
+  before init are wrapped but emit nothing until the core resolves.
+- **`ui.name_source: test_id` and `ui.type: long_press` on native need backend sign-off** (§4.6
+  says native has two name sources; §10.5's `ui.type` domain grows).
 - **`trackTap` ships `ui.tag: "native"` and `ui.x`/`ui.y` of `0`.** All three are never-null in
   §4.6 and native has no element and no coordinate; a `PressEvent` carries coordinates but
   `trackTap(name)` deliberately takes none. Flag it if the backend wants the tag column empty
@@ -1400,21 +1675,18 @@ above rather than defects.
   than 2000 chars has no newline inside the budget, so that one cut lands mid-frame. The
   `\n… [truncated]` marker is what makes the case countable.
 - No top-level `location` in the envelope, though the contract allows one.
-- `apiKey` is only validated in the factory; the `TelemetryWeb`/`TelemetryNative`
-  constructors still accept it as optional.
 - **`session.reason: "launch"` undercounts launches.** A resume emits no `session.started` at
   all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
   compensator and is not built — count launches from `app.start`, not from `session.reason`.
-- Session state is read at init and on a web bfcache restore, **not live-synced**. Two tabs
-  open at once share the `localStorage` record but keep their own in-memory `lastActivity`, so
-  they can diverge and both finalize the same `session.id`. A `storage`-event listener would
-  close it.
+- **Cross-tab sync merges, it does not lock** (#161). Two tabs logging in the same instant each
+  stamp `event.sequence` from their own counter before either `storage` event lands, so a
+  duplicate `(session.id, event.sequence)` pair is still possible under true concurrency — the
+  `max` merge only stops the counters *staying* apart. A shared counter would need a lock
+  `localStorage` does not have.
 - A `Store` reporting `unavailable` means the session can't be resumed, so every launch mints
   one. There is no `session.id_ephemeral` to mark that population — but the same store failed
   the `device.id` round-trip, so those events already carry `device.id_ephemeral: true`.
 - Crash capture is JS-level only — no native signal/ANR/hang capture.
-- `index.base.ts` `trackErrors()` imports the **native** crash handler in shared code; the
-  web build resolves it at runtime and rejects.
 - **`view` needs backend allowlist sign-off before it ships** — an unlisted `eventName` is
   dropped on ingest. It is already in the SDK's `ALLOWED_NAMES`, so it is being emitted.
 - Settle sees only what the SDK intercepts — JS `fetch`/XHR. `rn-fetch-blob`, RN Firebase, native
@@ -1468,10 +1740,9 @@ above rather than defects.
   allowlist matters here by staying an *explicit* list — a bundled dependency stays bundled — and
   `src/vitals.native.test.ts` asserts the config does **not** name it. Flag it if that reading is
   wrong; the zero-bytes-to-native half is asserted against the built chunk graph either way.
-- **`shutdown()` does not stop the vitals tracker.** Its `onBoundary` unsubscribe is discarded, so a
-  view boundary after shutdown can still `logMetric`. Unlike `memory_usage` it owns no timer — the
-  only thing that can fire it is a boundary, which needs a live app — so it did not earn the `stop()`
-  hook §5.2 gave the memory sampler. The library's own observers are never detached either.
+- **`web-vitals` observers are never detached.** The library has no detach API, so after
+  `shutdown()` (#160) the tracker unsubscribes from `onBoundary` and gates its own emit — a late
+  LCP callback still runs, it just ships nothing.
 - **`vital.target` and `vital.load_state` are omitted when absent, not sent as explicit `null`s**,
   though §5.3's table types both `Null? yes`. This is the same omit-vs-explicit-null conflict
   already recorded for `view.loading_time`, and it is resolved the same way: omission is what every
@@ -1486,20 +1757,36 @@ above rather than defects.
 - **The five vitals need backend allowlist sign-off before they ship** — all five are already in
   `ALLOWED_NAMES`, so they are being emitted, and an unlisted name is dropped on ingest.
   §5.3's fourteen attribution keys need columns or a bag that is actually queried.
+- **The three native-module packages are externalized, so the consumer's installed copy runs**
+  (#158). netinfo and get-random-values stay `dependencies`, so npm still installs them; the
+  version that runs is now whatever the app resolved, not the one we built against. A consumer
+  pinning an older device-info gets that version's capability surface — the optional-method
+  guards (`supportedAbis?.()` etc.) are what keep that safe.
+- **`src/size.budget.test.ts` reads `dist/`**, like `vitals.native.test.ts`: red after
+  `npm run clean` until the next build. The cap is a claim about the *built* output.
 - **`web-vitals` is a runtime `dependency` a native consumer also installs on disk** — bundled,
   so their app ships zero bytes of it, but `npm ls` shows it. Making it a devDependency would
   work today and break the moment anything externalizes it; the contract calls it a dependency.
-- **`metric.unit` is omitted for a name the SDK has no unit for** — a consumer's own
-  `recordMetric()` name ships no unit rather than a guessed one.
-- The deprecated web `navigation` event still carries `location.pathname + search` raw, query
-  string included. `http.request` and `view.name` are both clean; this feed is not.
+- **`metric.unit` is omitted for a consumer metric passed without `{ unit }`** — never guessed.
+  The consumer's unit is free text; nothing normalizes `ms` vs `millis`.
+- **`addBreadcrumb` keeps the *first* 8 data keys** in iteration order and silently drops the rest,
+  like `user.custom.*`'s overflow but without a counter — a crumb is debugging context, not data.
+- **A web app that never wired `attachNavigation` changes shape in v5**: the history path now
+  runs (#163), so it emits one `view` row per pushState/popstate route where v4 emitted none.
+  More rows, not different ones — every one follows the rung-3 rules that were already documented.
 - **`app.start` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
-- **`app.start.js_ready_ms` (§4.3) is not built.** #98 mints the event as §6.2's launch root;
-  the payload key needs a ruling first. The marker is only known when the platform publishes
-  it — on web that is the `load` event, which arrives *long after* `app.start` — so shipping
-  it means either delaying `app.start` (and with it the launch root, which the initial view
-  parents to) or shipping a key that is near-always absent on web. Neither is a local call.
+- **`app.start.js_ready_ms` is native-only and best-effort** (#171). Read at `app.start`'s emit,
+  it is omitted if the runtime had not stamped bundle-end yet — possible only where the store
+  resolves without a macrotask (an injected sync store on native). Web never ships it.
+- **A screen's first visit per process can't be `abandoned`** — the learned set is in memory and
+  empty at launch, so a user who bounces off a slow screen on their first visit reports neither
+  key. Deliberate: claiming `abandoned` for a screen nobody instruments is the worse error.
+- **A ready mark landing after a tab-away is lost.** Background exits are unjudged and the resume
+  successor has no token, so a screen that finishes loading while hidden reports nothing.
+- **A buffered pre-init mark binds to whatever view is current a macrotask after init** — the
+  initial view in every real wiring, since no route change can be recorded before init.
+- **`view.ready_time` / `view.ready_outcome` need backend sign-off** (columns on `view`).
 - **An expired-record cold launch leaves the retired launch trace rootless.** The rotation
   re-mints the launch root so `trace.id` cannot span a `session.id`, which means the initial
   `view` row — emitted under the *old* session — is a child of a root whose row never ships.
@@ -1513,22 +1800,78 @@ above rather than defects.
   the live enum's `injected_inbound_malformed` says *inject over a malformed inbound header*,
   never-strip says *skip*. RN ships the skip. Population is 0 rows either way; the other six
   rungs are settled.
-- A **direct `new TelemetryWeb()` / `new TelemetryNative()` skips the allowlist validation**,
-  the same gap `apiKey` already has — both are only enforced in the factory.
 - `traceparent.outcome` is **not** on §3.6's Tier A list, so `beforeSend` can delete or rewrite
   it (Tier C) — same status as `trace.root_type`, `span.start_time` and `span.duration_ms`.
 - `trace.root_type = interaction` is minted by every web click (#102) and every native
   `trackTap(name)` (#103) — but on native only where the consumer called it, so an unattributed
   native request means *an uninstrumented tap*, not *no action*.
-- An XHR `send()` that throws **synchronously** never reaches `loadend`, so a `request` root it
-  minted lives out its 2 s window with no row describing it. Rare, and knowingly left.
-- **A lower rung swallows its own boundary.** §4.5.1's "a lower rung arriving later does not
-  overwrite a higher one" is implemented literally, so a host that calls `screenStart()` once and
-  then relies on `attachNavigation` pins the view to that explicit name: route changes stop minting
-  successors and dwell keeps accruing under the stale name. The rule exists because two rungs
-  normally describe *one* navigation (the upgrade window), and §4.5 separately makes route change an
-  unconditional boundary — the two readings conflict and it needs a contract ruling, not a local
-  invention. Until then: call `screenStart()` per screen, or don't mix it with `attachNavigation`.
+- **A `screenStart()` that lands *before* its own route event names the departing view.** The
+  ladder ruling (#169) judges a route event against the route bound when the explicit name
+  landed — so if the new screen's mount effect runs before React Navigation's `state` event, the
+  explicit name upgrades the *old* view in place and the route event then bounds it under that
+  name. Call `screenStart()` from the screen's own effect, which React runs after the commit the
+  route event follows; the ordering is the host's, and the ruling is literal by design.
+- **Battery on a failure row is up to 60 s stale** — a cached read by design; the capture path
+  never waits.
+- **Battery coverage = `react-native-device-info` coverage.** Absent keys cannot tell "peer not
+  installed" from "read failed" from "simulator".
+- **A mid-session accessibility toggle is missed until the next session**, and a *resumed*
+  session emits no `session.started`, so it carries the launch's state. No listeners, by design.
+- **`device.screen_reader` and `device.font_scale` are RN inventions** and need backend columns;
+  the battery keys reuse Android's (§10.3 amended). Thermal state stays deferred — no source.
+- **`disable()` lasts one process.** The SDK persists no consent state — that is the host's
+  record to keep; construct with `enabled: false` on the next launch.
+- **A batch already in flight at `disable()` still completes.** Its send began before the flip;
+  a failure is then dropped rather than persisted. Everything not yet handed to the sender is gone.
+- **`disable()` drops the session record, so re-enabling continues the in-memory session** but a
+  relaunch in between starts a new one. Nothing was kept, by design.
+- **A pre-init `disable()` chains on `instancePromise`**, so it flips when init settles — after
+  `session.started` was enqueued, which the flip then drops with the queue. Nothing is sent;
+  `enabled: false` is the way to have nothing *built*.
+- **A thrown primitive is not deduped.** `throw "x"` inside a boundary cannot be a `WeakSet` key,
+  so if React or a global handler also reports it, it can be two rows. Throw `Error`s.
+- **React 18's caught-error console message carries no error object** (`"The above error occurred
+  in…"` as one string), so with `captureConsole` on it can add a `console` row beside the
+  `boundary` one. React 19 passes the error and is deduped.
+- **`error.source: boundary` and `error.component_stack` need backend sign-off** — a new enum
+  value and a new Tier C key.
+- **`app.hang` needs backend allowlist sign-off**, and the processor's `hang.duration_ms` read
+  fix (contract ask A4). It is already in `ALLOWED_NAMES`.
+- **`hang.duration_ms` under-reports by up to one tick.** It is the timer's lateness; a stall
+  that began mid-interval is partly absorbed by the wait the timer would have done anyway. It
+  never over-reports, and a 2.5 s freeze can read as anything from 1.5 s (dropped) up.
+- **A hang that never ends is never reported** — the row is emitted by the tick that wakes up. A
+  freeze the OS kills (iOS watchdog, Android ANR dialog → force-close) leaves no row; that is
+  native capture, which this SDK does not have.
+- **`app.hang` reuses `error.breadcrumbs`** for its trail, though it is not an error — one key,
+  one column, the same JSON shape.
+- **`task.complete` needs backend allowlist sign-off**, plus `trace.root_type: custom` and
+  `span.duration_ms` on a root row (#164's contract asks). It is already in `ALLOWED_NAMES`.
+- **A resumed span's `view.name` is `"unknown"`.** `view.id` is frozen and persisted, but the
+  retired-name ring is in memory, so a span closed after a relaunch resolves its id to nothing.
+  The id still joins to that view's own `view` row.
+- **Spans are per tab on web, and the session record is not.** A tab persisting its open spans
+  overwrites another tab's, so after a reload only the last-writing tab's spans resume; the
+  cross-tab `storage` sync (#161) does not merge them.
+- **A superseded span emits nothing.** `abandoned` is reserved for "the session ended first", so
+  a restarted name loses its predecessor silently — count restarts in host code if they matter.
+- **A span outliving the 10 s root cap still reports its root's ids**, frozen at start — later
+  requests mint their own root (#141), so a long journey's `rum.action.id` holds the span and
+  the requests in its first ten seconds only.
+- **Two explicit names in a row leave the second view unbound to any route** (#169). `screenStart("X")`
+  then `screenStart("Y")` mints Y with no route binding, so the next route event is read as Y's own
+  (the upgrade window) rather than a boundary. That is right when Y's mount effect ran before its
+  route event, and wrong when Y was a sub-state of one screen — call `screenStart()` once per screen.
+- **`startTime` / `executeJavaScriptBundleEntryPointEnd` are monotonic-clock, not epoch** — iOS
+  `CACurrentMediaTime()`, Android `uptimeMillis()`, the clock `performance.now()` reads. `toEpoch()` in
+  `runtimeReady.native.ts` shifts them by `Date.now() − performance.now()`; v4's `initial_load` seed
+  compared the raw value against `Date.now()`, so the floor was in 1970 and never held.
+- **Nested `view.name`s changed shape in v5** (#170): v4 shipped the leaf (`Details`), v5 the
+  joined path (`HomeTab/Details`). A dashboard keyed on a nested leaf name breaks at the cutover;
+  top-level screens are unchanged. A ref without `getRootState()` falls back to the leaf.
+- **On web, a URL change bounds the view even when the route name does not change** (#169) — a
+  tab or filter that pushes a new path inside one React Navigation screen now splits the view.
+  Same rule as any route change; a query-only change normalizes to the same name and does not.
 
 - **`device.cpu_abi` is the *first* supported ABI, not the list.** `supportedAbis()[0]` is the
   primary one — the answer to "is this a 32-bit device", which is what the key exists for — and a
@@ -1549,9 +1892,9 @@ above rather than defects.
   be dropped by `JSON.stringify`. Wire-neutral — but a consumer passing
   `log("x", { "device.model": undefined })` used to blank the key and now leaves the real
   `device.model` in place, because the override never enters the bag.
-- **`sdk.platform` falls back to the bare `"react-native"`** for a direct `new Telemetry()` with no
-  entry-declared `platform`. That is the same gap `apiKey` and the allowlist already have: the
-  factory is the only supported construction path.
+- **`sdk.platform` falls back to the bare `"react-native"`** for a core `new Telemetry()` with no
+  entry-declared `platform` — reachable from tests only: core is not exported, and since #159
+  neither are the entry classes as values, so `createTelemetry()` is the sole public path.
 - **The 39-key assertion is per-build, not per-row.** `context.web.test.ts` and
   `context.native.test.ts` pin a clean anonymous `custom_event`; a row with a `buildId`, a
   `user.id`, an ephemeral `device.id` or a drop booked carries more of the 39, which is what

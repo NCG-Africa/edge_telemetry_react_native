@@ -5,6 +5,13 @@
 // because each imports a different platform adapter.
 
 import { debug } from "./core/debug";
+import type { Telemetry } from "./core/telemetry";
+import type { TaskOutcome } from "./adapters/manualSpans";
+
+/** What `startSpan()` returns. `end()` is idempotent, never throws, and returns nothing to await. */
+export type SpanHandle = {
+    end(opts?: { outcome?: TaskOutcome; attributes?: Record<string, unknown> }): void;
+};
 
 type ProfileInput = {
     userId?: string;
@@ -23,6 +30,129 @@ type ProfileInput = {
 
 export abstract class TelemetryBase {
     protected instancePromise!: Promise<any>;
+    /**
+     * The resolved core, once `instancePromise` settles — set by each entry. The synchronous
+     * methods (`startSpan`, native `trackTap`) cannot afford an `await` before they read the
+     * world: the host navigates on the very next line (§4.6's mint/emit split). Before it is
+     * set they fall back to emit-time identity.
+     */
+    protected resolved?: Telemetry;
+
+    /** Run `fn` against the core now if it is resolved, else once it is. Never throws or rejects. */
+    private now(fn: (inst: Telemetry) => unknown, what: string): Promise<void> {
+        const swallow = (err: unknown) => { debug.warn(`${what} failed:`, err); };
+        try {
+            return (this.resolved ? Promise.resolve(fn(this.resolved)) : this.instancePromise.then(fn))
+                .then(() => undefined, swallow);
+        } catch (err) { swallow(err); return Promise.resolve(); }
+    }
+
+    /**
+     * "This screen is usable now" (#171). Synchronous, no arguments: it marks the **current**
+     * view, so your name and the SDK's cannot disagree. The time is taken now; the view is
+     * chosen one macrotask later, so a mark from a new screen's mount effect lands on that
+     * screen even though the navigation that opened it settles behind it. The `view` row then
+     * carries `view.ready_time` and `view.ready_outcome`. First mark per view wins. Before init
+     * the mark is buffered and lands on the initial view.
+     */
+    markScreenReady(): void {
+        const at = Date.now();
+        this.now((inst) => { setTimeout(() => inst.views.markReady(at), 0); }, "markScreenReady");
+    }
+
+    // ---------- Consent (#172) ----------
+
+    /**
+     * Stop collecting, and keep nothing: the queue, the offline store and the session record
+     * are dropped, every timer stops, and the network patches pass through untouched. The flag
+     * is off before this returns. Survives only this process — persist the user's choice
+     * yourself and construct with `enabled: false` next launch.
+     */
+    disable(): void {
+        this.now((inst) => inst.disable(), "disable");
+    }
+
+    /** Resume collection. A session that expired while disabled rotates. */
+    enable(): void {
+        this.now((inst) => inst.enable(), "enable");
+    }
+
+    // ---------- Sibling parity (#167) ----------
+
+    /** Ship your own number. `unit` → `metric.unit`. The SDK's metric names are reserved; a non-finite value is dropped. */
+    async recordMetric(name: string, value: number, attributes?: Record<string, any>, opts?: { unit?: string }) {
+        const inst = await this.instancePromise;
+        return inst.recordMetric(name, value, attributes, opts);
+    }
+
+    /** Add a step to the trail of 20 that rides `app.crash` and `app.hang`. Name ≤64, ≤8 data keys, values ≤255. */
+    async addBreadcrumb(name: string, data?: Record<string, unknown>) {
+        const inst = await this.instancePromise;
+        inst.addBreadcrumb(name, data);
+    }
+
+    /** End the current session and start a fresh one — e.g. on logout. `session.reason: manual`. */
+    async startNewSession() {
+        const inst = await this.instancePromise;
+        return inst.startNewSession();
+    }
+
+    // ---------- Manual spans (#164) ----------
+
+    /**
+     * Time a journey: one `task.complete` row when the handle is ended. Synchronous — the
+     * trace keys, `view.id` and `session.id` freeze here. A span joins the live action's
+     * root, else mints a `custom` one; requests inside it parent to that root, not the span.
+     * Starting a name that is already open supersedes it. Blank names and a 33rd open span
+     * are inert. Misuse never throws.
+     */
+    startSpan(name: string, attributes?: Record<string, unknown>): SpanHandle {
+        const at = Date.now();
+        let span: unknown;
+        let ended = false;
+        let startRan = false;
+        const started = this.now((inst) => { span = inst.startSpan(name, attributes, at); startRan = true; }, "startSpan");
+        return {
+            end: (opts) => {
+                if (ended) return;
+                ended = true;
+                const endAt = Date.now();
+                const close = () => this.now((inst) => span && inst.endSpan(name, opts?.outcome ?? "completed", opts?.attributes, endAt, span as any), "span.end");
+                // A pre-init start is still queued when `resolved` lands; an end in that gap
+                // must wait for it, or it sees no span. Otherwise close now, in call order.
+                if (startRan) close(); else void started.then(close);
+            },
+        };
+    }
+
+    /**
+     * `startSpan` + `end` around `fn`, sync or async. A throw (or rejection) ends the span
+     * `failed` and is rethrown untouched — no `app.error` is emitted; your catch decides.
+     */
+    withSpan<T>(name: string, fn: () => T, attributes?: Record<string, unknown>): T {
+        const span = this.startSpan(name, attributes);
+        let result: T;
+        try {
+            result = fn();
+        } catch (err) {
+            span.end({ outcome: "failed" });
+            throw err;
+        }
+        if (result && typeof (result as any).then === "function") {
+            return (result as any).then(
+                (v: unknown) => { span.end(); return v; },
+                (err: unknown) => { span.end({ outcome: "failed" }); throw err; },
+            );
+        }
+        span.end();
+        return result;
+    }
+
+    /** Close an open span by name — for a journey that ends in a different component. */
+    endSpan(name: string, outcome: TaskOutcome = "completed", attributes?: Record<string, unknown>): void {
+        const at = Date.now();
+        this.now((inst) => inst.endSpan(name, outcome, attributes, at), "endSpan");
+    }
 
     async log(event: string, data?: Record<string, any>) {
         const inst = await this.instancePromise;
@@ -76,12 +206,23 @@ export abstract class TelemetryBase {
         return inst.captureError(error, context);
     }
 
-    async trackErrors(options?: { captureConsole?: boolean }) {
-        const { CrashHandlerNative } = await import("./adapters/native/crashHandlerNative.native");
+    /**
+     * `<EdgeErrorBoundary>`'s path (#166) — `app.error` with `error.source: boundary` and the
+     * component stack. Not for host code: `captureError()` is the public way to report.
+     * @internal
+     */
+    async captureBoundaryError(error: unknown, componentStack?: string | null) {
         const inst = await this.instancePromise;
-        const crashHandler = new CrashHandlerNative(inst);
-        return inst.trackErrors(crashHandler, options);
+        const { capComponentStack } = await import("./adapters/crashCapture");
+        const context = componentStack ? { "error.component_stack": capComponentStack(componentStack) } : undefined;
+        return inst.captureError(error, context, "boundary");
     }
+
+    /**
+     * Wired per entry (#160): each build imports its own crash handler. Shared code importing
+     * the native one is what made the web build resolve it at runtime and reject.
+     */
+    abstract trackErrors(options?: { captureConsole?: boolean }): Promise<void>;
 
     // ---------- User Profile Management ----------
 

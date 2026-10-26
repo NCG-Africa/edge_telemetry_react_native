@@ -3,7 +3,7 @@ import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { Store } from "../core/store";
 import { nativeStore } from "./native/store.native";
 import { decodeFailed, encodeFailed, guardedDrain, FAILED_EVENTS_KEY } from "./failedEvents";
-import { buildBatch, buildHeaders, DEFAULT_ENDPOINT } from "./batch";
+import { buildBatch, buildHeaders, DEFAULT_ENDPOINT, isRejected, sendWithRetry } from "./batch";
 
 // The offline queue goes through the Store port (#89). Unlike web, these await: on the
 // native build a write is not guaranteed to have landed when the app is killed, so the
@@ -36,43 +36,13 @@ async function takeFailed(store: Store): Promise<TelemetryEvent[]> {
     return decodeFailed(read);
 }
 
-// ⬇️ Helper: send with retries (exponential backoff + jitter)
-async function sendWithRetry(endpoint: string, apiKey: string | undefined, events: TelemetryEvent[], retryCount: number = 3) {
-    let attempts = 0;
-    let lastError: any;
-
-    while (attempts < retryCount) {
-        try {
-            const res = await fetch(endpoint, {
-                method: "POST",
-                headers: buildHeaders(apiKey),
-                body: buildBatch(events),
-            });
-
-            if (!res.ok) {
-
-                debug.warn("Telemetry send failed with status:", res.status);
-                throw new Error(`Telemetry send failed: ${res.status}`);
-            }
-
-            debug.log("Telemetry send succeeded, events sent:", events.length ?? 0);
-
-            return; // ✅ success
-        } catch (err) {
-            lastError = err;
-            attempts++;
-            if (attempts < retryCount) {
-                // ⬇️ exponential backoff with jitter
-                await new Promise(res =>
-                    setTimeout(res, 500 * 2 ** attempts + Math.random() * 200)
-                );
-            }
-        }
-    }
-
-    // ❌ after retries still failed
-    throw lastError;
-}
+// Exponential backoff with jitter.
+const post = (endpoint: string, apiKey: string | undefined, events: TelemetryEvent[]) =>
+    sendWithRetry(() => fetch(endpoint, {
+        method: "POST",
+        headers: buildHeaders(apiKey),
+        body: buildBatch(events),
+    }), 3, attempt => 500 * 2 ** attempt + Math.random() * 200);
 
 export function nativeSender(
     endpoint: string = DEFAULT_ENDPOINT,
@@ -83,7 +53,7 @@ export function nativeSender(
         async send(events) {
             // Retry + backoff here; persistence on final failure is the core flush()'s
             // job via onFailure() — kept single, so a failed batch isn't persisted twice.
-            await sendWithRetry(endpoint, apiKey, events);
+            await post(endpoint, apiKey, events);
         },
         async onFailure(events) {
             return persistFailed(store, events);
@@ -96,11 +66,12 @@ export function nativeSender(
             if (stored.length === 0) return;
             debug.log("Replaying failed events, count:", stored.length);
             try {
-                await sendWithRetry(endpoint, apiKey, stored);
+                await post(endpoint, apiKey, stored);
             } catch (err) {
                 // If replay fails again, re-store. Exactly one copy: this path never goes
                 // through core's flush(), so onFailure() does not also persist it.
-                await persistFailed(store, stored);
+                // A 4xx is the exception (§2.5): a rejected batch is dropped, never kept.
+                if (!isRejected(err)) await persistFailed(store, stored);
                 throw err;
             }
         }),

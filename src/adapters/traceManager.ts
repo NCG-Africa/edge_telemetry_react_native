@@ -28,8 +28,8 @@ import {
     type TraceOutcome,
 } from "./traceHeader";
 
-/** §6.1's four root types. */
-export type TraceRootType = "launch" | "interaction" | "navigation" | "request";
+/** §6.1's four root types, plus `custom` — a manual span with no live root to join (#164). */
+export type TraceRootType = "launch" | "interaction" | "navigation" | "request" | "custom";
 
 /**
  * Android's numbers unchanged (§6.7), and **internal constants, never `TelemetryOpts`
@@ -72,6 +72,12 @@ export type RequestTrace = {
     /** The one header value to write, or nothing at all. Never a `flags=00` placeholder. */
     header?: string;
     finish: (endedAt: number) => TraceAttributes;
+    /**
+     * For a `send()` that throws synchronously and so never reaches its finisher (#160):
+     * drops the root this request minted, if it is still the carrier. A joined root is left
+     * alone — the action it belongs to outlives one failed send.
+     */
+    discard: () => void;
 };
 
 /** 32 lowercase hex, W3C (§6.1). */
@@ -147,14 +153,25 @@ export class TraceManager {
     }
 
     /**
+     * Tier 1 for a manual span (`task.complete`, #164), captured at **start**: a child of the
+     * live root — whose idle clock the start extends, like any span start — or else a fresh
+     * `custom` root. A leaf, never a parent: no context stack, so a request inside the span
+     * parents to the root. `span.duration_ms` is added at the end, on root *and* child — the
+     * flagged §6.3 exception, since a declared end is not derivable from children.
+     */
+    manualSpan(startedAt: number): TraceAttributes {
+        const { root, isRoot } = this.attach("custom", startedAt);
+        return spanKeys(root, isRoot, startedAt).keys;
+    }
+
+    /**
      * Tier 1 for an `http.request`, captured at **send** — the root live then is the parent,
      * and `span.start_time` is the send — plus §6.5's outcome ladder and the one header the
      * SDK ever writes. Returns the finisher, so duration is stamped from the same pair of
      * timestamps the row's `http.duration_ms` uses.
      *
-     * ponytail: a `send()` that throws synchronously never calls the finisher, so a root it
-     * minted lives on for up to 2 s with no row describing it. Rare enough to leave; give
-     * the finisher a `discard()` sibling if the orphan ratio ever shows up.
+     * A `send()` that throws synchronously never calls the finisher; it calls `discard()`, so
+     * a root it minted does not live on for 2 s with no row describing it (#160).
      */
     requestTrace(startedAt: number, ctx: RequestTraceCtx): RequestTrace {
         const decision = this.decide(ctx);
@@ -172,7 +189,7 @@ export class TraceManager {
                 "span.start_time": new Date(startedAt).toISOString(),
                 "traceparent.outcome": "adopted",
             };
-            return { finish: () => keys };
+            return { finish: () => keys, discard: () => { } };
         }
 
         // **Every skip still stamps local ids with no wire header** (§6.5) — that is what
@@ -191,9 +208,10 @@ export class TraceManager {
             ? () => keys
             : (endedAt: number) => ({ ...keys, "span.duration_ms": Math.max(0, endedAt - startedAt) });
 
+        const discard = () => { if (isRoot && this.root === root) this.root = undefined; };
         return decision === "inject"
-            ? { finish, header: formatTraceparent(root.traceId, span.spanId) }
-            : { finish };
+            ? { finish, discard, header: formatTraceparent(root.traceId, span.spanId) }
+            : { finish, discard };
     }
 
     /**

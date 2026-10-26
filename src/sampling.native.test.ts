@@ -93,10 +93,10 @@ describe("#93 native — beforeSend", () => {
       },
     });
 
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.flush();
 
-    const a = attrsOf(sent, "navigation")[0];
+    const a = attrsOf(sent, "custom_event")[0];
     expect(a["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_android$/);
     expect(a["sdk.version"]).toBeDefined();
     expect(a["app.name"]).toBe("NativeApp");             // all app.* is Tier A
@@ -118,11 +118,11 @@ describe("#93 native — beforeSend", () => {
     mode = "null";
     await t.log("custom_event");   // null → dropped
     mode = "pass";
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
 
-    expect(sent.map((e) => e.eventName)).toEqual(["navigation"]);
-    const a = attrsOf(sent, "navigation")[0];
+    expect(sent.map((e) => e.eventName)).toEqual(["custom_event"]);
+    const a = attrsOf(sent, "custom_event")[0];
     expect(a["sdk.hook_failed"]).toBe(3);    // session.started + app.start + the first custom_event
     expect(a["sdk.hook_dropped"]).toBe(1);
   });

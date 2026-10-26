@@ -63,6 +63,21 @@ type View = {
     // was live when the screen opened, not the one live when the user left it. Held here
     // rather than read at exit precisely so the later root cannot claim it.
     span: TraceAttributes;
+    /**
+     * The route-level names this view has been bound to, per rung (#169). Rank-beats-order
+     * holds only *within one route*: a route event naming a different route than the one
+     * recorded here is a navigation, whatever rung the view's display name came from.
+     */
+    routes: Partial<Record<"route" | "url", string>>;
+    /**
+     * #171's screen-ready mark. `token` — only `initial_load` and route-change views can be
+     * judged; a resume or rotation successor never can. `anchor` is what `view.ready_time`
+     * measures from (entry, or process start for the initial view); unset means not judged.
+     * `readyAt` is the first mark's T — first mark wins.
+     */
+    token: boolean;
+    anchor?: number;
+    readyAt?: number;
 };
 
 /** `view_{ms}_{16hex}` (§3.3). No platform suffix — a view never leaves its process. */
@@ -80,6 +95,12 @@ export class ViewManager {
     private readonly boundaryListeners = new Set<(successorLoadType: ViewLoadType) => unknown>();
     /** Retired `view.id` → final `view.name`, for `nameOf()`. Bounded; oldest evicted. */
     private readonly retiredNames = new Map<string, string>();
+    /**
+     * `view.name`s this process has seen marked ready (#171). In memory only, never persisted:
+     * `abandoned` is claimed only for a screen known to be instrumented, so an uninstrumented
+     * screen never reads as abandoned. Its first visit per process can't be judged either.
+     */
+    private readonly markedNames = new Set<string>();
 
     constructor(private telemetry: Emitter) {
         // A capability check, not a platform branch: RN has no `location`, and a
@@ -98,7 +119,30 @@ export class ViewManager {
             // just above this one — so the initial view is its child and a web hard load
             // reports `launch`, never `navigation` (§6.2).
             span: telemetry.trace?.viewSpan(now) ?? {},
+            routes: {},
+            // Anchored at process start by the entry (`anchorInitial`), never at SDK init:
+            // one column, one anchor. Until then, and on a runtime with no marker, not judged.
+            token: true,
         };
+    }
+
+    /**
+     * The initial view's ready anchor — process start: web `performance.timeOrigin`, native
+     * `rnStartupTiming.startTime` (#171). So its `view.ready_time` *is* cold-start-to-ready.
+     * `undefined` (native Old Architecture) leaves the initial view unjudged.
+     */
+    anchorInitial(processStart: number | undefined): void {
+        if (this.view.loadType === "initial_load") this.view.anchor = processStart;
+    }
+
+    /**
+     * `markScreenReady()`'s bind (#171) — the caller stamped `at` synchronously and arrives here
+     * a macrotask later, so a mount-effect mark lands on the view that mount belongs to. First
+     * mark per view wins; a view with no token (a resume or rotation successor) ignores it.
+     */
+    markReady(at: number): void {
+        const v = this.view;
+        if (v.token && v.readyAt === undefined) v.readyAt = at;
     }
 
     /** The two keys the Context block carries on every row. Name resolves at log time. */
@@ -126,13 +170,11 @@ export class ViewManager {
      * - a **higher** rung re-stamps the name and never changes `view.id` — that is what
      *   "rank beats order" means, and it is why a route name arriving after a URL-derived
      *   one upgrades the view in place instead of splitting it in two;
-     * - a **lower** rung is ignored outright, whenever it arrives — ⚠ *including its
-     *   boundary*. A host that mixes rung 1 with `attachNavigation` therefore pins the view
-     *   to the `screenStart` name until the next `screenStart`: route changes stop minting
-     *   successors, and dwell keeps accruing under the explicit name. That is what §4.5.1's
-     *   "a lower rung arriving later does not overwrite a higher one" costs, and the two
-     *   rungs describing one navigation (the upgrade window) is the case it exists for.
-     *   It needs a contract ruling, not a local invention — see CLAUDE.md's known gaps;
+     * - a **lower** rung does not overwrite the name — **but a route change is always a
+     *   boundary** (#169, the v5 ladder ruling). Rank-beats-order applies only *within one
+     *   route*, the upgrade window where two rungs describe one navigation: a route or URL
+     *   event naming a different route than the one this view was bound to emits `view` and
+     *   mints a successor, so `screenStart()` can no longer pin a view across route changes;
      * - the **same** rung naming a different screen is a genuine navigation, so it ends the
      *   view and mints a successor.
      *
@@ -140,6 +182,11 @@ export class ViewManager {
      * must not receive "Step {id} of {id}". The caller normalizes rung 3, not this method.
      */
     async navigate(name: string, source: ViewNameSource): Promise<void> {
+        if (source === "route" || source === "url") {
+            const bound = this.view.routes[source];
+            if (bound !== undefined && bound !== name) { await this.exit("route_change", name, source); return; }
+            this.view.routes[source] = name;
+        }
         const rank = RANK[source], current = RANK[this.view.source];
         if (rank < current) return;
         if (rank > current) { this.view.name = name; this.view.source = source; return; }
@@ -236,9 +283,22 @@ export class ViewManager {
      * only explicit wire null). `view.loading_time_outcome` always ships: it is what tells the
      * three null causes apart, and reading p75-of-settled beside %-capped is the whole point.
      */
-    async endView(): Promise<void> {
+    async endView(cause: ViewLoadType = "session_rotation"): Promise<void> {
         const v = this.view;
         const { loadingTime, outcome } = v.settle.resolve();
+        // #171. `ready` ⇔ `view.ready_time` present. `abandoned` only when the user left by
+        // route change or rotation — **background is not judged**, never a false accusation —
+        // and only for a screen this process has seen marked. Otherwise neither key: the screen
+        // is simply not instrumented.
+        let ready: Record<string, string | number> = {};
+        if (v.token && v.anchor !== undefined) {
+            if (v.readyAt !== undefined) {
+                this.markedNames.add(v.name);
+                ready = { "view.ready_time": Math.max(0, v.readyAt - v.anchor), "view.ready_outcome": "ready" };
+            } else if (cause !== "resume" && this.markedNames.has(v.name)) {
+                ready = { "view.ready_outcome": "abandoned" };
+            }
+        }
         await this.telemetry.log("view", {
             // A **point span** (§6.3): `span.start_time` from view entry and never
             // `span.duration_ms`. View dwell is `view.time_spent`, not span width — a width
@@ -254,6 +314,7 @@ export class ViewManager {
             "view.error_count": v.errors,
             "view.action_count": v.actions,
             "view.request_count": v.settle.requestCount,
+            ...ready,
         });
     }
 
@@ -293,12 +354,21 @@ export class ViewManager {
             // A view start *extends* the live root; with none live it mints a `navigation`
             // one (§6.2). Its exit does not extend anything (§6.7).
             span: this.telemetry.trace?.viewSpan(now) ?? {},
+            // A route change binds the successor to the route that minted it; a resume or a
+            // rotation keeps the user on the same screen, so it keeps the same routes too.
+            routes: successorLoadType === "route_change"
+                ? (source === "route" || source === "url" ? { [source]: name } : {})
+                : { ...prev.routes },
+            // Route views anchor at entry (`span.start_time`). A resume or rotation successor
+            // is the same screen continued, so it never gets a pending token.
+            token: successorLoadType === "route_change",
+            anchor: now,
         };
     }
 
     /** A boundary that stays inside one session: emit, then mint the successor. */
     async exit(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): Promise<void> {
-        await this.endView();
+        await this.endView(successorLoadType);
         await this.beginView(successorLoadType, name, source);
     }
 

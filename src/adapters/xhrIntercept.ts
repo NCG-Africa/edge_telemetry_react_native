@@ -27,6 +27,8 @@ interface PendingRequest {
      * the same pair of timestamps `http.duration_ms` uses.
      */
     span?: (endedAt: number) => TraceAttributes;
+    /** Drops the `request` root this send minted — only for a synchronous `send()` throw. */
+    discardRoot?: () => void;
     /**
      * §6.4's ownership flag: the consumer's own `traceparent`, recorded **at their write
      * time** in the `setRequestHeader` patch. Never inferred from the value's shape — an
@@ -93,6 +95,8 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
     xhr.prototype.send = function (this: PatchedXhr, body?: Document | XMLHttpRequestBodyInit | null) {
         const req = this._telemetryRequest;
         if (!req) return origSend.apply(this, arguments as any);  // send() without open() — let it throw its own way
+        // Disabled (#172): pass through untouched — no settle hold, no root, no header.
+        if (telemetry.isEnabled?.() === false) { this._telemetryRequest = undefined; return origSend.apply(this, arguments as any); }
         req.start = Date.now();
         req.body = body;
         // The collector's own POST is out of scope for settle exactly as it is for
@@ -112,6 +116,7 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
                 consumerTraceparent: req.consumerTraceparent,
             });
             req.span = trace.finish;
+            req.discardRoot = trace.discard;
             // Written through the *original*, so our own write can never be misread as the
             // consumer's on a later inspection — and only ever when their flag is unset, so
             // there is no SDK-owned header for never-strip to have to protect.
@@ -154,6 +159,9 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
             // A send() that throws never reaches `loadend`, so nothing else would ever close
             // this hold. The fetch half gets this from its `finally`; XHR needs it spelled out.
             req.settled?.();
+            // …and nothing would ever describe a root it minted (#160): the next request must
+            // mint its own rather than join an action that never happened.
+            req.discardRoot?.();
             throw err;
         }
     };

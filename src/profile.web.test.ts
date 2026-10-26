@@ -38,7 +38,7 @@ describe("user profile PII → user.profile.update only (§4.10)", () => {
       phone: "+254700000000",
       customAttributes: { plan: "pro" },
     });
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.flush();
 
     const profile = sent.find((e) => e.eventName === "user.profile.update")!;
@@ -66,9 +66,9 @@ describe("user profile PII → user.profile.update only (§4.10)", () => {
     silenceConsole();
     const { t, sent } = harness();
 
-    await t.log("navigation", { "navigation.to_screen": "Anon" });
+    await t.log("custom_event", { "navigation.to_screen": "Anon" });
     await t.identify({ userId: "u-2", name: "Ada" });
-    await t.log("navigation", { "navigation.to_screen": "Known" });
+    await t.log("custom_event", { "navigation.to_screen": "Known" });
     await t.flush();
 
     const before = sent.find((e) => e.attributes?.["navigation.to_screen"] === "Anon")!;
@@ -166,10 +166,10 @@ describe("user profile PII → user.profile.update only (§4.10)", () => {
 
     const cyclic: any = {};
     cyclic.self = cyclic;
-    await expect(t.log("navigation", { cyclic })).resolves.not.toThrow();
+    await expect(t.log("custom_event", { cyclic })).resolves.not.toThrow();
     await t.flush();
 
-    const e = sent.find((ev) => ev.eventName === "navigation")!;
+    const e = sent.find((ev) => ev.eventName === "custom_event")!;
     expect(e).toBeDefined();
     // the depth guard has to leave the row *sendable*: a real Sender stringifies the batch,
     // so handing the cyclic object through raw would only move the throw downstream.
@@ -186,10 +186,10 @@ describe("user profile PII → user.profile.update only (§4.10)", () => {
     // silently — data loss with no counter and no log.
     const cyclic: any = {};
     cyclic.self = cyclic;
-    await expect(t.log("navigation", { wrapped: [{ inner: cyclic }] })).resolves.not.toThrow();
+    await expect(t.log("custom_event", { wrapped: [{ inner: cyclic }] })).resolves.not.toThrow();
     await t.flush();
 
-    const e = sent.find((ev) => ev.eventName === "navigation")!;
+    const e = sent.find((ev) => ev.eventName === "custom_event")!;
     expect(e).toBeDefined();
     expect(() => JSON.stringify(e)).not.toThrow();
   });
@@ -198,10 +198,10 @@ describe("user profile PII → user.profile.update only (§4.10)", () => {
     silenceConsole();
     const { t, sent } = harness();
 
-    await t.log("navigation", { tags: ["a", "b"] });
+    await t.log("custom_event", { tags: ["a", "b"] });
     await t.flush();
 
-    const a = sent.find((ev) => ev.eventName === "navigation")!.attributes!;
+    const a = sent.find((ev) => ev.eventName === "custom_event")!.attributes!;
     expect(a.tags).toBe('["a","b"]');
   });
 });

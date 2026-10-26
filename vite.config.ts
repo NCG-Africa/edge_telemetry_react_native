@@ -35,9 +35,18 @@ export default defineConfig(({ mode }) => ({
         rollupOptions: {
             external: [
                 "react",
+                "react/jsx-runtime",
+                "react/jsx-dev-runtime",
                 "react-dom",
                 "@react-native-async-storage/async-storage",
-                "react-native"
+                "react-native",
+                // #158 / #151 — native-module JS the consumer already installed. Bundling it
+                // ran our copy against their native module: version skew, and a second copy
+                // in any app that imports it too. The vitals library is deliberately absent:
+                // it stays bundled (§5.3).
+                "react-native-device-info",
+                "@react-native-community/netinfo",
+                "react-native-get-random-values",
             ],
             output: {
                 // Let Vite pick per-format extensions (es → .js, cjs → .cjs under
