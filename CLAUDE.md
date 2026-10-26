@@ -1832,6 +1832,9 @@ above rather than defects.
 - **A pre-init `disable()` chains on `instancePromise`**, so it flips when init settles — after
   `session.started` was enqueued, which the flip then drops with the queue. Nothing is sent;
   `enabled: false` is the way to have nothing *built*.
+- **React ≤18 web dev builds can double-report a boundary error** as `app.crash`: React re-throws
+  the render error to `window.onerror` (invokeGuardedCallback) before `getDerivedStateFromError`
+  marks it. Dev only — production React does not replay. (#156 §7)
 - **A thrown primitive is not deduped.** `throw "x"` inside a boundary cannot be a `WeakSet` key,
   so if React or a global handler also reports it, it can be two rows. Throw `Error`s.
 - **React 18's caught-error console message carries no error object** (`"The above error occurred

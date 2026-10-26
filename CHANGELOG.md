@@ -2,7 +2,7 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
-## 5.0.0
+## 5.0.0 — unreleased (gated on contract A1–A14 sign-off)
 
 **Manual spans, RN-native capture, sibling parity.** Pure JS still — no native module, no new peer
 dependency. **Read [`docs/migration-v5.md`](docs/migration-v5.md) before deploying**: of six
@@ -27,8 +27,7 @@ fourteen are unsigned.
 - **A route change always bounds a view** (#169) — rank-beats-order applies only within one route,
   so `screenStart()` can no longer pin a view across navigations.
 - **`react-native-device-info`, netinfo and get-random-values are externalized** (#158) — the
-  consumer's installed copy runs. A size-budget test caps the gz chunk graph at 20 KB native /
-  26 KB web (shipped: 19.9 / 25.5).
+  consumer's installed copy runs.
 - **Draining `flush()` and §2.5 status handling** (#162) — up to 50 sequential batches, ≥100 ms
   apart; a 4xx drops the batch with `sdk.drop_reason: rejected` and one dev warning; a 429 requeues
   and halts until `X-RateLimit-Reset`.
@@ -52,6 +51,9 @@ fourteen are unsigned.
 - **`autoTrackTaps`** — native, opt-in, constructor-only: automatic `onPress` (`tap`) and
   `onLongPress` (`long_press`) capture, named by `trackTap` > `testID` > `unnamed` (#174).
 - **Cross-tab session sync on web** — a `storage` listener keeps tabs on one session record (#161).
+- **Gz size budget** — CI fails above 20 KB native / 26 KB web per entry (shipped: 19.9 / 25.5)
+  (#158).
+- **`docs/migration-v5.md` ships in the tarball, with the release** (#175).
 - **Contract "v5 additions"** — A1–A14 sign-off asks, B1–B5 notices, C1–C10 open rulings (#168).
 
 ### Fixed

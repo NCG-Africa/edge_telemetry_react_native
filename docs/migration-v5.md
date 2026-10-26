@@ -18,10 +18,11 @@ explains the behaviour behind each entry. The source list is #156 §1.
   backend signs. See [The backend gate](#the-backend-gate-a1a14).
 - **One change breaks a build**: `new TelemetryWeb()` / `new TelemetryNative()` no longer
   compile. Use `createTelemetry()`, which every documented setup already does.
-- **Five changes break a chart or a request path instead.** No compile error, no log line.
+- **Five changes are runtime-only.** No compile error; the one log line any of them produces is
+  #6's dev-only rejected-batch warning.
 - **Every one is separable only by `sdk.version`** (`5.0.0`), as in v4.
-- **Most apps have nothing to change.** Everything v5 adds is additive and off-by-default where it
-  could change behaviour (`autoTrackTaps`, `enabled`).
+- **Most apps have nothing to change.** Everything v5 adds is additive; `autoTrackTaps` is opt-in, and
+  consent gating (`enabled: false`) is too.
 
 ---
 
@@ -51,8 +52,8 @@ None needs backend work. Contract §12.6.
 | B5 | **consent-gated processes skip `app.start`** | `createTelemetry({ enabled: false })` never emits `app.start` for that process, so `COUNT(app.start)` undercounts launches in consent-gated apps |
 
 Plus: **a web app that never wired `attachNavigation` now emits `view` rows per route.** v4's web
-history path never ran, so it had one `"unknown"` view per page load; v5 emits one row per
-`pushState` / `popstate` route, named by normalized path. More rows, not different ones.
+history path never ran, so it emitted no `view` row per route; v5 emits one per `pushState` /
+`popstate` route, named by normalized path. More rows, not different ones.
 
 ---
 
@@ -79,17 +80,18 @@ v5 ships two new event names and fourteen asks, each needing a sign-off line in 
 **At this release every one is unsigned**, so until each is signed its rows or keys are dropped on
 ingest:
 
-| Ask | What is dropped until signed |
+| Ask | Affected until signed |
 |---|---|
 | A1–A3 | `task.complete` rows, `trace.root_type: custom`, `span.duration_ms` on a root |
 | A4 | `app.hang` rows — **plus** the processor fix to read dotted `hang.duration_ms` |
 | A5–A6 | `error.source: boundary`, `error.component_stack` |
-| A7–A8 | `view.ready_time`, `view.ready_outcome`; `app.start.js_ready_ms` native-only |
+| A7 | `view.ready_time`, `view.ready_outcome` dropped |
+| A8 | nothing dropped — confirms `app.start.js_ready_ms` (already on v4's signed `app.start`) is native-only |
 | A9 | `session.reason: manual` |
 | A10 | `device.battery_level`, `.battery_charging`, `.power_save` |
 | A11 | `device.reduce_motion`, `device.screen_reader`, `device.font_scale` |
 | A12–A13 | native `ui.name_source: test_id`, `ui.type: long_press` |
-| A14 | the ladder amendment (#4 above) — semantic, no key |
+| A14 | nothing dropped — the ladder amendment (#4 above) is semantic, no key |
 
 Open rulings C1–C10 (Appendix C) do **not** block: v5 ships the current behaviour for each, and a
 ruling that flips one becomes its own ticket.
@@ -145,7 +147,9 @@ Each is in `CLAUDE.md`'s Known gaps with its reasoning.
   A superseded span emits nothing.
 - **`app.hang`** — no stack, ever; a stall that never ends (the OS kills it) emits nothing; only the
   JS thread is seen; `hang.duration_ms` under-reports by up to one tick.
-- **Error boundary** — a thrown non-object is not deduped; on React 18 with `captureConsole` on, a
+- **Error boundary** — on React ≤18 web **dev** builds, React re-throws a render error to
+  `window.onerror` before the boundary sees it, so it can also ship as `app.crash`; a thrown
+  non-object is not deduped; on React 18 with `captureConsole` on, a
   caught error can add a `console` row beside the `boundary` one.
 - **`view.ready_*`** — a screen's first visit in a process can't be judged `abandoned`; a mark
   landing after a tab-away is lost.

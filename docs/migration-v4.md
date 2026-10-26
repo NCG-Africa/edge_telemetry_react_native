@@ -44,7 +44,7 @@ disagree, the contract wins. `CLAUDE.md` explains the behaviour behind each entr
 | # | Change | What breaks | Fix |
 |---|---|---|---|
 | 2 | `getDeviceInfo()` / `getNetworkInfo()` return shapes changed | destructuring the old camelCase keys | read the new snake_case shape; the `DeviceInfo` type is not importable, so this is structural only |
-| — | Six `UserProfile` fields are `@deprecated` (live until v5) | `fullName`, `firstName`, `lastName`, `avatar`, `createdAt`, `updatedAt` warn | `fullName` still works and still builds `user.name`; the other five have no wire key and no reader — drop them |
+| — | Six `UserProfile` fields are `@deprecated` (live until v6 — removal deferred at v5) | `fullName`, `firstName`, `lastName`, `avatar`, `createdAt`, `updatedAt` warn | `fullName` still works and still builds `user.name`; the other five have no wire key and no reader — drop them |
 
 ---
 
