@@ -1,6 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
 import { Telemetry, type TelemetryEvent } from "./telemetry";
-import { ScreenTimingTracker } from "../adapters/screenTiming";
 
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
@@ -56,12 +55,12 @@ describe("log()", () => {
       networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.flush();
 
     expect(sender.send).toHaveBeenCalledTimes(1);
     expect(sent).toHaveLength(1);
-    expect(sent[0].eventName).toBe("navigation");
+    expect(sent[0].eventName).toBe("custom_event");
   });
 
   it("embeds device/network info via collect() (not the registration method) — no recursion", async () => {
@@ -225,11 +224,25 @@ describe("v3 wire contract — event-name allowlist", () => {
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("app_lifecycle", { "app_lifecycle.state": "foreground" });
     await t.flush();
 
-    expect(sent[0].eventName).toBe("navigation");
+    expect(sent[0].eventName).toBe("app_lifecycle");
     expect(sent[0].attributes!["event.name"]).toBeUndefined();
+  });
+
+  it("rewrites the v5-removed feeds like any unknown name (#163)", async () => {
+    const sent: TelemetryEvent[] = [];
+    const t = new Telemetry({
+      sender: captureSender(sent), batchSize: 10, flushIntervalMs: 0,
+      deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
+    });
+    await t.log("navigation");
+    await t.log("screen.duration");
+    await t.flush();
+    expect(sent.map(e => [e.eventName, e.attributes!["event.name"]])).toEqual([
+      ["custom_event", "navigation"], ["custom_event", "screen.duration"],
+    ]);
   });
 
   it("remaps a non-allowlisted name to custom_event and preserves it as event.name", async () => {
@@ -260,37 +273,6 @@ describe("v3 wire contract — id formats", () => {
   it("omits the OS suffix when the device platform is unknown (still contract-valid)", () => {
     const t = new Telemetry({ flushIntervalMs: 0 });
     expect(t.getSessionId()).toMatch(/^session_\d+_[0-9a-f]{16}$/);
-  });
-});
-
-describe("screen tracking", () => {
-  it("exposes a single timed ScreenTimingTracker as `screens`; core has no untimed methods", () => {
-    const t = new Telemetry({ flushIntervalMs: 0 });
-    expect(t.screens).toBeInstanceOf(ScreenTimingTracker);
-    expect((t as any).startScreen).toBeUndefined();
-    expect((t as any).endScreen).toBeUndefined();
-  });
-
-  it("emits navigation on entry and screen.duration on exit — no v2 screen_view/screen_end/performance.screen_duration", () => {
-    const t = new Telemetry({ flushIntervalMs: 0 });
-    const logSpy = vi.spyOn(t, "log").mockResolvedValue(undefined);
-
-    t.screens.startScreen("Home");
-    t.screens.endScreen("Home");
-
-    const calls = logSpy.mock.calls.map((c) => c[0]);
-    expect(calls).toEqual(["navigation", "screen.duration"]);
-    for (const dead of ["screen_view", "screen_end", "performance.screen_duration"]) {
-      expect(calls).not.toContain(dead);
-    }
-
-    const navCall = logSpy.mock.calls.find((c) => c[0] === "navigation")!;
-    expect(navCall[1]).toMatchObject({ "navigation.to_screen": "Home" });
-
-    const durationCall = logSpy.mock.calls.find((c) => c[0] === "screen.duration")!;
-    expect(durationCall[1]).toMatchObject({ "screen.name": "Home" });
-    expect(typeof (durationCall[1] as any)["screen.duration_ms"]).toBe("number");
-    expect(typeof (durationCall[1] as any)["screen.exit_method"]).toBe("string");
   });
 });
 
@@ -345,7 +327,7 @@ describe("v3 wire contract — metric shape", () => {
     });
 
     await t.logMetric("memory_usage", 128);
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
 
     expect(sent).toHaveLength(2);
@@ -354,24 +336,16 @@ describe("v3 wire contract — metric shape", () => {
 });
 
 describe("navigation route changes", () => {
-  it("emits exactly one v3 `navigation` event per route change with from/to_screen shape", () => {
+  it("emits neither deprecated feed — the view boundary is the only screen row (#163)", async () => {
     const t = new Telemetry({ flushIntervalMs: 0 });
     const logSpy = vi.spyOn(t, "log").mockResolvedValue(undefined);
 
-    t.recordRouteChange("Home", "Profile");
+    await t.recordRouteChange("Profile");
 
-    expect(logSpy).toHaveBeenCalledTimes(1);
-    expect(logSpy).toHaveBeenCalledWith(
-      "navigation",
-      expect.objectContaining({
-        "navigation.from_screen": "Home",
-        "navigation.to_screen": "Profile",
-        "navigation.method": expect.any(String),
-        "navigation.route_type": expect.any(String),
-      }),
-    );
-    // legacy v2 name gone
-    expect(logSpy.mock.calls.map((c) => c[0])).not.toContain("navigation.route_change");
+    const calls = logSpy.mock.calls.map((c) => c[0]);
+    expect(calls).not.toContain("navigation");
+    expect(calls).not.toContain("screen.duration");
+    expect(t.views.name).toBe("Profile");
   });
 
   it("no longer exposes the double-emitting recordNavigation", () => {
@@ -392,7 +366,7 @@ describe("v3 wire contract — error.breadcrumbs", () => {
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.log("http.request", { "http.route": "/x" });
     await t.log("app.crash", { "error.source": "global_handler" });
     await t.flush();
@@ -401,7 +375,7 @@ describe("v3 wire contract — error.breadcrumbs", () => {
     const raw = crash.attributes!["error.breadcrumbs"];
     expect(typeof raw).toBe("string");
     const trail = JSON.parse(raw);
-    expect(trail.map((b: any) => b.name)).toEqual(["navigation", "http.request"]);
+    expect(trail.map((b: any) => b.name)).toEqual(["custom_event", "http.request"]);
     // the crash does not include itself in its own breadcrumb trail
     expect(trail.map((b: any) => b.name)).not.toContain("app.crash");
   });
@@ -482,7 +456,7 @@ describe("v3 session lifecycle — 30-min idle rotation", () => {
       await t.log("custom_event");
 
       vi.setSystemTime(new Date(31 * 60 * 1000));   // 31 minutes of inactivity
-      await t.log("navigation", { "navigation.to_screen": "Home" });
+      await t.log("custom_event", { "navigation.to_screen": "Home" });
       await t.flush();   // drain everything still queued
 
       const firstId = sent.find((e) => e.eventName === "custom_event")!.attributes!["session.id"];
@@ -491,7 +465,7 @@ describe("v3 session lifecycle — 30-min idle rotation", () => {
       // session.started appears for both the initial session and the rotation
       expect(names.filter((n) => n === "session.started").length).toBeGreaterThanOrEqual(2);
 
-      const nav = [...sent].reverse().find((e) => e.eventName === "navigation")!;
+      const nav = [...sent].reverse().find((e) => e.eventName === "custom_event")!;
       expect(nav.attributes!["session.id"]).not.toBe(firstId);
     } finally {
       vi.useRealTimers();

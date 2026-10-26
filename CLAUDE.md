@@ -85,7 +85,6 @@ src/
 │   ├── frameTracker.ts    ← the shared rAF loop; the window resets at every view boundary
 │   ├── uiInteraction.ts   ← §4.6 role gate, the five-rung name ladder, the rage window
 │   ├── networkChange.ts   ← edge-triggered network_change emitter
-│   ├── navigationTracker.ts / screenTiming.ts
 │   ├── webSender.ts / nativeSender.ts
 │   ├── web/               ← *.web.ts capture adapters (+ store.web.ts over localStorage,
 │   │                        webVitals.web.ts — the only `web-vitals` importer in the tree)
@@ -161,8 +160,9 @@ captureError(error: unknown, context?)   // emits app.error — never app.crash
 `getCurrentRoute()` is a navigation-tree API, not a native one, so one wiring gives web and native
 the same `view.name`.
 
-Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `screenEnd(name)`,
-`trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory_usage` is (§5.2).
+Native-only on `TelemetryNative`: `screenStart(name)` (rung 1, `explicit`), `trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory_usage` is (§5.2).
+`screenEnd(name)` and `trackRoute(from, to)` are **`@deprecated` no-ops** since v5 (#163), deleted
+in v6.
 
 `trackErrors` is declared `abstract` on `TelemetryBase` and implemented **per entry** (#160), so
 shared code imports neither build's crash handler.
@@ -485,14 +485,17 @@ platform's own startup time.
 both are booked by the interceptors at **send** time, not by `log()` at completion. A request in
 flight across a view boundary belongs to the old view and does not hold the new one open.
 
-**`navigation` and `screen.duration` are unified onto this module on native**, which fixes the v3
-defect where `attachNavigation` never touched `inst.screens` — so a React Navigation consumer
-emitted `navigation` on every route change and **never a single `screen.duration`**. A deprecated
-event therefore starts firing where it never has, and its v4 volume goes *up*. Both are gated on
-the `deprecatedScreenFeeds` opt, which the **web** entry sets `false` so a now-shared
-`attachNavigation` cannot start `screen.duration` on a build that has never had it. ⚠ The flag does
-**not** silence `navigation` on web — `navigationWeb.web.ts`'s history path emits it directly, as
-it always has. §4.0 says web should emit neither; closing that is a separate change.
+**`navigation` and `screen.duration` are removed in v5** (#163, §4.0) — the `view` entity is the
+only screen feed. Both names are off `ALLOWED_NAMES`, no path on either build emits them, and the
+`deprecatedScreenFeeds` opt is deleted. A route change is `Telemetry.recordRouteChange(to)` → rung 2;
+`screenStart(name)` → rung 1; web's history path → rung 3. `screenEnd()` and `trackRoute()` are
+`@deprecated` no-ops until v6.
+
+⚠ **Web's history path ran for the first time in v5.** v4's `TelemetryWeb.autoTrackNavigation()`
+handed the tracker to `inst.start()` — a method core never had — so the rejection was swallowed and
+rung 3 (`url`) never fed a single web view. #163 wires it through `autoTrackNavigation()`, so a web
+app without `attachNavigation` now gets `view` rows named by normalized path where it had one
+`"unknown"` view per page load.
 
 **`ViewManager.onBoundary()` is the view-boundary seam** (§5.1, #104). A subscriber is awaited
 inside `beginView` while the departing view is still current — that is what lets the frame window
@@ -650,8 +653,7 @@ its child and **a web hard load is `launch`, never `navigation`**. Web's launch 
 **Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request`, `ui.interaction`. Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
 `app.crash`, `app.error` and `custom_event`. ⚠ `custom_event` is the one place RN goes
 past Android, flagged as an invention. **Tier 3 is trace-free**: *all metrics*, plus
-`app_lifecycle`, `network_change`, the session events, `user.profile.update` and the deprecated
-feeds. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
+`app_lifecycle`, `network_change`, the session events and `user.profile.update`. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
 invite a `GROUP BY` over a number that was never attributable — and the join would look valid.
 
 **Tier 2 never mints**: with no live root it carries no trace keys at all, rather than inventing a
@@ -1255,8 +1257,6 @@ the original name as `event.name`. Currently emitted:
 |---|---|
 | `session.started` / `session.finalized` | init (unless the session resumes), 30-min idle rotation, 4-hour cap |
 | `app_lifecycle` | foreground/background transition |
-| `navigation` | route change or `screenStart()` |
-| `screen.duration` | `screenEnd()` |
 | `http.request` | XHR only on native (fetch *is* XHR there); fetch + XHR on web |
 | `app.crash` | JS error or unhandled rejection — **unhandled only**, no public path (§4.7) |
 | `app.error` | `captureError()`, an opted-in `console.error`, and a re-routed public `log("app.crash")` |
@@ -1281,6 +1281,9 @@ APIs are Chromium-only while `frame_render_time` detects jank on every runtime. 
 **allowlisted but never produced**, so none adds anything to the migration story. With `view`,
 `ui.interaction`, `app.error` and `app.start` in, the allowlist's v4 movement is **net zero**.
 Asserted on both builds — `src/integration.web.test.ts`, `src/integration.native.test.ts`.
+
+**v5 is net zero too** (#156 §4): `navigation` and `screen.duration` come off (#163), and
+`task.complete` and `app.hang` go on.
 
 **Adding a new `eventName` requires backend sign-off** — unlisted names are dropped on
 ingest.
@@ -1382,8 +1385,6 @@ above rather than defects.
   is share-of-device, not share-of-budget. iOS kills an app well below the device total.
 - **A device-info read that throws emits nothing**, so a sampler failing on every tick is
   indistinguishable from a build that never started one. There is no counter for it.
-- Web navigation paths keep their query strings, so tokens and PII in query params ship as-is.
-  (`http.request` itself carries no URL — see the `http.request` section.)
 - **A 401 is invisible to the backend by construction** (§2.5): the `rejected` count rides the
   *next* row that gets through, and with a wrong credential none does. The dev warning is the
   only signal the consumer gets.
@@ -1557,8 +1558,9 @@ above rather than defects.
   work today and break the moment anything externalizes it; the contract calls it a dependency.
 - **`metric.unit` is omitted for a name the SDK has no unit for** — a consumer's own
   `recordMetric()` name ships no unit rather than a guessed one.
-- The deprecated web `navigation` event still carries `location.pathname + search` raw, query
-  string included. `http.request` and `view.name` are both clean; this feed is not.
+- **A web app that never wired `attachNavigation` changes shape in v5**: the history path now
+  runs (#163), so it emits one `view` row per pushState/popstate route where v4 emitted none.
+  More rows, not different ones — every one follows the rung-3 rules that were already documented.
 - **`app.start` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
 - **`app.start.js_ready_ms` (§4.3) is not built.** #98 mints the event as §6.2's launch root;

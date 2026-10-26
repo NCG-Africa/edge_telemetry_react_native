@@ -68,7 +68,7 @@ describe("user profile PII → user.profile.update only, native (§4.10)", () =>
       userId: "u-1", name: "Ada Lovelace", email: "ada@x.io",
       phone: "+254700000000", customAttributes: { plan: "pro" },
     });
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.flush();
 
     const a = sent.find((e) => e.eventName === "user.profile.update")!.attributes!;
@@ -88,7 +88,7 @@ describe("user profile PII → user.profile.update only, native (§4.10)", () =>
     const { t, sent } = await harness();
 
     await t.identify({ userId: "u-2", name: "Ada", avatar: "https://x/a.png" });
-    await t.log("navigation", { "navigation.to_screen": "Known" });
+    await t.log("custom_event", { "navigation.to_screen": "Known" });
     await t.flush();
 
     expect(sent.find((e) => e.attributes?.["navigation.to_screen"] === "Known")!

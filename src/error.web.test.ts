@@ -84,7 +84,7 @@ describe("captureError — the one public error path (§4.7)", () => {
     silenceConsole();
     const { t, sent } = harness();
 
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.captureError(new Error("boom"));
     await t.flush();
 
@@ -167,7 +167,7 @@ describe("captureConsole defaults off (§4.7)", () => {
     const { t, sent } = harness();
 
     // The ctor's fire-and-forget trackErrors() has had every chance to patch by now.
-    await t.log("navigation");
+    await t.log("custom_event");
     console.error("React thinks something is wrong");
     await t.flush();
 
@@ -183,7 +183,7 @@ describe("app.build_id — §4.8's symbolication resolve key", () => {
     await settle(t);
 
     await t.captureError(new Error("boom"));
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
 
     expect(sent.length).toBeGreaterThan(1);
@@ -208,9 +208,9 @@ describe("app.build_id — §4.8's symbolication resolve key", () => {
     const { t, sent } = harness({ buildId: "real" });
     await settle(t);
 
-    await t.log("navigation", { "app.build_id": "forged" });
+    await t.log("custom_event", { "app.build_id": "forged" });
     await t.flush();
 
-    expect(attrsOf(sent, "navigation")["app.build_id"]).toBe("real");
+    expect(attrsOf(sent, "custom_event")["app.build_id"]).toBe("real");
   });
 });

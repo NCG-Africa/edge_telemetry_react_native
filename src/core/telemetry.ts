@@ -1,7 +1,5 @@
 import { debug, isDev } from "./debug";
 import { isRejected, statusOf } from "../adapters/batch";
-import { NavigationTracker } from "../adapters/navigationTracker";
-import { ScreenTimingTracker } from "../adapters/screenTiming";
 import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
 import { TraceManager } from "../adapters/traceManager";
 import { BreadcrumbBuffer } from "./breadcrumbs";
@@ -128,8 +126,11 @@ const USER_ID_MAX = 255;
 // original name carried as `event.name`. Includes metric names so the metric path
 // (slice: native metrics) isn't remapped.
 const ALLOWED_NAMES = new Set<string>([
-    "session.started", "session.finalized", "app_lifecycle", "navigation",
-    "screen.duration", "http.request", "network_change",
+    // `navigation` and `screen.duration` are **removed in v5** (#163, §4.0): the `view` entity
+    // is the only screen feed. Off this list, a consumer's `log("navigation")` is rewritten to
+    // `custom_event` like any unknown name.
+    "session.started", "session.finalized", "app_lifecycle",
+    "http.request", "network_change",
     "user.profile.update", "custom_event", "app.crash", "view",
     // ⚠ `app.error` needs backend allowlist sign-off before it ships (#100, §4.7).
     "app.error",
@@ -351,12 +352,6 @@ type Opts = {
     // CodePush the binary is unchanged, so that fallback resolves against the wrong map and
     // produces frames that are plausible and wrong, with nothing on the row marking them.
     buildId?: string;
-    // The deprecated native screen feeds — `navigation` and `screen.duration` (§4.11) — on
-    // the ROUTE path. Defaults on, because shared core's v3 behaviour *is* the native one;
-    // the web entry opts out, having never emitted `screen.duration` at all. It does not
-    // silence web's own history path, which still emits `navigation`. Config from the entry,
-    // which is the platform split point — not a branch inside shared code.
-    deprecatedScreenFeeds?: boolean;
 };
 
 const validRate = (r: unknown): r is number =>
@@ -401,9 +396,6 @@ export class Telemetry {
     private intervalId: any = null;
     private endpoint?: string;
     private crashHandler?: CrashHandler;
-    private navigationTracker?: NavigationTracker;
-    // single screen-tracking API (timed); used by the native screenStart/screenEnd
-    public screens: ScreenTimingTracker;
     // The View entity (§4.5, #96): view.id/view.name on every row, the `view` event at each
     // of the four exit boundaries, and the name ladder. Public because the route, lifecycle
     // and interaction adapters all feed it.
@@ -421,9 +413,6 @@ export class Telemetry {
     // must reuse it, or a second call double-subscribes and doubles every vital row. Unset on
     // native, which emits no vitals ever.
     public webVitals?: { start(): Promise<void>; stop(): void };
-    private readonly deprecatedScreenFeeds: boolean;
-    // last-known screen; best-effort context for the deprecated screen feeds (#33)
-    public currentScreen?: string;
 
     private networkInfoHandler: NetworkInfoHandler;
     private deviceInfoHandler: DeviceInfoHandler;
@@ -529,9 +518,6 @@ export class Telemetry {
             this.intervalId = setInterval(() => this.flush().catch(() => { }), this.flushIntervalMs);
         }
 
-        this.navigationTracker = new NavigationTracker(this);
-        this.screens = new ScreenTimingTracker(this);
-        this.deprecatedScreenFeeds = opts?.deprecatedScreenFeeds ?? true;
         // Before the ViewManager, not after: the launch root is minted in this constructor so
         // the initial view can parent to it. A view that minted its own root instead would
         // make a web hard load report `trace.root_type = navigation` (§6.2).
@@ -1609,33 +1595,16 @@ export class Telemetry {
         await this.flush();
     }
 
-    // Screen tracking lives in ScreenTimingTracker (this.screens), the single timed API.
-
     // Expose some internal counters (optional)
     getEventCount() {
         return this.eventCount;
     }
 
     /**
-     * A route change: the view boundary (§4.5) plus, on native only, the two deprecated
-     * feeds (§4.11). v3's two native screen paths were disjoint — `attachNavigation` never
-     * touched `inst.screens`, so a React Navigation consumer emitted `navigation` on every
-     * route change and never a single `screen.duration`. Unifying them here is what fixes
-     * that, which is why a *deprecated* event starts firing where it never has.
+     * A route change (§4.5): rung 2 of the name ladder. The two deprecated feeds it used to
+     * emit alongside — `navigation` and `screen.duration` — are gone in v5 (#163).
      */
-    async recordRouteChange(from: string, to: string) {
-        this.currentScreen = to;   // best-effort screen for the deprecated feeds (#33)
-        if (this.deprecatedScreenFeeds) {
-            // Both rows describe the transition, so both are emitted — and awaited — before
-            // the view boundary: they belong to the view being left.
-            await this.navigationTracker?.recordRouteChange(from, to);
-            await this.screens.endScreen(from);
-            // Arm the dwell clock for the arriving screen. `markStart`, not `startScreen`:
-            // the latter emits its own `navigation`, and the line above already emitted this
-            // transition's. This is the join that was missing — v3's `attachNavigation` never
-            // touched `screens`, so `screen.duration` never fired for a React Navigation app.
-            this.screens.markStart(to);
-        }
+    async recordRouteChange(to: string) {
         await this.enterView(to, "route");
     }
 

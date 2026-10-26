@@ -6,9 +6,9 @@ import { NavigationRefTracker } from "./navigationRef";
 // turns a React Navigation state tree into a `view.name`.
 
 function harness() {
-  const routes: Array<[string, string]> = [];
+  const routes: string[] = [];
   const telemetry = {
-    recordRouteChange: vi.fn(async (from: string, to: string) => { routes.push([from, to]); }),
+    recordRouteChange: vi.fn(async (to: string) => { routes.push(to); }),
   } as any;
   let listener: (() => void) | undefined;
   let current: any;
@@ -21,10 +21,10 @@ function harness() {
 }
 
 describe("NavigationRefTracker", () => {
-  it("reports the first route as coming from `init`", () => {
+  it("reports the first route", () => {
     const { routes, go } = harness();
     go({ name: "Home" });
-    expect(routes).toEqual([["init", "Home"]]);
+    expect(routes).toEqual(["Home"]);
   });
 
   it("resolves the deepest focused route of a nested navigator", () => {
@@ -39,13 +39,13 @@ describe("NavigationRefTracker", () => {
         ],
       },
     });
-    expect(routes).toEqual([["init", "Profile"]]);
+    expect(routes).toEqual(["Profile"]);
   });
 
   it("falls back to `unknown` rather than throwing when there is no current route", () => {
     const { routes, go } = harness();
     go(undefined);
-    expect(routes).toEqual([["init", "unknown"]]);
+    expect(routes).toEqual(["unknown"]);
   });
 
   it("fires once per actual change — a state event on the same route is ignored", () => {
@@ -53,15 +53,7 @@ describe("NavigationRefTracker", () => {
     go({ name: "Home" });
     go({ name: "Home" });        // a re-render, not a navigation
     go({ name: "Cart" });
-    expect(routes).toEqual([["init", "Home"], ["Home", "Cart"]]);
-  });
-
-  it("advances `from` even though recordRouteChange is async — it never re-reports a stale one", () => {
-    const { routes, go } = harness();
-    go({ name: "A" });
-    go({ name: "B" });
-    go({ name: "C" });
-    expect(routes.map(([from]) => from)).toEqual(["init", "A", "B"]);
+    expect(routes).toEqual(["Home", "Cart"]);
   });
 
   it("does nothing at all without a ref", () => {

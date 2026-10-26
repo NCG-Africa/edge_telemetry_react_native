@@ -202,20 +202,20 @@ export class TelemetryNative extends TelemetryBase {
 
     // ---------- Screen Management ----------
 
+    /**
+     * Rung 1 of the name ladder (§4.5.1) — `explicit`, and never normalized: a host naming a
+     * screen "Step 2 of 3" must not receive "Step {id} of {id}". Emits no `navigation` (#163).
+     */
     async screenStart(name: string) {
         const inst = await this.instancePromise;
-        return inst.screens.startScreen(name);
+        return inst.enterView(name, "explicit");
     }
 
-    async screenEnd(name: string) {
-        const inst = await this.instancePromise;
-        return inst.screens.endScreen(name);
-    }
+    /** @deprecated No-op since v5 (#163) — `screen.duration` is gone; `view.time_spent` replaces it. Deleted in v6. */
+    async screenEnd(_name: string) { }
 
-    async trackRoute(from: string, to: string) {
-        const inst = await this.instancePromise;
-        return inst.recordRouteChange(from, to);
-    }
+    /** @deprecated No-op since v5 (#163) — use `attachNavigation(ref)` or `screenStart(name)`. Deleted in v6. */
+    async trackRoute(_from: string, _to: string) { }
 
     // ---------- Interactions ----------
 

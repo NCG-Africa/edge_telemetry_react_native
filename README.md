@@ -287,8 +287,7 @@ one.
 ### Naming screens manually
 
 ```typescript
-await telemetry.screenStart("Checkout");   // native only
-await telemetry.screenEnd("Checkout");     // native only
+await telemetry.screenStart("Checkout");   // native only — names the current view
 ```
 
 > **Warning — don't mix `screenStart()` with `attachNavigation()`.** Screen names have ranks:
@@ -631,8 +630,6 @@ All of this starts in the constructor. You don't call anything to enable it.
 | `ui.interaction` | Every click (web) / every `trackTap()` (native) | Both |
 | `network_change` | Connectivity type changes | Both |
 | `user.profile.update` | `identify()` | Both |
-| `navigation` | Route change or `screenStart()` | Both *(deprecated)* |
-| `screen.duration` | `screenEnd()` | Native *(deprecated)* |
 | `custom_event` | Any `log()` name not in this table | Both |
 
 ### Metrics
@@ -713,13 +710,12 @@ setUserContact(email?: string, phone?: string): Promise<void>
 ```typescript
 trackTap(name: string): Promise<void>        // → ui.interaction. Never rejects.
 trackMemoryUsage(): Promise<void>            // auto-started
-screenStart(name: string): Promise<void>     // → navigation      (deprecated feed)
-screenEnd(name: string): Promise<void>       // → screen.duration (deprecated feed)
-trackRoute(from: string, to: string): Promise<void>   //            (deprecated feed)
+screenStart(name: string): Promise<void>     // names the current view (explicit rung)
+screenEnd(name: string): Promise<void>       // @deprecated no-op since v5 — deleted in v6
+trackRoute(from: string, to: string): Promise<void>   // @deprecated no-op since v5 — deleted in v6
 ```
 
-Prefer `attachNavigation()` over `screenStart` / `screenEnd` / `trackRoute` — those three feed
-`navigation` and `screen.duration`, both superseded by the `view` event.
+`navigation` and `screen.duration` are removed in v5 — the `view` event replaces both.
 
 ### Web only
 
@@ -917,7 +913,7 @@ backend configuration question, not an SDK one.
 | No Core Web Vitals on native | Correct — they're web-only, by design. |
 | No `memory_usage` on web | Correct — it's native-only, by design. |
 | No dead-click data on native | Correct — no DOM, so no mutation signal. Filter dead-click rates to web. |
-| `screen.duration` never fires | You're using `attachNavigation()`. Use the `view` event instead — it supersedes both deprecated feeds. |
+| `navigation` / `screen.duration` stopped arriving | Removed in v5. Use the `view` event — `view.time_spent` is the dwell. |
 | A screen's name is stuck on an old value | You mixed `screenStart()` with `attachNavigation()`. An explicit name outranks a route name and pins the view. |
 | `view.loading_time` is null | Read `view.loading_time_outcome` — it tells you which of the three reasons applies. |
 

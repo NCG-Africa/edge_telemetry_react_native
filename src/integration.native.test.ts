@@ -79,9 +79,9 @@ async function firstEventAttributes() {
     flushIntervalMs: 0,
     captureConsole: false,
   });
-  await t.log("navigation", { "navigation.to_screen": "Home" });
+  await t.log("custom_event", { "navigation.to_screen": "Home" });
   await t.flush();
-  return sent.find((e) => e.eventName === "navigation")!.attributes!;
+  return sent.find((e) => e.eventName === "custom_event")!.attributes!;
 }
 
 describe("createTelemetry (native) — Context keys are snake_case on the wire (#88)", () => {

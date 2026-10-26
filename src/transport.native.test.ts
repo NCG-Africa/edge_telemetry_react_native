@@ -72,7 +72,7 @@ describe("native transport hardening (#94)", () => {
     const r = recordingSender();
     const t = await makeTelemetry(r.sender, { batchSize: 50 });
 
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.log("custom_event");
     await t.flush();
 
@@ -123,7 +123,7 @@ describe("native transport hardening (#94)", () => {
     const r = recordingSender();
     const t = await makeTelemetry(r.sender, { batchSize: 5000 });
 
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
     expect(r.sent().every(e => !("sdk.drop_reason" in e.attributes!))).toBe(true);
     expect(r.sent().every(e => e.attributes!["sdk.events_dropped"] === 0)).toBe(true);

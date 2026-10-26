@@ -119,10 +119,10 @@ describe("#93 beforeSend — the tiers hold on the wire", () => {
       },
     });
 
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.flush();
 
-    const a = attrsOf(sent, "navigation")[0];
+    const a = attrsOf(sent, "custom_event")[0];
     expect(a["session.id"]).toMatch(/^session_/);
     expect(a["session.start_time"]).toBeDefined();
     expect(a["sdk.platform"]).toBe("react-native-web");
@@ -150,11 +150,11 @@ describe("#93 beforeSend — dropped is not failed", () => {
 
     await t.log("custom_event");     // dropped, along with session.started and app.start
     drop = false;
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
 
-    expect(sent.map((e) => e.eventName)).toEqual(["navigation"]);
-    const a = attrsOf(sent, "navigation")[0];
+    expect(sent.map((e) => e.eventName)).toEqual(["custom_event"]);
+    const a = attrsOf(sent, "custom_event")[0];
     expect(a["sdk.hook_dropped"]).toBe(3);   // session.started + app.start + custom_event
     expect(a["sdk.hook_failed"]).toBe(0);
   });
@@ -170,12 +170,12 @@ describe("#93 beforeSend — dropped is not failed", () => {
 
     await t.log("custom_event", { "user.email": "ada@x.io" });
     boom = false;
-    await t.log("navigation");
+    await t.log("custom_event");
     await t.flush();
 
     // The original is never sent — it carries the exact field the hook existed to remove.
-    expect(sent.map((e) => e.eventName)).toEqual(["navigation"]);
-    const a = attrsOf(sent, "navigation")[0];
+    expect(sent.map((e) => e.eventName)).toEqual(["custom_event"]);
+    const a = attrsOf(sent, "custom_event")[0];
     expect(a["sdk.hook_failed"]).toBe(3);   // session.started + app.start + custom_event
     expect(a["sdk.hook_dropped"]).toBe(0);
   });

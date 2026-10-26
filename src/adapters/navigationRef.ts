@@ -9,9 +9,6 @@ import { Telemetry } from "../core/telemetry";
  * `GROUP BY view.name` spans web and native, instead of web reverse-engineering a template
  * out of a URL the app is already holding in memory.
  *
- * Everything platform-specific stays in `Telemetry.recordRouteChange`, which gates the two
- * deprecated native feeds (§4.11) on an entry-supplied flag.
- *
  * Usage: pass your navigationContainerRef.
  */
 export class NavigationRefTracker {
@@ -28,9 +25,8 @@ export class NavigationRefTracker {
             if (route && route !== this.currentRoute) {
 
                 debug.log(`NavigationRefTracker: route changed to ${route}`);
-                const from = this.currentRoute ?? "init";
                 this.currentRoute = route;
-                this.telemetry.recordRouteChange(from, route)
+                this.telemetry.recordRouteChange(route)
                     .catch((err) => debug.warn("NavigationRefTracker: route change failed:", err));
             }
         });

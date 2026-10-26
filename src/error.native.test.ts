@@ -73,7 +73,7 @@ describe("app.crash on native — error.fatal and the breadcrumb trail (§4.7)",
 
     const { t, sent } = await harness();
     await settle(t);
-    await t.log("navigation");
+    await t.log("custom_event");
 
     handler!(new Error("boom"), true);
     await settle(t);
@@ -88,7 +88,7 @@ describe("app.crash on native — error.fatal and the breadcrumb trail (§4.7)",
     expect(typeof a["error.breadcrumbs"]).toBe("string");
     const trail = JSON.parse(a["error.breadcrumbs"]);
     expect(Array.isArray(trail)).toBe(true);
-    expect(trail.map((b: any) => b.name)).toContain("navigation");
+    expect(trail.map((b: any) => b.name)).toContain("custom_event");
     expect(trail.map((b: any) => b.name)).not.toContain("app.crash");
 
     expect(Object.keys(a).some((k) => k.startsWith("crash."))).toBe(false);

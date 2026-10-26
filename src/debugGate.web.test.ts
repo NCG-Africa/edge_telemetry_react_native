@@ -26,7 +26,7 @@ describe("debug gate — public API (web)", () => {
       batchSize: 10,
       flushIntervalMs: 0,
     });
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.flush();
 
     expect(c.log).not.toHaveBeenCalled();
@@ -46,7 +46,7 @@ describe("debug gate — public API (web)", () => {
       flushIntervalMs: 0,
       debug: true,
     });
-    await t.log("navigation", { "navigation.to_screen": "Home" });
+    await t.log("custom_event", { "navigation.to_screen": "Home" });
     await t.flush();
 
     expect(c.log).toHaveBeenCalled();

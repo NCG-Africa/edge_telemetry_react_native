@@ -1,21 +1,14 @@
 import { Telemetry } from "../../core/telemetry";
 import { debug } from "../../core/debug";
-import { NavigationTracker } from "../navigationTracker";
 import { normalizeRoute } from "../httpAttributes";
 
 /**
- * Tracks navigation route changes in web environments by patching
- * history API methods and listening to popstate events.
- * Logs route transitions using an internal NavigationTracker instance.
+ * Tracks route changes in web environments by patching the history API methods and listening
+ * to popstate events, feeding rung 3 (`url`) of the view-name ladder. Emits no `navigation`
+ * row: that feed is removed in v5 (#163), which also closes its raw query-string leak.
  */
 export class NavigationTrackerWeb {
-    private tracker: NavigationTracker;
-    private currentPath: string;
-
-    constructor(private telemetry: Telemetry) {
-        this.tracker = new NavigationTracker(telemetry);
-        this.currentPath = ""; // Will be initialized on start
-    }
+    constructor(private telemetry: Telemetry) { }
 
     /**
      * Initializes tracking by patching history methods and listening
@@ -25,7 +18,6 @@ export class NavigationTrackerWeb {
      */
     start(): Promise<void> {
         return new Promise((resolve) => {
-            this.currentPath = window.location.pathname + window.location.search;
             this.patchHistory();
             this.listenPopState();
             resolve();
@@ -33,8 +25,7 @@ export class NavigationTrackerWeb {
     }
 
     /**
-     * Patches history.pushState and history.replaceState to intercept
-     * route changes and notify the NavigationTracker.
+     * Patches history.pushState and history.replaceState to intercept route changes.
      */
     private patchHistory(): void {
         const origPush = history.pushState.bind(history);
@@ -66,20 +57,15 @@ export class NavigationTrackerWeb {
     }
 
     /**
-     * One route change: the existing `navigation` row, then rung 3 of the name ladder
-     * (§4.5.1) — the *last* rung, so an `attachNavigation` consumer's `route.name` outranks
-     * it whichever arrives first.
+     * One route change: rung 3 of the name ladder (§4.5.1) — the *last* rung, so an
+     * `attachNavigation` consumer's `route.name` outranks it whichever arrives first.
      *
      * Normalized by §4.4.1's rule, and the query string is dropped: there is no `view.url`
      * and no raw path on the wire, because the identifier lives in the path
      * (`/accounts/GB29-NWBK-…`) and query-stripping alone would not have addressed that.
      */
     private handleChange(): void {
-        const newPath = window.location.pathname + window.location.search;
-        const from = this.currentPath;
-        this.currentPath = newPath;
-        void Promise.resolve(this.tracker.recordRouteChange(from, newPath))
-            .then(() => this.telemetry.enterView(normalizeRoute(window.location.pathname), "url"))
+        this.telemetry.enterView(normalizeRoute(window.location.pathname), "url")
             .catch((err) => debug.warn("NavigationTrackerWeb: route change failed:", err));
     }
 }

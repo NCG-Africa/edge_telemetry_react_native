@@ -114,40 +114,8 @@ describe("#96 view.id / view.name on the Context block (native)", () => {
   });
 });
 
-describe("#96 the two native screen paths, unified (§4.11)", () => {
-  it("screen.duration now fires for a React Navigation consumer, and navigation still fires", async () => {
-    const { t, sent } = await launch();
-    const nav = navRef();
-    await t.attachNavigation(nav.ref);
-
-    nav.go("Home");
-    await vi.advanceTimersByTimeAsync(0);
-    vi.setSystemTime(Date.now() + 4000);
-    nav.go("Cart");
-    await vi.advanceTimersByTimeAsync(0);
-    await t.flush();
-
-    // v3's defect: attachNavigation registered a listener that never touched `screens`, so a
-    // React Navigation app emitted `navigation` on every route change and never one
-    // `screen.duration`. Unifying both paths onto the ViewManager is what fixes it.
-    const durations = attrsOf(sent, "screen.duration");
-    expect(durations).toHaveLength(1);
-    expect(durations[0]["screen.name"]).toBe("Home");
-    expect(durations[0]["screen.duration_ms"]).toBe(4000);
-    expect(durations[0]["screen.exit_method"]).toBe("navigation");
-
-    // and `navigation` is unchanged — same keys, same values, one per route change
-    const navs = attrsOf(sent, "navigation");
-    expect(navs).toHaveLength(2);
-    expect(navs[0]["navigation.from_screen"]).toBe("init");
-    expect(navs[0]["navigation.to_screen"]).toBe("Home");
-    expect(navs[1]["navigation.from_screen"]).toBe("Home");
-    expect(navs[1]["navigation.to_screen"]).toBe("Cart");
-    expect(navs[1]["navigation.method"]).toBe("push");
-    expect(navs[1]["navigation.route_type"]).toBe("screen");
-  });
-
-  it("the deprecated rows land in the view they describe, not the one being entered", async () => {
+describe("#163 the deprecated screen feeds are gone (§4.0)", () => {
+  it("no path emits navigation or screen.duration — attachNavigation, screenStart, screenEnd, trackRoute", async () => {
     const { t, sent } = await launch();
     const nav = navRef();
     await t.attachNavigation(nav.ref);
@@ -156,25 +124,26 @@ describe("#96 the two native screen paths, unified (§4.11)", () => {
     await vi.advanceTimersByTimeAsync(0);
     nav.go("Cart");
     await vi.advanceTimersByTimeAsync(0);
+    await (t as any).screenStart("Checkout");
+    await (t as any).screenEnd("Checkout");
+    await (t as any).trackRoute("Checkout", "Done");
     await t.flush();
 
-    const view = attrsOf(sent, "view")[0];
-    expect(attrsOf(sent, "screen.duration")[0]["view.id"]).toBe(view["view.id"]);
-    expect(attrsOf(sent, "navigation")[1]["view.id"]).toBe(view["view.id"]);
+    const names = sent.map((e) => e.eventName);
+    expect(names).not.toContain("navigation");
+    expect(names).not.toContain("screen.duration");
+    expect(sent.filter((e) => e.attributes?.["event.name"] === "navigation")).toEqual([]);
   });
 
-  it("screenStart names the view explicitly and screenEnd still emits screen.duration", async () => {
+  it("screenStart still names the view explicitly; screenEnd and trackRoute are no-ops", async () => {
     const { t, sent } = await launch();
     await (t as any).screenStart("Checkout");
-    vi.setSystemTime(Date.now() + 2500);
-    await t.log("custom_event");
     await (t as any).screenEnd("Checkout");
+    await (t as any).trackRoute("Checkout", "Elsewhere");
+    await t.log("custom_event");
     await t.flush();
 
     expect(attrsOf(sent, "custom_event")[0]["view.name"]).toBe("Checkout");
-    const d = attrsOf(sent, "screen.duration")[0];
-    expect(d["screen.name"]).toBe("Checkout");
-    expect(d["screen.duration_ms"]).toBe(2500);
   });
 
   it("a route name and an explicit name agree on the same view.name across builds", async () => {

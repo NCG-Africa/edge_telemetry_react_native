@@ -61,11 +61,6 @@ export class TelemetryWeb extends TelemetryBase {
                 sessionSampleRate: opts?.sessionSampleRate,
                 traceHostAllowlist: opts?.traceHostAllowlist,
                 buildId: opts?.buildId,
-                // §4.11: web has never emitted `screen.duration`, and a now-shared
-                // attachNavigation must not be what starts it. `navigation` is untouched by
-                // this flag — web's own history+popstate path still emits it (see the known
-                // gap in CLAUDE.md); the flag only stops the ref path adding a second feed.
-                deprecatedScreenFeeds: false,
             });
 
             // Resume or start the session before the instance is visible (#92). On web the
@@ -240,8 +235,9 @@ export class TelemetryWeb extends TelemetryBase {
     async autoTrackNavigation() {
         const { NavigationTrackerWeb } = await import("./adapters/web/navigationWeb.web");
         const inst = await this.instancePromise;
-        const navigationTracker = new NavigationTrackerWeb(inst);
-        return inst.start(navigationTracker);
+        // `autoTrackNavigation`, not `start` (#163): v4 called a method core never had, so the
+        // history path — rung 3 of the ladder — silently never ran.
+        return inst.autoTrackNavigation(new NavigationTrackerWeb(inst));
     }
 
     async getDeviceInfo() {

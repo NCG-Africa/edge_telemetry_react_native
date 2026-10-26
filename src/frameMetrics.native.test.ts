@@ -119,7 +119,7 @@ describe("#104 frame metrics on the wire (§5.1)", () => {
     await vi.waitFor(() => expect(d.ready()).toBe(true));
 
     // Rung 2 over rung 0 upgrades the launch view in place — no boundary, no successor.
-    await (t as any).trackRoute("", "Home");
+    await (await (t as any).instancePromise).recordRouteChange("Home");
     await settle();
 
     d.frames(30, 1000 / 60);            // ~500ms, nowhere near the 10s window
@@ -128,7 +128,7 @@ describe("#104 frame metrics on the wire (§5.1)", () => {
     expect(framesOf(sent)).toHaveLength(0);
 
     // Same rung, different name: a genuine navigation, so the view exits.
-    await (t as any).trackRoute("Home", "Cart");
+    await (await (t as any).instancePromise).recordRouteChange("Cart");
     await settle();
     await t.flush();
 
