@@ -78,7 +78,7 @@ Two companion documents, both cited throughout and both reproducible:
 
 ### 0.3 The one question running backwards
 
-Everything else in this document is a statement. This is not:
+Everything else in this document is a statement — except Appendix C, v5's ten rulings. This is not:
 
 > **`rum_http_requests.trace_injection` is a live enum, `public.trace_injection_outcome`, whose six
 > labels are defined in neither repository. Three of them contradict or re-partition the SDK's
@@ -783,7 +783,7 @@ mint-time view). §6.3.
 
 #### 4.5.1 `view.name` — a three-rung ladder, and the URL rule is the *last* rung
 
-React Navigation *authors* the web URL (`linking.getPathFromState`), and `getCurrentRoute()` is a
+React Navigation *authors* the web URL (`linking.getPathFromState`), and `getCurrentRoute()` (v5: `getRootState()`, joined root to leaf) is a
 navigation-tree API that works identically on RN-Web. So a digit heuristic reading `/dashboard/1234`
 is reverse-engineering a template the app is holding in memory — and losing to it. Worse, the answer
 it discards is **the same string native already sends** (`route.name`), so one `GROUP BY view.name`
@@ -894,7 +894,7 @@ Storage is **already provisioned**: `rum_ui_interactions` exists with seven `ui_
 | Key | Type | Null? | Cardinality | Builds |
 |---|---|---|---|---|
 | `ui.type` | string | never | **3** — `click` (web) / `tap` (native) / `long_press` (**v5**, native, opt-in only — A13) | both |
-| `ui.target` | string | never | ~100s, **capped 64 chars** | both |
+| `ui.target` | string | never | ~100s, **capped 64 chars** — rungs 2–5 and native `test_id`; rung 1 and native `trackTap` names uncapped (C5) | both |
 | `ui.name_source` | string | never | **6** web / **3** native (**v5** adds `test_id` — A12) | both |
 | `ui.tag` | string | never | ~20 | both — resolved element's `tagName`, lowercased |
 | `ui.x` | int, viewport px | never | high | both |
@@ -944,7 +944,7 @@ way to tell missing instrumentation from people tapping whitespace.
 
 **Native cannot see what it touched.** `interactionProps()` sits on the consumer's **root** `<View>`
 and `PressEvent.nativeEvent.target` is a node tag number with no public API resolving it. So native
-ships explicit-only `trackTap(name)`, a two-value `ui.name_source` (`edge_action | none`), **no
+ships explicit-only `trackTap(name)`, a two-value `ui.name_source` (`edge_action | none`; v5's `autoTrackTaps` adds `test_id`, below), **no
 `surface`** (the root responder cannot distinguish a tap on a button from a tap on padding, and
 claiming the distinction would be a lie), and a **mint/emit split** forced by RN's root-before-child
 capture order.
@@ -1020,8 +1020,8 @@ straight back.
 | `error.message` | string | **omitted** when absent | high | **1000** |
 | `error.stacktrace` | string | **omitted** when absent | very high | **2000**, tail-truncated |
 | `error.fatal` | bool | **omitted on web** | 2 | — |
-| `error.breadcrumbs` | string (JSON array, 20 entries) | never on `app.crash` | unique | — |
-| `error.component_stack` **v5** | string | **omitted** except on `boundary` rows | very high | **2000**, cut on a line boundary — A6 |
+| `error.breadcrumbs` | string (JSON array, 20 entries) | never on `app.crash` (and, v5, `app.hang`); absent elsewhere | unique | — |
+| `error.component_stack` **v5** | string | **omitted** except on `boundary` rows | very high | **2000**, cut on a line boundary — A6. ⚠ **RN invention** — React-only, no sibling ships it |
 | `device.battery_level` **v5** | int 0–100 | **omitted** on web, and when the read fails or reports `-1` | 101 | — A10 |
 | `device.battery_charging` **v5** | bool | as above | 2 | — A10 |
 | `device.power_save` **v5** | bool | as above | 2 | — A10 |
@@ -1063,7 +1063,7 @@ forever** — not because web is stable, but because the column is never true th
 cross-platform crash-free chart must exclude web, or use the unfiltered
 `COUNT(event_name='app.crash')`** that the two-name split above made safe.
 
-**`error.breadcrumbs` stays a stringified JSON array, and rides `app.crash` only.** A real array would
+**`error.breadcrumbs` stays a stringified JSON array, and rides `app.crash` only** — plus, from v5, `app.hang`, which is not an error (§4.12). A real array would
 **break on ingest**: `stringAttr` renders non-scalars through `fmt.Sprint`, producing **Go map syntax**,
 not JSON. Android reached the same answer independently. It rides `app.crash` only because `app.error`
 volume is consumer-controlled and a 1–2 KB blob on a high-volume event is how the transport budget gets
@@ -1274,9 +1274,9 @@ A4. **Tier 2** (§6.3): annotated with the root live at the **last good tick**, 
 
 | Key | Type | Null? | Note |
 |---|---|---|---|
-| `hang.duration_ms` | int ms | never | the timer's lateness, 2 000–60 000 |
+| `hang.duration_ms` | int ms | never | the timer's lateness, 2,000–60,000 |
 | `error.breadcrumbs` | string (JSON array) | never | **an exception to "`app.crash` only"** (§4.7) — the trail is the only context a stall has |
-| `device.battery_*` / `.power_save` | | native only | §4.7, A10 |
+| `device.battery_level` / `.battery_charging` / `.power_save` | int / bool / bool | omitted on web and on a failed read | §4.7, A10 — native only |
 
 A self-rescheduling **1 s** timer; a tick that fires **≥ 2 s** late emits one row whose
 `hang.duration_ms` is that lateness. **No stack** — by the time anything can look, the frozen code
@@ -2406,7 +2406,10 @@ so these are a hard dependency for everything above.
 
 **Allowlist: +`task.complete`, +`app.hang`; −`navigation`, −`screen.duration`. Net zero again.**
 One sign-off line per ask. ⚠ marks an **RN invention** — no sibling SDK ships it, so there is no
-precedent to borrow and the line is a decision, not a confirmation. Each ask links the ticket that
+precedent to borrow and the line is a decision, not a confirmation. Every unmarked ask either
+borrows a sibling's name or value (A1 Flutter; A4's `hang.duration_ms`, A9's finalized side, A10, A13 Android; A11's
+`reduce_motion` iOS) or extends an RN-owned enum or rule already in this contract (A2, A3, A5,
+A7, A8, A12, A14). Each ask links the ticket that
 made the decision.
 
 | # | Ask | § | Source | Sign-off |
@@ -2414,7 +2417,7 @@ made the decision.
 | A1 | **`task.complete`** on the allowlist — Tier 1, both builds — with `task.name` (string ≤255, unnormalized) and `task.outcome` (`completed`\|`failed`\|`abandoned`). Flutter's name and keys | §4.13 | [#141](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/141) | ☐ |
 | A2 | `trace.root_type` gains **`custom`** (5 values), minted by a manual span when no root is live | §6.1, §6.2 | [#141](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/141) | ☐ |
 | A3 | **`span.duration_ms` on a root `task.complete`** — flagged exception to §6.3's "children only": the end is declared, not derived | §6.1, §6.3 | [#141](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/141) | ☐ |
-| A4 | **`app.hang`** on the allowlist — Tier 2, both builds — with `hang.duration_ms` and `error.breadcrumbs` (exception to "`app.crash` only"); **not** in `view.error_count` / `sdk.error_count`. ⚠ **Plus the sibling-wide processor fix**: read dotted `hang.duration_ms` (work-list 16) | §4.12 | [#143](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/143) | ☐ |
+| A4 | **`app.hang`** on the allowlist — Tier 2, both builds — with `hang.duration_ms` and `error.breadcrumbs` (exception to "`app.crash` only"); **not** in `view.error_count` / `sdk.error_count`. **Plus the sibling-wide processor fix**: read dotted `hang.duration_ms` (work-list 16) | §4.12 | [#143](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/143) | ☐ |
 | A5 | `error.source` gains **`boundary`** (6 values), on `app.error` only | §4.7 | [#144](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/144) | ☐ |
 | A6 | ⚠ **`error.component_stack`** — string ≤2000, raw, omitted when absent, boundary `app.error` rows only. Needs a column or a bag that is queried | §4.7, §8.3 | [#144](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/144) | ☐ |
 | A7 | On `view`: **`view.ready_time`** (int ms, omitted when not marked) and **`view.ready_outcome`** (`ready`\|`abandoned`, learned set) | §4.5, §8.2 | [#145](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/145) | ☐ |
@@ -2424,7 +2427,7 @@ made the decision.
 | A11 | On `session.started`: `device.reduce_motion` (both builds; iOS's key), plus ⚠ **`device.screen_reader`** and ⚠ **`device.font_scale`** (native only) — **RN inventions** | §4.1 | [#149](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/149) | ☐ `reduce_motion` ☐ `screen_reader` ☐ `font_scale` |
 | A12 | Native `ui.name_source` gains **`test_id`** — §4.6 said native has exactly two values | §4.6 | [#150](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/150) | ☐ |
 | A13 | `ui.type` becomes `click`\|`tap`\|**`long_press`** — native, opt-in only; Android's value, so the column already holds it | §4.6, §10.5 | [#154](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/154) | ☐ |
-| A14 | **§4.5.1 ladder amendment**: a route change is always a boundary; rank-beats-order only within one route. No key change — a semantic change to when `view` rows emit | §4.5.1 | [#152](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/152) | ☐ |
+| A14 | **§4.5.1 ladder amendment**: a route change is always a boundary; rank-beats-order only within one route. No key change — a semantic change to when `view` rows emit | §4.5.1 | [#169](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/169) (ruled in [#152](https://github.com/NCG-Africa/edge_telemetry_react_native/issues/152)) | ☐ |
 
 **Already emitted.** All of A1–A14 ship in the v5 code, so until each is signed the corresponding rows
 or keys are dropped on ingest. The remaining v5 changes — B1–B5 — are notice only (§12.6).
@@ -2439,7 +2442,7 @@ ruling that flips one becomes an SDK implementation ticket and does not block th
 
 | # | Question | v5 ships | The alternative | Status |
 |---|---|---|---|---|
-| C1 | **Omit vs explicit `null`** for `view.loading_time`, `vital.target`, `vital.load_state` and `view.ready_time` — §4.5 / §5.3 type them `Null? yes` | **omitted** — the universal discipline, with no exception left after B1 | ship a literal `null` | open |
+| C1 | **Omit vs explicit `null`** for `view.loading_time`, `vital.target`, `vital.load_state` and `view.ready_time` — §4.5 / §5.3 type the first three `Null? yes`; `view.ready_time` (v5) joins them as a key with no value when unmarked | **omitted** — the universal discipline, with no exception left after B1 | ship a literal `null` | open |
 | C2 | **The fourth null cause of `view.loading_time`** — §4.5 says four, its outcome domain has three null-bearing values | **three** causes (`no_activity`, `capped`, `abandoned`); nothing invented | name a fourth | open |
 | C3 | **`skipped_consumer_set` vs `injected_inbound_malformed`** on a malformed consumer `traceparent` — §0.3 / §6.5 | **skip**, never-strip | inject over it | open — population 0 |
 | C4 | **Empty `traceHostAllowlist`** — §6.5's ladder read literally fires rung 1 | **no `traceparent.outcome`** ("absent means not traced") | stamp `skipped_off_allowlist` on every row | open |

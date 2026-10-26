@@ -500,7 +500,8 @@ so web and native run the *same module* rather than one column name over two mea
 one constant, not two. `ui.dead` must import it rather than declare a second `1000`.
 
 **`view.loading_time` is omitted when null**, following the general absent-means-nothing discipline
-(§4.11 names `navigation.from_screen` as the SDK's only explicit wire null).
+(v4's §4.11 named `navigation.from_screen` as the SDK's only explicit wire null; v5 removed it, so
+there is none — contract Appendix C, C1).
 **`view.loading_time_outcome` always ships** — `settled` | `no_activity` | `capped` |
 `abandoned` — because it is what tells the null causes apart. Read **two** series: p75 where
 `outcome = 'settled'`, and **% `capped`**. A naive `AVG(loading_time)` mixes populations.
@@ -1699,8 +1700,8 @@ above rather than defects.
   only three null-bearing values. The fourth is unidentified; the SDK produces three. Needs a
   contract ruling, not a locally invented fourth.
 - **`view.loading_time` is omitted when null, not sent as an explicit `null`.** §4.5's table says
-  "Null? **yes**" while §4.11 calls `navigation.from_screen` "the SDK's only explicit wire null" —
-  the two readings conflict. Omission is what every other optional key on this wire does, so that
+  "Null? **yes**" while v4's §4.11 called `navigation.from_screen` "the SDK's only explicit wire
+  null" — the two readings conflict. Open as contract Appendix C, C1. Omission is what every other optional key on this wire does, so that
   is what ships; changing it is a wire change and needs backend sign-off.
 - `view.loading_time`'s clock starts at the route change, **not at the tap**. Tap-to-route-change
   latency runs a handler in the *old* view and belongs to the action envelope (§6.6), which is not
