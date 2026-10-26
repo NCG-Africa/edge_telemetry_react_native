@@ -78,11 +78,15 @@
     "url": "https://github.com/NCG-Africa/edge_telemetry_react_native/issues"
   },
   "devDependencies": {
+    "@react-navigation/core": "^7.24.0",
     "@types/node": "^24.4.0",
     "@types/react": "^19.1.13",
     "@types/react-dom": "^19.1.9",
     "@types/react-navigation": "^3.0.8",
+    "@types/react-test-renderer": "^19.3.0",
     "@vitejs/plugin-react": "^5.0.2",
+    "react": "^19.1.1",
+    "react-test-renderer": "^19.1.1",
     "rimraf": "^6.0.1",
     "typescript": "^5.9.2",
     "vite": "^7.1.5",

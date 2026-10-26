@@ -265,24 +265,41 @@ with its name, dwell time, request count and load time.
 
 ```tsx
 import { NavigationContainer, useNavigationContainerRef } from "@react-navigation/native";
+import { useEffect } from "react";
 import { telemetry } from "./telemetry";
 
 export default function App() {
   const navRef = useNavigationContainerRef();
+  useEffect(() => { telemetry.attachNavigation(navRef); }, [navRef]);
 
-  return (
-    <NavigationContainer
-      ref={navRef}
-      onReady={() => { telemetry.attachNavigation(navRef); }}
-    >
-      {/* your screens */}
-    </NavigationContainer>
-  );
+  return <NavigationContainer ref={navRef}>{/* your screens */}</NavigationContainer>;
 }
 ```
 
-One call covers native **and** web — `getCurrentRoute()` is a navigation-tree API, not a native
-one.
+One call covers native **and** web. Attach whenever you like: a ready ref names the current
+screen at once, and a not-yet-ready one names it on its `ready` event — the first screen is never
+`unknown`.
+
+`view.name` is the focused route names **joined root to leaf with `/`** (v5) — `HomeTab/Details`
+and `SearchTab/Details` stay distinct. Names are never normalized and route params are never read.
+
+### Expo Router
+
+No extra dependency and no extra API — Expo Router is React Navigation underneath, and its route
+names are the file paths, so `view.name` comes out as `(tabs)/settings/index`. In the root
+`app/_layout.tsx`:
+
+```tsx
+import { Stack, useNavigationContainerRef } from "expo-router";
+import { useEffect } from "react";
+import { telemetry } from "../telemetry";
+
+export default function RootLayout() {
+  const navRef = useNavigationContainerRef();
+  useEffect(() => { telemetry.attachNavigation(navRef); }, [navRef]);
+  return <Stack />;
+}
+```
 
 ### Naming screens manually
 

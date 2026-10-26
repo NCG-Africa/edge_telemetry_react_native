@@ -75,7 +75,7 @@ src/
 │   ├── loadingTime.ts     ← shared network-settle: view.loading_time + the 4-value outcome
 │   ├── traceManager.ts    ← §6 trace/span: carrier, three roots, three tiers, the outcome ladder
 │   ├── traceHeader.ts     ← §6.4/§6.5 pure half: allowlist, `traceparent` parse/format, header I/O
-│   ├── navigationRef.ts   ← React Navigation ref listener, shared (getCurrentRoute works on web)
+│   ├── navigationRef.ts   ← React Navigation ref listener + root→leaf route-path join, shared
 │   ├── httpAttributes.ts  ← shared http.* attribute builder + http.route normalization
 │   ├── xhrIntercept.ts    ← shared XMLHttpRequest patch (native's only chokepoint)
 │   │                        idempotent, and one listener per instance — see below
@@ -114,7 +114,7 @@ const telemetry = createTelemetry({
 
 await telemetry.identify({ name: "Ada", email: "ada@x.io" });
 await telemetry.log("checkout_started", { cart_value: 42 });
-telemetry.attachNavigation(navigationRef);   // native only, React Navigation ref
+telemetry.attachNavigation(navigationRef);   // both builds; React Navigation / Expo Router ref
 ```
 
 `createTelemetry()` returns `TelemetryWeb` or `TelemetryNative`, and is **the only way to build
@@ -157,8 +157,13 @@ captureError(error: unknown, context?)   // emits app.error — never app.crash
 ```
 
 `attachNavigation(ref)` lives on `TelemetryBase` and works on **both** builds: React Navigation's
-`getCurrentRoute()` is a navigation-tree API, not a native one, so one wiring gives web and native
-the same `view.name`.
+`getRootState()` is a navigation-tree API, not a native one, so one wiring gives web and native
+the same `view.name`. That name is the focused route names **joined root to leaf with `/`** (#170)
+— rung 2, never normalized, params never read — so nested screens sharing a leaf name stay
+distinct, and under Expo Router (whose route names are file paths) it is `(tabs)/settings/index`
+with no Expo dependency. A ready ref is read **on attach**; an unready one **on its `ready`
+event**, so the first screen is named without waiting for a navigation. Proven against a real
+nested navigator in `src/navigation.real.test.tsx`.
 
 Native-only on `TelemetryNative`: `screenStart(name)` (rung 1, `explicit`), `trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory_usage` is (§5.2).
 `screenEnd(name)` and `trackRoute(from, to)` are **`@deprecated` no-ops** since v5 (#163), deleted
@@ -1600,6 +1605,9 @@ above rather than defects.
   explicit name upgrades the *old* view in place and the route event then bounds it under that
   name. Call `screenStart()` from the screen's own effect, which React runs after the commit the
   route event follows; the ordering is the host's, and the ruling is literal by design.
+- **Nested `view.name`s changed shape in v5** (#170): v4 shipped the leaf (`Details`), v5 the
+  joined path (`HomeTab/Details`). A dashboard keyed on a nested leaf name breaks at the cutover;
+  top-level screens are unchanged. A ref without `getRootState()` falls back to the leaf.
 - **On web, a URL change bounds the view even when the route name does not change** (#169) — a
   tab or filter that pushes a new path inside one React Navigation screen now splits the view.
   Same rule as any route change; a query-only change normalizes to the same name and does not.

@@ -37,6 +37,7 @@ function navRef() {
     ref: {
       addListener: (_type: string, fn: () => void) => { listener = fn; },
       getCurrentRoute: () => route,
+      getRootState: () => route && { index: 0, routes: [route] },
     },
     go(name: string, state?: any) { route = state ?? { name }; listener?.(); },
   };
@@ -90,7 +91,7 @@ describe("#96 view.id / view.name on the Context block (web)", () => {
     expect(sent.map((e) => e.eventName)).not.toContain("screen.duration");
   });
 
-  it("resolves the deepest route of a nested navigator", async () => {
+  it("joins a nested navigator's route names root to leaf (#170)", async () => {
     const { t, sent } = launch();
     const nav = navRef();
     await t.attachNavigation(nav.ref);
@@ -100,7 +101,7 @@ describe("#96 view.id / view.name on the Context block (web)", () => {
     await t.log("custom_event");
     await t.flush();
 
-    expect(attrsOf(sent, "custom_event")[0]["view.name"]).toBe("Settings");
+    expect(attrsOf(sent, "custom_event")[0]["view.name"]).toBe("Tabs/Settings");
   });
 
   it("a route change emits the departing view with dwell and the three counters", async () => {
