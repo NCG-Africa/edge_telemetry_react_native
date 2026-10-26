@@ -120,6 +120,25 @@ export class TelemetryWeb extends TelemetryBase {
         });
         this.attachBfcacheRestore().catch(err => {
             debug.log("Web attachBfcacheRestore errors", err);
+        });        this.attachCrossTabSync().catch(err => {
+            debug.log("Web attachCrossTabSync errors", err);
+        });
+    }
+
+    /**
+     * #161 — the session record is `localStorage`, shared by every tab, but each tab keeps its
+     * own in-memory `lastActivity`. The `storage` event fires in every *other* tab on a write,
+     * so this tab adopts the sibling's progress — or its rotation — instead of diverging and
+     * finalizing the same `session.id` a second time. Native has no sibling and no listener.
+     */
+    private async attachCrossTabSync() {
+        if (typeof window === "undefined") return;
+        const inst = await this.instancePromise;
+        const { SESSION_KEY } = await import("./core/telemetry");
+        window.addEventListener("storage", (e: StorageEvent) => {
+            if (e.key !== SESSION_KEY) return;
+            inst.adoptSessionRecord(e.newValue)
+                .catch((err: any) => debug.warn("Web cross-tab session sync failed:", err));
         });
     }
 

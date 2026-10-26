@@ -346,6 +346,20 @@ type Opts = {
     deprecatedScreenFeeds?: boolean;
 };
 
+const validRate = (r: unknown): r is number =>
+    typeof r === "number" && Number.isFinite(r) && r >= 0 && r <= 1;
+
+/** The durable session record, or nothing when it is absent, corrupt or untrustworthy. */
+function parseSessionRecord(raw: string | null | undefined): Partial<PersistedSession> & Pick<PersistedSession, "id" | "start" | "lastActivity"> | undefined {
+    if (typeof raw !== "string") return undefined;
+    let saved: Partial<PersistedSession>;
+    try { saved = JSON.parse(raw); } catch { return undefined; }
+    if (typeof saved?.id !== "string"
+        || typeof saved.start !== "number"
+        || typeof saved.lastActivity !== "number") return undefined;
+    return saved as any;
+}
+
 /**
  * A bad rate must not silently mute a deployment: `Math.random() < NaN` is always false,
  * so an unvalidated `undefined`-shaped value would sample every session out and look
@@ -747,12 +761,9 @@ export class Telemetry {
         }
         if (read.status === "miss") return { kind: "nothing" };
 
-        let saved: Partial<PersistedSession>;
-        try { saved = JSON.parse(read.value); } catch { return { kind: "nothing" }; }
         // A record we can't trust is not a session to resume; mint rather than guess.
-        if (typeof saved?.id !== "string"
-            || typeof saved.start !== "number"
-            || typeof saved.lastActivity !== "number") return { kind: "nothing" };
+        const saved = parseSessionRecord(read.value);
+        if (!saved) return { kind: "nothing" };
 
         this.sessionId = saved.id;
         this.sessionStart = saved.start;
@@ -768,14 +779,58 @@ export class Telemetry {
         // browser-wide localStorage — so an out-of-range value would ship as a divisor and
         // silently mis-scale every count taken off it. A record we can't trust here loses
         // its decision too, and the fresh constructor roll stands.
-        if (typeof saved.sampled === "boolean"
-            && Number.isFinite(saved.sampleRate) && saved.sampleRate! >= 0 && saved.sampleRate! <= 1) {
+        if (typeof saved.sampled === "boolean" && validRate(saved.sampleRate)) {
             this.sampled = saved.sampled;
             this.sampleRate = saved.sampleRate!;
         }
 
         const reason = this.expiryReason(Date.now());
         return reason ? { kind: "expired", reason } : { kind: "resumed" };
+    }
+
+    /**
+     * Another tab wrote the shared session record (#161, web's `storage` event). Two tabs keep
+     * their own in-memory `lastActivity`, so without this one can idle-expire a session the
+     * other is still using, or both can finalize the same `session.id`.
+     *
+     * Same id: fold in the other tab's progress — activity and the ordinals only ever move
+     * forward, so `max` is the merge. A different id is the other tab's rotation: this tab's
+     * live view is emitted under the session it belongs to, then the successor session is
+     * adopted **silently** — its `session.started` already shipped from the tab that rotated,
+     * and the retired one's `session.finalized` too, which is the whole point.
+     *
+     * Shared core, no platform branch: the entry decides what feeds it.
+     */
+    public async adoptSessionRecord(raw: string | null | undefined) {
+        const rec = parseSessionRecord(raw);
+        if (!rec) return;
+        if (rec.id === this.sessionId) {
+            this.lastActivity = Math.max(this.lastActivity ?? rec.lastActivity, rec.lastActivity);
+            this.sessionSequence = Math.max(this.sessionSequence, rec.sequence ?? 0);
+            this.eventSequence = Math.max(this.eventSequence, rec.eventSequence ?? 0);
+            this.sessionEventCount = Math.max(this.sessionEventCount, rec.eventCount ?? 0);
+            this.errorCount = Math.max(this.errorCount, rec.errorCount ?? 0);
+            return;
+        }
+        // An older record landing late (a slow tab persisting its pre-rotation state) must not
+        // drag this tab back into a session it has already left.
+        if (rec.start < this.sessionStart) return;
+
+        await this.views.endView();
+        this.sessionId = rec.id;
+        this.sessionStart = rec.start;
+        this.lastActivity = rec.lastActivity;
+        this.sessionSequence = rec.sequence ?? 0;
+        this.eventSequence = rec.eventSequence ?? 0;
+        this.sessionEventCount = rec.eventCount ?? 0;
+        this.errorCount = rec.errorCount ?? 0;
+        this.crashPersistedThrough = -1;
+        if (typeof rec.sampled === "boolean" && validRate(rec.sampleRate)) {
+            this.sampled = rec.sampled;
+            this.sampleRate = rec.sampleRate!;
+        }
+        this.trace.clear();   // `trace.id` never spans a `session.id` (§6.6)
+        await this.views.beginView("session_rotation");
     }
 
     /**

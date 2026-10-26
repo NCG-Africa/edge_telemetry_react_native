@@ -1202,6 +1202,15 @@ never land behind the host app's first event. It resolves one of three ways:
 - expired record → adopt it, emit `session.finalized` **under the old `session.id` and
   `session.start_time`**, then start a fresh one carrying the same reason.
 
+**Web tabs stay in sync live** (#161): the web entry listens for `storage` on `telemetry_session`
+and hands the sibling's write to `Telemetry.adoptSessionRecord()` (shared core, no platform
+branch — native simply never calls it). Same `session.id`: `lastActivity` and the counters take
+the `max`, so a busy sibling keeps this tab from idle-finalizing a session in use. A different id
+is the sibling's rotation: this tab emits its live `view` under the old session, adopts the new
+one **silently** (its `session.started` and the old `session.finalized` already shipped from the
+tab that rotated), clears the trace carrier and mints a fresh view. A record older than this
+tab's own session is ignored, so a slow sibling cannot drag it back.
+
 On web a `pageshow` with `persisted: true` re-runs the same decision, because a bfcache freeze
 can outlast the idle window and a sibling tab may have rotated the shared record meanwhile. That
 re-entry is idempotent: when storage has nothing to say it keeps the live session rather than
@@ -1429,10 +1438,11 @@ above rather than defects.
 - **`session.reason: "launch"` undercounts launches.** A resume emits no `session.started` at
   all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
   compensator and is not built — count launches from `app.start`, not from `session.reason`.
-- Session state is read at init and on a web bfcache restore, **not live-synced**. Two tabs
-  open at once share the `localStorage` record but keep their own in-memory `lastActivity`, so
-  they can diverge and both finalize the same `session.id`. A `storage`-event listener would
-  close it.
+- **Cross-tab sync merges, it does not lock** (#161). Two tabs logging in the same instant each
+  stamp `event.sequence` from their own counter before either `storage` event lands, so a
+  duplicate `(session.id, event.sequence)` pair is still possible under true concurrency — the
+  `max` merge only stops the counters *staying* apart. A shared counter would need a lock
+  `localStorage` does not have.
 - A `Store` reporting `unavailable` means the session can't be resumed, so every launch mints
   one. There is no `session.id_ephemeral` to mark that population — but the same store failed
   the `device.id` round-trip, so those events already carry `device.id_ephemeral: true`.
