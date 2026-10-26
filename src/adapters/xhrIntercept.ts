@@ -95,6 +95,8 @@ export function patchXHR(telemetry: Telemetry, xhr: XhrCtor): () => void {
     xhr.prototype.send = function (this: PatchedXhr, body?: Document | XMLHttpRequestBodyInit | null) {
         const req = this._telemetryRequest;
         if (!req) return origSend.apply(this, arguments as any);  // send() without open() — let it throw its own way
+        // Disabled (#172): pass through untouched — no settle hold, no root, no header.
+        if (telemetry.isEnabled?.() === false) { this._telemetryRequest = undefined; return origSend.apply(this, arguments as any); }
         req.start = Date.now();
         req.body = body;
         // The collector's own POST is out of scope for settle exactly as it is for

@@ -36,9 +36,23 @@ export class HangDetector {
 
     constructor(private core: Core, private now: () => number = () => performance.now()) {}
 
+    private active = false;
+    private suspended = false;
+
     /** Driven by the lifecycle emitter: foreground only, so background suspension never reads as a hang. */
     setActive(active: boolean) {
-        if (active) this.start();
+        this.active = active;
+        this.sync();
+    }
+
+    /** `disable()` / `enable()` (#172): off while collection is off, whatever the lifecycle says. */
+    suspend(suspended: boolean) {
+        this.suspended = suspended;
+        this.sync();
+    }
+
+    private sync() {
+        if (this.active && !this.suspended) this.start();
         else this.stop();
     }
 

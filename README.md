@@ -51,6 +51,7 @@ sampling and session management all start on their own — there is nothing else
 - [Make crash stacks readable](#make-crash-stacks-readable)
 - [Strip PII before it leaves the device](#strip-pii-before-it-leaves-the-device)
 - [Sample a percentage of sessions](#sample-a-percentage-of-sessions)
+- [Respect a user's opt-out](#respect-a-users-opt-out)
 - [Connect your traces to your backend](#connect-your-traces-to-your-backend)
 
 **Reference**
@@ -168,6 +169,7 @@ Everything is passed to `createTelemetry()`. There are no runtime setters for th
 | `debug` | `boolean` | `false` | Prints the SDK's internal diagnostics. Off means completely silent. |
 | `buildId` | `string` | omitted | Your build's identifier, for [symbolicating crashes](#make-crash-stacks-readable). |
 | `beforeSend` | `(event) => event \| null` | none | [Scrubbing hook](#strip-pii-before-it-leaves-the-device). Constructor-only. |
+| `enabled` | `boolean` | `true` | `false` starts the SDK dark until [`enable()`](#respect-a-users-opt-out). |
 | `sessionSampleRate` | `number` | `1` | [Fraction of sessions to keep](#sample-a-percentage-of-sessions), `0`–`1`. Constructor-only. |
 | `traceHostAllowlist` | `string[]` | `[]` (empty) | [Hosts allowed to receive `traceparent`](#connect-your-traces-to-your-backend). Constructor-only. |
 | `store` | `Store` | platform default | Replaces `localStorage` / `AsyncStorage`. Mostly for tests. |
@@ -613,6 +615,23 @@ a working scrubber from a broken one.
 
 ---
 
+## Respect a user's opt-out
+
+```typescript
+telemetry.disable();   // takes effect immediately
+telemetry.enable();    // resume
+
+// No consent yet at launch? Start dark — nothing is collected until enable():
+const telemetry = createTelemetry({ apiKey, endpoint, enabled: hasConsent() });
+```
+
+`disable()` drops everything queued and stored on the device, stops every timer, and leaves your
+network requests untouched — no `traceparent` header is added while disabled. Nothing is sent or
+written until `enable()`. The SDK does not remember the choice across launches: store it yourself
+and pass `enabled` at startup. A launch that starts dark never sends `app.start`.
+
+---
+
 ## Sample a percentage of sessions
 
 ```typescript
@@ -746,7 +765,7 @@ unreachable — `log("page_load")` now arrives as `custom_event`. Their jobs are
 
 ## API
 
-Every method returns a Promise, except the span methods and `markScreenReady()`, which are synchronous.
+Every method returns a Promise, except the span methods, `markScreenReady()`, `disable()` and `enable()`, which are synchronous.
 
 ### Core — both platforms
 
@@ -771,6 +790,7 @@ recordMetric(name: string, value: number, attributes?: Record<string, any>, opts
 addBreadcrumb(name: string, data?: Record<string, unknown>): Promise<void>
   // into the trail of 20 on app.crash / app.hang — name ≤64 chars, ≤8 keys, values ≤255
 startNewSession(): Promise<void>                // session.reason: "manual"
+disable(): void / enable(): void              // consent; synchronous
 ```
 
 ### Identity — both platforms

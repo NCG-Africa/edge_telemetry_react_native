@@ -3,6 +3,7 @@ import { isRejected, statusOf } from "../adapters/batch";
 import { ViewManager, type ViewNameSource } from "../adapters/viewManager";
 import { TraceManager } from "../adapters/traceManager";
 import { HangDetector } from "../adapters/hangDetector";
+import { FAILED_EVENTS_KEY } from "../adapters/failedEvents";
 import { SpanRegistry, spanAttributes, taskName, type OpenSpan, type PersistedSpan, type TaskOutcome } from "../adapters/manualSpans";
 import { BreadcrumbBuffer, boundCrumb } from "./breadcrumbs";
 import { buildErrorAttributes, type ErrorSource } from "../adapters/crashCapture";
@@ -361,6 +362,8 @@ type Opts = {
     // CodePush the binary is unchanged, so that fallback resolves against the wrong map and
     // produces frames that are plausible and wrong, with nothing on the row marking them.
     buildId?: string;
+    // #172 — `false` constructs dark until `enable()`. Default true.
+    enabled?: boolean;
 };
 
 const validRate = (r: unknown): r is number =>
@@ -498,6 +501,10 @@ export class Telemetry {
     // Set while finalizeSession() emits its `abandoned` rows: they are bookkeeping, and
     // letting them through log()'s expiry check would rotate an expired session again.
     private finalizing = false;
+    // #172's kill-switch. Off: nothing is emitted, sent or written, and the timers are stopped.
+    private enabled: boolean;
+    // A dark start owes the session it skipped — announced at the first `enable()`.
+    private pendingStart = false;
 
     constructor(opts?: Opts) {
         this.sender = opts?.sender;
@@ -513,6 +520,10 @@ export class Telemetry {
         // "Omitted when unset, never `\"\"`" (§4.8): an empty-string build id would reproduce
         // §9.3's `rum_apps` collapse inside symbolication, where absence is itself the signal.
         this.buildId = typeof opts?.buildId === "string" && opts.buildId !== "" ? opts.buildId : undefined;
+        this.enabled = opts?.enabled !== false;
+        // A dark-started process skips `app.start` for good: it documents a launch, and a
+        // launch the user had not consented to be measured is not one to fabricate later.
+        if (!this.enabled) this.appStartEmitted = true;
         this.configuredSampleRate = normalizeSampleRate(opts?.sessionSampleRate);
         this.sampleRate = this.configuredSampleRate;
         // Rolled here so a bare `new Telemetry()` — no resumeOrStartSession() — is decided
@@ -525,23 +536,16 @@ export class Telemetry {
         this.sessionStart = Date.now();
         this.sdkVersion = opts?.sdkVersion ?? SDK_VERSION;
 
-        // auto replay if supported
-        if (this.sender?.replayFailed) {
-            // don't block constructor; best-effort
-            this.sender.replayFailed().catch((err: any) => {
-                debug.warn("Telemetry replay failed Telemetry class:", err);
-            });
-        }
-
-        if (this.flushIntervalMs > 0) {
-            this.intervalId = setInterval(() => this.flush().catch(() => { }), this.flushIntervalMs);
-        }
+        if (this.enabled) this.startDelivery();
 
         // Before the ViewManager, not after: the launch root is minted in this constructor so
         // the initial view can parent to it. A view that minted its own root instead would
         // make a web hard load report `trace.root_type = navigation` (§6.2).
         this.trace = new TraceManager(opts?.traceLaunchStart, opts?.traceHostAllowlist);
-        if (!isDev()) this.hangs = new HangDetector(this);
+        if (!isDev()) {
+            this.hangs = new HangDetector(this);
+            this.hangs.suspend(!this.enabled);
+        }
         // The initial view opens here, at SDK init — so no row can ever precede a view (§4.5).
         this.views = new ViewManager(this);
 
@@ -640,13 +644,71 @@ export class Telemetry {
         });
     }
 
+    /** The offline replay and the flush timer — at construction, and again at each `enable()`. */
+    private startDelivery() {
+        // auto replay if supported — best-effort, never blocks
+        if (this.sender?.replayFailed) {
+            this.sender.replayFailed().catch((err: any) => {
+                debug.warn("Telemetry replay failed Telemetry class:", err);
+            });
+        }
+        if (this.flushIntervalMs > 0 && !this.intervalId) {
+            this.intervalId = setInterval(() => this.flush().catch(() => { }), this.flushIntervalMs);
+        }
+    }
+
+    isEnabled(): boolean {
+        return this.enabled;
+    }
+
+    /**
+     * The consent kill-switch (#172). Synchronous: the flag is off before this returns. The
+     * in-memory queue, the offline store and the session record are dropped — an opt-out
+     * means nothing is sent **and nothing is kept**, open spans included — and every timer
+     * stops; the rAF loop keeps running but `logMetric` discards its samples. While off the
+     * network patches pass through untouched. `device.id` is kept: it is not telemetry, and
+     * minting a new one at re-consent would read as a new install.
+     */
+    disable(): void {
+        if (!this.enabled) return;
+        this.enabled = false;
+        this.queue = [];
+        if (this.intervalId) { clearInterval(this.intervalId); this.intervalId = null; }
+        this.memoryHandler?.stop?.();
+        this.hangs?.suspend(true);
+        this.spans.clear();
+        for (const key of [FAILED_EVENTS_KEY, SESSION_KEY]) {
+            Promise.resolve(this.store.remove(key)).catch((err) => debug.warn("disable: store remove failed:", err));
+        }
+    }
+
+    /**
+     * Resume collection (#172) and run the lazy session-expiry check — a session can expire
+     * while disabled. A dark-started process announces its session here (`session.started`,
+     * unless a live record resumes) and never emits `app.start`.
+     */
+    async enable(): Promise<void> {
+        if (this.enabled) return;
+        this.enabled = true;
+        this.startDelivery();
+        if (this.memoryHandler) void this.memoryHandler.start().catch((err) => debug.warn("Telemetry memoryHandler start failed:", err));
+        this.hangs?.suspend(false);
+        if (this.pendingStart) {
+            this.pendingStart = false;
+            await this.hydrateAndAnnounce();
+            return;
+        }
+        const reason = this.expiryReason(Date.now());
+        if (reason) await this.rotateSession(reason);
+    }
+
     public trackMemoryUsage(memoryHandler: MemoryHandler) {
         // Re-registration retires the incumbent's timer. `trackMemoryUsage()` is auto-started
         // in the native constructor *and* public, so a consumer calling it hands core a second
         // tracker — without this, two 30-second loops and double the sample volume.
         this.memoryHandler?.stop?.();
         this.memoryHandler = memoryHandler;
-        void memoryHandler.start().catch((err) => {
+        if (this.enabled) void memoryHandler.start().catch((err) => {
             debug.warn("Telemetry memoryHandler start failed:", err);
         });
     }
@@ -732,6 +794,8 @@ export class Telemetry {
      * (§4.1), or `COUNT(session.started)` stops equalling session count.
      */
     public async resumeOrStartSession() {
+        // Dark (#172): no record read, no session announced, nothing written until `enable()`.
+        if (!this.enabled) { this.pendingStart = true; return; }
         await this.hydrateAndAnnounce();
         // Once per process and on every path — a resume emits no `session.started` at all
         // (§4.1), so `session.reason: "launch"` undercounts launches and `app.start` is the
@@ -884,6 +948,7 @@ export class Telemetry {
      * is an AsyncStorage round-trip — debounce here if it ever shows up in a trace.
      */
     private async persistSession() {
+        if (!this.enabled) return;   // #172: nothing is written while disabled
         const record: PersistedSession = {
             id: this.sessionId,
             start: this.sessionStart,
@@ -987,6 +1052,7 @@ export class Telemetry {
      * rather than being `abandoned` by the very next row.
      */
     public startSpan(name: unknown, attrs?: Record<string, unknown>, at: number = Date.now()): OpenSpan | undefined {
+        if (!this.enabled) return undefined;   // #172: inert while disabled
         const n = taskName(name);
         if (!n) { debug.warn("startSpan: blank name — span is inert"); return undefined; }
         const span = this.spans.start(n, at, spanAttributes(attrs));
@@ -1227,6 +1293,7 @@ export class Telemetry {
      * Automatically attaches userId and sessionId to every queued event.
      */
     async log(name: string, data?: Record<string, any>, snapshot?: LogSnapshot) {
+        if (!this.enabled) return;   // #172: nothing is emitted while disabled
         this.eventCount++;
         let activity = false;
         let crashed = false;
@@ -1357,6 +1424,7 @@ export class Telemetry {
      * counter this change adds.
      */
     private async flushCrash() {
+        if (!this.enabled) return;
         if (!this.sender || this.queue.length === 0) return;
 
         // Move crashes to the front, relative order intact: at batchSize 50 a crash enqueued
@@ -1474,6 +1542,7 @@ export class Telemetry {
      * (memory/frames) must not keep a session alive and defeat the 30-min idle rotation.
      */
     async logMetric(metricName: string, value: number, data?: Record<string, any>, unitOverride?: string) {
+        if (!this.enabled) return;   // #172 — this is where the rAF loop's samples are discarded
         this.eventCount++;
         // A metric is a sample, not a user action: it must not refresh `lastActivity` and
         // keep a dead session alive. It is still *checked* against the boundaries, or a
@@ -1516,7 +1585,8 @@ export class Telemetry {
      * counter answers neither.
      */
     private enqueue(e: TelemetryEvent) {
-        if (!this.sampled) return;
+        // `enabled` re-checked here: `log()` awaits the Context block, and a `disable()` can land in between.
+        if (!this.sampled || !this.enabled) return;
 
         let kept = e;
         if (this.beforeSend) {
@@ -1662,6 +1732,7 @@ export class Telemetry {
      * drain halts at batch 1 on every launch forever while the store fills and evicts.
      */
     private async onSendFailure(batch: TelemetryEvent[], err: unknown) {
+        if (!this.enabled) return;   // #172: a batch in flight at disable() is not kept
         if (isRejected(err)) {
             this.recordDrop("rejected", batch.length);
             if (isDev() && !warnedRejected) {

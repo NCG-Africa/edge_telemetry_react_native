@@ -59,6 +59,23 @@ export abstract class TelemetryBase {
         this.now((inst) => { setTimeout(() => inst.views.markReady(at), 0); }, "markScreenReady");
     }
 
+    // ---------- Consent (#172) ----------
+
+    /**
+     * Stop collecting, and keep nothing: the queue, the offline store and the session record
+     * are dropped, every timer stops, and the network patches pass through untouched. The flag
+     * is off before this returns. Survives only this process — persist the user's choice
+     * yourself and construct with `enabled: false` next launch.
+     */
+    disable(): void {
+        this.now((inst) => inst.disable(), "disable");
+    }
+
+    /** Resume collection. A session that expired while disabled rotates. */
+    enable(): void {
+        this.now((inst) => inst.enable(), "enable");
+    }
+
     // ---------- Sibling parity (#167) ----------
 
     /** Ship your own number. `unit` → `metric.unit`. The SDK's metric names are reserved; a non-finite value is dropped. */

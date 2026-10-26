@@ -21,6 +21,7 @@ export class TelemetryWeb extends TelemetryBase {
         traceHostAllowlist?: string[];
         // §4.8 — symbolication resolve key. Omitted when unset, never `""`, never derived.
         buildId?: string;
+        enabled?: boolean;
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -61,6 +62,7 @@ export class TelemetryWeb extends TelemetryBase {
                 sessionSampleRate: opts?.sessionSampleRate,
                 traceHostAllowlist: opts?.traceHostAllowlist,
                 buildId: opts?.buildId,
+                enabled: opts?.enabled,
             });
 
             // Resume or start the session before the instance is visible (#92). On web the

@@ -26,6 +26,7 @@ export class TelemetryNative extends TelemetryBase {
         traceHostAllowlist?: string[];
         // §4.8 — symbolication resolve key. Omitted when unset, never `""`, never derived.
         buildId?: string;
+        enabled?: boolean;
     }) {
         setDebug(opts?.debug ?? false);   // gate SDK console noise before anything logs (#23)
         super();
@@ -74,6 +75,7 @@ export class TelemetryNative extends TelemetryBase {
                 sessionSampleRate: opts?.sessionSampleRate,
                 traceHostAllowlist: opts?.traceHostAllowlist,
                 buildId: opts?.buildId,
+                enabled: opts?.enabled,
             });
 
             // The offline queue drains through `sender.replayFailed()`, which the core

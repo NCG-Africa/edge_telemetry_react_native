@@ -145,6 +145,7 @@ type TelemetryOpts = {
   sessionSampleRate?: number; // 0.0-1.0, sticky per session; default 1
   traceHostAllowlist?: string[]; // bare hosts, exact, ports ignored; EMPTY by default (§6.4)
   buildId?: string;         // app.build_id — symbolication join key; omitted when unset (§4.8)
+  enabled?: boolean;        // #172 consent — false constructs dark until enable(); default true
 };
 ```
 
@@ -152,6 +153,7 @@ Methods (both classes, all return Promises — except the three span methods, wh
 
 ```ts
 recordMetric(name, value, attrs?, {unit?}) / addBreadcrumb(name, data?) / startNewSession()   // #167
+disable() / enable()                       // sync flag flip; #172 consent kill-switch
 startSpan(name, attrs?) → { end({outcome?, attributes?}) } / withSpan(name, fn, attrs?) / endSpan(name, outcome?, attrs?)
 markScreenReady()                         // sync; view.ready_time / view.ready_outcome (#171)
 log(event, data?) / flush() / shutdown()
@@ -946,7 +948,7 @@ internal constants; `stallMs()` is the pure maths with its own test.
 | normal batch: no forced flush, no eviction reprieve, **not** in `view.error_count` / `sdk.error_count` | jank must not move the error rates; `isErrorName()` stays a closed two-name list |
 
 `stop()` is idempotent and resets the baseline, so a resume starts a fresh one; `shutdown()` calls
-it, and so will `disable()` (#172). Asserted at the seam on both builds in `src/hang.test.ts`.
+it, and `disable()` suspends it (`suspend()`, #172) independently of the lifecycle state. Asserted at the seam on both builds in `src/hang.test.ts`.
 
 ### Symbolication — `app.build_id` and the stack payload
 
@@ -1265,6 +1267,31 @@ spliced out **before** the send, not after — both the interval and the batch-f
 `localStorage`, so the persist has landed when the next line runs and the loss window *closes*.
 Native's is an AsyncStorage round-trip a SIGKILL can outrun, so it only *narrows*. Awaiting
 harder does not change that.
+
+### Consent — `disable()` / `enable()` and `enabled`
+
+Core's `enabled` flag (#172, decision #148). **`disable()` is synchronous** — the flag is off before
+it returns — and an opt-out means **nothing is sent and nothing is kept**:
+
+| On `disable()` | How |
+|---|---|
+| in-memory queue dropped | `queue = []` |
+| offline store **and** session record dropped | `store.remove(FAILED_EVENTS_KEY)` + `store.remove(SESSION_KEY)`; open spans cleared |
+| flush, memory and hang timers stopped | `clearInterval`, `memoryHandler.stop()`, `hangs.suspend(true)` |
+| rAF loop's samples discarded | it keeps running; `logMetric` returns at the top |
+| network patches pass through | `isEnabled?.() === false` at the top of the XHR `send` and fetch patches — no settle hold, no root, **no `traceparent`** |
+| nothing emitted or written | `log`, `logMetric`, `enqueue`, `persistSession`, `flushCrash`, `onSendFailure` all return early; `startSpan` is inert |
+
+The invariant, asserted on both builds in `src/consent.test.ts`: **while disabled, the `Sender`
+receives nothing and the `Store` is written nothing.** `device.id` is kept — it is not telemetry,
+and re-minting at re-consent would read as a new install.
+
+**`enable()`** restarts delivery (offline replay + flush timer), the memory sampler and the hang
+detector, then runs the lazy expiry check — a session can expire while disabled. **`enabled:
+false`** constructs dark: `resumeOrStartSession()` reads nothing and only sets `pendingStart`, so
+the first `enable()` runs the hydrate/announce (`session.started`, unless a live record resumes)
+and **`app.start` is skipped for the life of the process** — a launch measured without consent is
+not one to fabricate later.
 
 ### `beforeSend` and `sessionSampleRate`
 
@@ -1725,6 +1752,15 @@ above rather than defects.
   explicit name upgrades the *old* view in place and the route event then bounds it under that
   name. Call `screenStart()` from the screen's own effect, which React runs after the commit the
   route event follows; the ordering is the host's, and the ruling is literal by design.
+- **`disable()` lasts one process.** The SDK persists no consent state — that is the host's
+  record to keep; construct with `enabled: false` on the next launch.
+- **A batch already in flight at `disable()` still completes.** Its send began before the flip;
+  a failure is then dropped rather than persisted. Everything not yet handed to the sender is gone.
+- **`disable()` drops the session record, so re-enabling continues the in-memory session** but a
+  relaunch in between starts a new one. Nothing was kept, by design.
+- **A pre-init `disable()` chains on `instancePromise`**, so it flips when init settles — after
+  `session.started` was enqueued, which the flip then drops with the queue. Nothing is sent;
+  `enabled: false` is the way to have nothing *built*.
 - **A thrown primitive is not deduped.** `throw "x"` inside a boundary cannot be a `WeakSet` key,
   so if React or a global handler also reports it, it can be two rows. Throw `Error`s.
 - **React 18's caught-error console message carries no error object** (`"The above error occurred

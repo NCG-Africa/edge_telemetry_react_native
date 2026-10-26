@@ -68,6 +68,11 @@ export class SpanRegistry {
         return span;
     }
 
+    /** `disable()` (#172): an opt-out keeps nothing, open journeys included. */
+    clear(): void {
+        this.open.clear();
+    }
+
     has(span: OpenSpan): boolean {
         return this.open.get(span.name) === span;
     }
