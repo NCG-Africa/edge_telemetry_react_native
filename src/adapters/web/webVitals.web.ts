@@ -24,6 +24,8 @@ export class WebVitalsTracker {
     /** What each held name last shipped, so an unchanged value does not re-ship at every hide. */
     private emitted = new Map<string, number>();
     private started = false;
+    private stopped = false;
+    private unsubscribe?: () => void;
 
     constructor(private telemetry: VitalsEmitter) { }
 
@@ -44,10 +46,13 @@ export class WebVitalsTracker {
      * around — view-scoping would need the Chrome-only Soft Navigations API.
      */
     async start(): Promise<void> {
-        if (this.started) return;
+        if (this.started || this.stopped) return;
         this.started = true;
 
         const { onLCP, onFCP, onTTFB, onCLS, onINP } = await import("web-vitals/attribution");
+
+        // `shutdown()` may land while the import above is in flight.
+        if (this.stopped) return;
 
         onLCP(m => void this.emit(m));
         onFCP(m => void this.emit(m));
@@ -59,7 +64,17 @@ export class WebVitalsTracker {
 
         // `"resume"` is the background boundary's successor load type. A route change fires
         // here too and is deliberately ignored: these are page-load-scoped values.
-        this.telemetry.views.onBoundary(lt => (lt === "resume" ? this.drain() : undefined));
+        this.unsubscribe = this.telemetry.views.onBoundary(lt => (lt === "resume" ? this.drain() : undefined));
+    }
+
+    /**
+     * `shutdown()`'s teardown (#160): no boundary may `logMetric` after it. The library's own
+     * observers have no detach API, so `emit` is gated instead — a late LCP is dropped too.
+     */
+    stop(): void {
+        this.stopped = true;
+        this.unsubscribe?.();
+        this.held.clear();
     }
 
     /**
@@ -81,6 +96,7 @@ export class WebVitalsTracker {
     }
 
     private emit(m: VitalMetric): unknown {
+        if (this.stopped) return;
         // `metric.unit` is stamped by core's METRIC_UNIT map — `ms` for four of them and
         // **`score` for CLS**, without which a 0.08 renders as a flat zero line beside an
         // LCP of 4000 in the same `value` column.

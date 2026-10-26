@@ -76,12 +76,11 @@ export abstract class TelemetryBase {
         return inst.captureError(error, context);
     }
 
-    async trackErrors(options?: { captureConsole?: boolean }) {
-        const { CrashHandlerNative } = await import("./adapters/native/crashHandlerNative.native");
-        const inst = await this.instancePromise;
-        const crashHandler = new CrashHandlerNative(inst);
-        return inst.trackErrors(crashHandler, options);
-    }
+    /**
+     * Wired per entry (#160): each build imports its own crash handler. Shared code importing
+     * the native one is what made the web build resolve it at runtime and reject.
+     */
+    abstract trackErrors(options?: { captureConsole?: boolean }): Promise<void>;
 
     // ---------- User Profile Management ----------
 

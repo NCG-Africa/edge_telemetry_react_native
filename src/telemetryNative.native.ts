@@ -159,6 +159,12 @@ export class TelemetryNative extends TelemetryBase {
         });
     }
 
+    async trackErrors(options?: { captureConsole?: boolean }) {
+        const { CrashHandlerNative } = await import("./adapters/native/crashHandlerNative.native");
+        const inst = await this.instancePromise;
+        return inst.trackErrors(new CrashHandlerNative(inst), options);
+    }
+
     async getDeviceInfo() {
         const { DeviceInfoTrackerNative } = await import("./adapters/native/deviceInfo.native");
         const inst = await this.instancePromise;

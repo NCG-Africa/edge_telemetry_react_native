@@ -164,6 +164,9 @@ the same `view.name`.
 Native-only on `TelemetryNative`: `trackRoute(from, to)`, `screenStart(name)`, `screenEnd(name)`,
 `trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory_usage` is (§5.2).
 
+`trackErrors` is declared `abstract` on `TelemetryBase` and implemented **per entry** (#160), so
+shared code imports neither build's crash handler.
+
 `trackErrors`, `trackFrameDrops`, `trackNetworkRequests`, `autoTrackNavigation`, (native)
 `trackMemoryUsage` and (web) `trackInteractions` + `trackWebVitals` are auto-started in the
 constructor — consumers don't call them. `trackWebVitals` is additionally **private**: there is
@@ -687,6 +690,11 @@ means `Access-Control-Allow-Headers: traceparent` is missing on that host, not t
 broken. Adding the header also converts previously-*simple* cross-origin GETs into preflighted
 ones — set `Access-Control-Max-Age`.
 
+**A synchronously-throwing XHR `send()` discards the `request` root it minted** (#160,
+`RequestTrace.discard()`): it never reaches `loadend`, so nothing would ever describe that root,
+and the next request must mint its own rather than join an action that never happened. A
+*joined* root is left alone — one failed send does not end the action it belongs to.
+
 **Never-strip**: the SDK never removes or rewrites a header it did not add. Ownership is a
 **per-request presence flag set at the consumer's write time** — the `setRequestHeader` patch
 on XHR, `init.headers`/`Request.headers` on fetch — **never inferred from the value's shape**,
@@ -915,10 +923,10 @@ has been discarded on arrival for every RN sample ever sent, and the third is su
 `metric.unit`. ⚠ **A read that throws or returns a non-finite number emits nothing** rather than a
 fabricated `0`, which would drag every percentile down and read as a memory *win*.
 
-⚠ **This is the one tracker `shutdown()` tears down**, via an optional `stop()` on `MemoryHandler`.
+⚠ **`shutdown()` tears this tracker down**, via an optional `stop()` on `MemoryHandler`.
 It owns a `setInterval`; the rAF-driven `FrameDropTracker` does not, and a leaked 30-second timer
 calling `logMetric` on a shut-down instance is not the same residue as a rAF loop the platform
-already parks on background.
+already parks on background. The web vitals tracker is torn down too (#160) — see Core Web Vitals.
 
 ### Core Web Vitals — web only, on the metric path
 
@@ -960,6 +968,9 @@ the wire** — which is *the* reason `beforeSend` covers metrics (§3.6). §4.6'
 rejected for it on the record: the role gate blanks `<img>`, `<h1>` and banners, which is most vital
 targets, and un-gating the ladder would rebuild the `textContent` hole the gate closes. A selector
 is developer-authored structure — tags, ids, classes — never user content.
+
+**`shutdown()` stops the tracker** (#160): it unsubscribes from `onBoundary` and gates emission,
+so no view boundary can `logMetric` on a shut-down instance.
 
 **CLS and INP subscribe with `reportAllChanges: true` as a running-value *subscription, not an
 emission trigger*.** The latest value is held in memory and shipped at the `ViewManager`'s
@@ -1426,8 +1437,6 @@ above rather than defects.
   one. There is no `session.id_ephemeral` to mark that population — but the same store failed
   the `device.id` round-trip, so those events already carry `device.id_ephemeral: true`.
 - Crash capture is JS-level only — no native signal/ANR/hang capture.
-- `index.base.ts` `trackErrors()` imports the **native** crash handler in shared code; the
-  web build resolves it at runtime and rejects.
 - **`view` needs backend allowlist sign-off before it ships** — an unlisted `eventName` is
   dropped on ingest. It is already in the SDK's `ALLOWED_NAMES`, so it is being emitted.
 - Settle sees only what the SDK intercepts — JS `fetch`/XHR. `rn-fetch-blob`, RN Firebase, native
@@ -1481,10 +1490,9 @@ above rather than defects.
   allowlist matters here by staying an *explicit* list — a bundled dependency stays bundled — and
   `src/vitals.native.test.ts` asserts the config does **not** name it. Flag it if that reading is
   wrong; the zero-bytes-to-native half is asserted against the built chunk graph either way.
-- **`shutdown()` does not stop the vitals tracker.** Its `onBoundary` unsubscribe is discarded, so a
-  view boundary after shutdown can still `logMetric`. Unlike `memory_usage` it owns no timer — the
-  only thing that can fire it is a boundary, which needs a live app — so it did not earn the `stop()`
-  hook §5.2 gave the memory sampler. The library's own observers are never detached either.
+- **`web-vitals` observers are never detached.** The library has no detach API, so after
+  `shutdown()` (#160) the tracker unsubscribes from `onBoundary` and gates its own emit — a late
+  LCP callback still runs, it just ships nothing.
 - **`vital.target` and `vital.load_state` are omitted when absent, not sent as explicit `null`s**,
   though §5.3's table types both `Null? yes`. This is the same omit-vs-explicit-null conflict
   already recorded for `view.loading_time`, and it is resolved the same way: omission is what every
@@ -1538,8 +1546,6 @@ above rather than defects.
 - `trace.root_type = interaction` is minted by every web click (#102) and every native
   `trackTap(name)` (#103) — but on native only where the consumer called it, so an unattributed
   native request means *an uninstrumented tap*, not *no action*.
-- An XHR `send()` that throws **synchronously** never reaches `loadend`, so a `request` root it
-  minted lives out its 2 s window with no row describing it. Rare, and knowingly left.
 - **A lower rung swallows its own boundary.** §4.5.1's "a lower rung arriving later does not
   overwrite a higher one" is implemented literally, so a host that calls `screenStart()` once and
   then relies on `attachNavigation` pins the view to that explicit name: route changes stop minting

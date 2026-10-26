@@ -393,7 +393,7 @@ export class Telemetry {
     // The web vitals tracker, parked here for the same reason (§5.3, #106): `trackWebVitals()`
     // must reuse it, or a second call double-subscribes and doubles every vital row. Unset on
     // native, which emits no vitals ever.
-    public webVitals?: { start(): Promise<void> };
+    public webVitals?: { start(): Promise<void>; stop(): void };
     private readonly deprecatedScreenFeeds: boolean;
     // last-known screen; best-effort context for the deprecated screen feeds (#33)
     public currentScreen?: string;
@@ -1487,6 +1487,7 @@ export class Telemetry {
     async shutdown() {
         if (this.intervalId) clearInterval(this.intervalId);
         this.memoryHandler?.stop?.();
+        this.webVitals?.stop();   // #160 — no vital may logMetric after shutdown
         await this.flush();
     }
 
