@@ -7,21 +7,31 @@
 // `undefined`, which releases the gate — a marker that never arrives must not make every
 // launch report `abandoned`.
 
-/** Epoch ms of "bundle evaluated", or undefined where the runtime does not publish it. */
 type StartupTiming = { startTime?: unknown; executeJavaScriptBundleEntryPointEnd?: unknown };
+type Perf = { now?: () => number; rnStartupTiming?: StartupTiming };
+
+/**
+ * The markers are stamped on the native monotonic clock — iOS `CACurrentMediaTime()`, Android
+ * `SystemClock.uptimeMillis()` — the same clock `performance.now()` reads, not epoch. Shifted
+ * onto `Date.now()`'s timeline here so every caller can compare them with wall time.
+ * ponytail: a value already past 1e12 is taken as epoch (31 years of uptime is not a device).
+ */
+export function toEpoch(t: unknown): number | undefined {
+    if (typeof t !== "number" || !(t > 0)) return undefined;
+    if (t > 1e12) return t;
+    const now = (globalThis as { performance?: Perf }).performance?.now?.();
+    return typeof now === "number" ? Date.now() - now + t : undefined;
+}
 
 /** Epoch ms of process start (#171's initial-view anchor), or undefined where unpublished. */
 export function processStartAt(): number | undefined {
-    const start = (globalThis as { performance?: { rnStartupTiming?: StartupTiming } }).performance?.rnStartupTiming?.startTime;
-    return typeof start === "number" && start > 0 ? start : undefined;
+    return toEpoch((globalThis as { performance?: Perf }).performance?.rnStartupTiming?.startTime);
 }
 
 function read(): number | undefined {
     // `performance` is a native-only global here and the field is absent on the Old
     // Architecture, so it is read defensively rather than typed as present.
-    const perf = (globalThis as { performance?: { rnStartupTiming?: StartupTiming } }).performance;
-    const end = perf?.rnStartupTiming?.executeJavaScriptBundleEntryPointEnd;
-    return typeof end === "number" && end > 0 ? end : undefined;
+    return toEpoch((globalThis as { performance?: Perf }).performance?.rnStartupTiming?.executeJavaScriptBundleEntryPointEnd);
 }
 
 export async function runtimeReadyAt(): Promise<number | undefined> {

@@ -1532,7 +1532,8 @@ ingest.
 - Publishing is **manual** (`npm publish`) — no release workflow.
 - **Size budget (§5, #158):** `src/size.budget.test.ts` walks each entry's built chunk graph,
   esbuild-minifies (esbuild ships with vite — no new dependency), gzips and fails above
-  **20 KB gz native / 26 KB gz web**. Measured at #158: native **15.1 KB**, web **22.1 KB**
+  **20 KB gz native / 26 KB gz web**. Measured at #158: native **15.1 KB**, web **22.1 KB**; at #174 (all of v5): native **19.9 KB**,
+  web **25.5 KB** — ⚠ native has ~0.1 KB of slack left, so the next native feature needs a cut or a cap ruling
   (v4: 23.7 / 22.7). A feature costing more than ~1 KB gz justifies itself against the slack.
 - `vite.config.ts`'s `external` is an **explicit allowlist**: `react`, `react-dom`,
   `react-native`, AsyncStorage, and — since #158 — `react-native-device-info`,
@@ -1857,6 +1858,14 @@ above rather than defects.
 - **A span outliving the 10 s root cap still reports its root's ids**, frozen at start — later
   requests mint their own root (#141), so a long journey's `rum.action.id` holds the span and
   the requests in its first ten seconds only.
+- **Two explicit names in a row leave the second view unbound to any route** (#169). `screenStart("X")`
+  then `screenStart("Y")` mints Y with no route binding, so the next route event is read as Y's own
+  (the upgrade window) rather than a boundary. That is right when Y's mount effect ran before its
+  route event, and wrong when Y was a sub-state of one screen — call `screenStart()` once per screen.
+- **`startTime` / `executeJavaScriptBundleEntryPointEnd` are monotonic-clock, not epoch** — iOS
+  `CACurrentMediaTime()`, Android `uptimeMillis()`, the clock `performance.now()` reads. `toEpoch()` in
+  `runtimeReady.native.ts` shifts them by `Date.now() − performance.now()`; v4's `initial_load` seed
+  compared the raw value against `Date.now()`, so the floor was in 1970 and never held.
 - **Nested `view.name`s changed shape in v5** (#170): v4 shipped the leaf (`Details`), v5 the
   joined path (`HomeTab/Details`). A dashboard keyed on a nested leaf name breaks at the cutover;
   top-level screens are unchanged. A ref without `getRootState()` falls back to the leaf.

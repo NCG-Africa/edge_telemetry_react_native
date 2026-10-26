@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
-import { runtimeReadyAt } from "./runtimeReady.native";
+import { runtimeReadyAt, processStartAt, toEpoch } from "./runtimeReady.native";
 
 // §4.5.2's native seed. The field is stamped only once the bundle entry point finishes, and
 // the common wiring constructs the SDK *inside* that entry point — so the read ordering is the
@@ -42,5 +42,20 @@ describe("runtimeReadyAt (native)", () => {
   it("survives performance being absent entirely", async () => {
     delete g.performance;
     await expect(runtimeReadyAt()).resolves.toBeUndefined();
+  });
+});
+
+describe("toEpoch — the markers are monotonic-clock, not epoch", () => {
+  it("shifts a performance.now()-clock marker onto Date.now()'s timeline", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_760_000_010_000);
+    g.performance = { now: () => 50_000, rnStartupTiming: { startTime: 40_000 } };
+    expect(processStartAt()).toBe(1_760_000_000_000);   // 10 s before now, not 1970
+  });
+
+  it("passes an epoch-sized value through and drops a missing clock", () => {
+    expect(toEpoch(1_760_000_000_123)).toBe(1_760_000_000_123);
+    g.performance = {};
+    expect(toEpoch(40_000)).toBeUndefined();
   });
 });

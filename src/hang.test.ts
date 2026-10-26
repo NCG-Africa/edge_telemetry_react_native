@@ -119,6 +119,12 @@ for (const build of ["native", "web"] as const) {
 
       const views = sent.filter((e) => e.eventName === "view").map((e) => e.attributes!);
       for (const v of views) expect(v["view.error_count"]).toBe(0);
+      // Frozen at the last good tick: Home's view, session and action — not Checkout's.
+      const home = views.find((v) => v["view.name"] === "Home")!;
+      expect(hang.attributes!["view.id"]).toBe(home["view.id"]);
+      expect(hang.attributes!["session.id"]).toBe(home["session.id"]);
+      expect(hang.attributes!["trace.id"]).toBe(home["trace.id"]);
+      expect(hang.attributes!["rum.action.id"]).toBe(home["rum.action.id"]);
       const custom = sent.filter((e) => e.eventName === "custom_event").slice(-1)[0];
       expect(custom.attributes!["event.sequence"]).toBeGreaterThan(hang.attributes!["event.sequence"]);
     });

@@ -1726,7 +1726,7 @@ export class Telemetry {
      */
     recordMetric(name: string, value: number, data?: Record<string, any>, opts?: { unit?: string }) {
         if (typeof name !== "string" || name.trim() === "") { debug.warn("recordMetric: blank name — dropped"); return; }
-        if (name in METRIC_UNIT) { debug.warn(`recordMetric: ${name} is reserved by the SDK — dropped`); return; }
+        if (Object.prototype.hasOwnProperty.call(METRIC_UNIT, name)) { debug.warn(`recordMetric: ${name} is reserved by the SDK — dropped`); return; }
         if (typeof value !== "number" || !Number.isFinite(value)) { debug.warn(`recordMetric: ${name} value is not finite — dropped`); return; }
         const unit = typeof opts?.unit === "string" && opts.unit !== "" ? opts.unit : undefined;
         return this.logMetric(name, value, data, unit);
