@@ -1281,6 +1281,16 @@ ingest.
 - CI (`.github/workflows/ci.yml`): on push/PR to master + merge_group — `npm ci`, typecheck,
   test, build. Actions pinned by SHA. No lint step (no lint script in the repo).
 - Publishing is **manual** (`npm publish`) — no release workflow.
+- **Size budget (§5, #158):** `src/size.budget.test.ts` walks each entry's built chunk graph,
+  esbuild-minifies (esbuild ships with vite — no new dependency), gzips and fails above
+  **20 KB gz native / 26 KB gz web**. Measured at #158: native **15.1 KB**, web **22.1 KB**
+  (v4: 23.7 / 22.7). A feature costing more than ~1 KB gz justifies itself against the slack.
+- `vite.config.ts`'s `external` is an **explicit allowlist**: `react`, `react-dom`,
+  `react-native`, AsyncStorage, and — since #158 — `react-native-device-info`,
+  `@react-native-community/netinfo` and `react-native-get-random-values`. Those three are
+  native-module JS the consumer already installed; bundling them ran our copy against *their*
+  native module. `web-vitals` is deliberately **not** on it (§5.3). The size test asserts no
+  reachable native chunk was built from a `node_modules/<pkg>/` source, via the sourcemaps.
 - `dist/` and `*.tgz` are git-ignored and must stay untracked. If they show up in
   `git status`, something re-added them.
 
@@ -1486,6 +1496,13 @@ above rather than defects.
 - **The five vitals need backend allowlist sign-off before they ship** — all five are already in
   `ALLOWED_NAMES`, so they are being emitted, and an unlisted name is dropped on ingest.
   §5.3's fourteen attribution keys need columns or a bag that is actually queried.
+- **The three native-module packages are externalized, so the consumer's installed copy runs**
+  (#158). netinfo and get-random-values stay `dependencies`, so npm still installs them; the
+  version that runs is now whatever the app resolved, not the one we built against. A consumer
+  pinning an older device-info gets that version's capability surface — the optional-method
+  guards (`supportedAbis?.()` etc.) are what keep that safe.
+- **`src/size.budget.test.ts` reads `dist/`**, like `vitals.native.test.ts`: red after
+  `npm run clean` until the next build. The cap is a claim about the *built* output.
 - **`web-vitals` is a runtime `dependency` a native consumer also installs on disk** — bundled,
   so their app ships zero bytes of it, but `npm ls` shows it. Making it a devDependency would
   work today and break the moment anything externalizes it; the contract calls it a dependency.
