@@ -14,4 +14,4 @@ export type { SpanHandle } from "./index.base";
 export type { TaskOutcome } from "./adapters/manualSpans";
 
 // The React module (#166) — on the main entry, no subpath.
-export { EdgeErrorBoundary, type EdgeErrorBoundaryProps } from "./react";
+export { EdgeErrorBoundary, useScreenReady, type EdgeErrorBoundaryProps } from "./react";

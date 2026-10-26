@@ -79,6 +79,9 @@ for (const build of ["native", "web"] as const) {
       });
       const inst = await (t as any).instancePromise;
       for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(0);
+      // The lifecycle adapter arms the detector after a cold dynamic import, which is real
+      // I/O on the first test of a file, not a microtask: wait for it rather than guess.
+      if (g.__DEV__ === false) await vi.waitFor(() => expect((inst.hangs as any)?.timer).toBeDefined());
       return { t, inst, sent };
     }
 
@@ -96,7 +99,7 @@ for (const build of ["native", "web"] as const) {
       await tick();
       await inst.enterView("Home", "route");
       await tick();
-      const lastGood = new Date(Date.now()).toISOString();
+      const lastGoodBy = Date.now();   // the last good tick fired in (lastGoodBy − 1 s, lastGoodBy]
       await inst.enterView("Checkout", "route");
       await tick(2500);
       await tick();
@@ -105,7 +108,9 @@ for (const build of ["native", "web"] as const) {
 
       const [hang, ...more] = hangs(sent);
       expect(more).toEqual([]);
-      expect(hang.timestamp).toBe(lastGood);
+      const at = Date.parse(hang.timestamp);
+      expect(at).toBeLessThanOrEqual(lastGoodBy);
+      expect(at).toBeGreaterThan(lastGoodBy - 1000);
       expect(hang.attributes!["hang.duration_ms"]).toBe(2500);
       expect(hang.attributes!["view.name"]).toBe("Home");
       expect(JSON.parse(hang.attributes!["error.breadcrumbs"])).toEqual(expect.any(Array));

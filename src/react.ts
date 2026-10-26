@@ -2,7 +2,7 @@
 // context: the telemetry instance is a prop. `createElement`, not JSX, so the build emits no
 // `react/jsx-runtime` import for the externalization list to miss.
 
-import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Component, useEffect, type ErrorInfo, type ReactNode } from "react";
 import { debug } from "./core/debug";
 import { markBoundaryCaught } from "./adapters/crashCapture";
 
@@ -52,3 +52,13 @@ export class EdgeErrorBoundary extends Component<EdgeErrorBoundaryProps, { error
     }
 }
 
+
+/**
+ * Marks the current screen ready (#171) once `ready` is truthy — `useScreenReady(telemetry,
+ * !loading)`. First mark per view wins, so re-renders and a `ready` that flips back are harmless.
+ */
+export function useScreenReady(telemetry: { markScreenReady(): void }, ready: unknown = true): void {
+    useEffect(() => {
+        if (ready) telemetry.markScreenReady();
+    }, [telemetry, ready]);
+}

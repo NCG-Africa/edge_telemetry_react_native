@@ -93,13 +93,25 @@ export class TelemetryNative extends TelemetryBase {
             // The module is awaited so the seed is armed before `instancePromise` resolves,
             // but never rethrown into it: a failed chunk load must not brick every public
             // method for the life of the process. A missing reader just releases the gate.
-            const { runtimeReadyAt } = await import("./adapters/native/runtimeReady.native")
+            const { runtimeReadyAt, processStartAt } = await import("./adapters/native/runtimeReady.native")
                 .catch((err: unknown) => {
                     debug.warn("Native runtime-ready module unavailable:", err);
-                    return { runtimeReadyAt: async () => undefined };
+                    return { runtimeReadyAt: async () => undefined, processStartAt: () => undefined };
                 });
             const { seedRuntimeReady } = await import("./adapters/seedRuntimeReady");
             seedRuntimeReady(telemetry.views, runtimeReadyAt, "Native");
+            // #171: the initial view's ready anchor, and `app.start.js_ready_ms` — read when
+            // `app.start` is emitted, not here: the bundle-end field is stamped just after a
+            // module-scope `createTelemetry()`, and by then the session resume's AsyncStorage
+            // round-trip has put a macrotask between the two. Never awaited — init must not
+            // block on a timer for one key.
+            const processStart = processStartAt();
+            telemetry.views.anchorInitial(processStart);
+            telemetry.jsReadyMs = () => {
+                const end = (globalThis as any).performance?.rnStartupTiming?.executeJavaScriptBundleEntryPointEnd;
+                return processStart !== undefined && typeof end === "number" && end >= processStart
+                    ? end - processStart : undefined;
+            };
 
             await telemetry.resumeOrStartSession()
                 .catch(err => debug.warn("Native session resume failed:", err));

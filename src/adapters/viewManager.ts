@@ -69,6 +69,15 @@ type View = {
      * recorded here is a navigation, whatever rung the view's display name came from.
      */
     routes: Partial<Record<"route" | "url", string>>;
+    /**
+     * #171's screen-ready mark. `token` — only `initial_load` and route-change views can be
+     * judged; a resume or rotation successor never can. `anchor` is what `view.ready_time`
+     * measures from (entry, or process start for the initial view); unset means not judged.
+     * `readyAt` is the first mark's T — first mark wins.
+     */
+    token: boolean;
+    anchor?: number;
+    readyAt?: number;
 };
 
 /** `view_{ms}_{16hex}` (§3.3). No platform suffix — a view never leaves its process. */
@@ -86,6 +95,12 @@ export class ViewManager {
     private readonly boundaryListeners = new Set<(successorLoadType: ViewLoadType) => unknown>();
     /** Retired `view.id` → final `view.name`, for `nameOf()`. Bounded; oldest evicted. */
     private readonly retiredNames = new Map<string, string>();
+    /**
+     * `view.name`s this process has seen marked ready (#171). In memory only, never persisted:
+     * `abandoned` is claimed only for a screen known to be instrumented, so an uninstrumented
+     * screen never reads as abandoned. Its first visit per process can't be judged either.
+     */
+    private readonly markedNames = new Set<string>();
 
     constructor(private telemetry: Emitter) {
         // A capability check, not a platform branch: RN has no `location`, and a
@@ -105,7 +120,29 @@ export class ViewManager {
             // reports `launch`, never `navigation` (§6.2).
             span: telemetry.trace?.viewSpan(now) ?? {},
             routes: {},
+            // Anchored at process start by the entry (`anchorInitial`), never at SDK init:
+            // one column, one anchor. Until then, and on a runtime with no marker, not judged.
+            token: true,
         };
+    }
+
+    /**
+     * The initial view's ready anchor — process start: web `performance.timeOrigin`, native
+     * `rnStartupTiming.startTime` (#171). So its `view.ready_time` *is* cold-start-to-ready.
+     * `undefined` (native Old Architecture) leaves the initial view unjudged.
+     */
+    anchorInitial(processStart: number | undefined): void {
+        if (this.view.loadType === "initial_load") this.view.anchor = processStart;
+    }
+
+    /**
+     * `markScreenReady()`'s bind (#171) — the caller stamped `at` synchronously and arrives here
+     * a macrotask later, so a mount-effect mark lands on the view that mount belongs to. First
+     * mark per view wins; a view with no token (a resume or rotation successor) ignores it.
+     */
+    markReady(at: number): void {
+        const v = this.view;
+        if (v.token && v.readyAt === undefined) v.readyAt = at;
     }
 
     /** The two keys the Context block carries on every row. Name resolves at log time. */
@@ -246,9 +283,22 @@ export class ViewManager {
      * only explicit wire null). `view.loading_time_outcome` always ships: it is what tells the
      * three null causes apart, and reading p75-of-settled beside %-capped is the whole point.
      */
-    async endView(): Promise<void> {
+    async endView(cause: ViewLoadType = "session_rotation"): Promise<void> {
         const v = this.view;
         const { loadingTime, outcome } = v.settle.resolve();
+        // #171. `ready` ⇔ `view.ready_time` present. `abandoned` only when the user left by
+        // route change or rotation — **background is not judged**, never a false accusation —
+        // and only for a screen this process has seen marked. Otherwise neither key: the screen
+        // is simply not instrumented.
+        let ready: Record<string, string | number> = {};
+        if (v.token && v.anchor !== undefined) {
+            if (v.readyAt !== undefined) {
+                this.markedNames.add(v.name);
+                ready = { "view.ready_time": Math.max(0, v.readyAt - v.anchor), "view.ready_outcome": "ready" };
+            } else if (cause !== "resume" && this.markedNames.has(v.name)) {
+                ready = { "view.ready_outcome": "abandoned" };
+            }
+        }
         await this.telemetry.log("view", {
             // A **point span** (§6.3): `span.start_time` from view entry and never
             // `span.duration_ms`. View dwell is `view.time_spent`, not span width — a width
@@ -264,6 +314,7 @@ export class ViewManager {
             "view.error_count": v.errors,
             "view.action_count": v.actions,
             "view.request_count": v.settle.requestCount,
+            ...ready,
         });
     }
 
@@ -308,12 +359,16 @@ export class ViewManager {
             routes: successorLoadType === "route_change"
                 ? (source === "route" || source === "url" ? { [source]: name } : {})
                 : { ...prev.routes },
+            // Route views anchor at entry (`span.start_time`). A resume or rotation successor
+            // is the same screen continued, so it never gets a pending token.
+            token: successorLoadType === "route_change",
+            anchor: now,
         };
     }
 
     /** A boundary that stays inside one session: emit, then mint the successor. */
     async exit(successorLoadType: ViewLoadType, name?: string, source?: ViewNameSource): Promise<void> {
-        await this.endView();
+        await this.endView(successorLoadType);
         await this.beginView(successorLoadType, name, source);
     }
 

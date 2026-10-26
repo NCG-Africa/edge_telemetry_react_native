@@ -491,6 +491,8 @@ export class Telemetry {
     // `app.start` is once per *process* (§6.2), and web re-enters resumeOrStartSession() on a
     // bfcache restore — which resumes a process rather than starting one.
     private appStartEmitted = false;
+    /** `app.start.js_ready_ms` (§4.3, #171) — native only; the entry's reader, run at emit. */
+    public jsReadyMs?: () => number | undefined;
     // Open manual spans (#164). Persisted with the session record.
     private readonly spans = new SpanRegistry();
     // Set while finalizeSession() emits its `abandoned` rows: they are bookkeeping, and
@@ -756,7 +758,11 @@ export class Telemetry {
     private async emitAppStart() {
         if (this.appStartEmitted) return;
         this.appStartEmitted = true;
-        await this.log("app.start", this.trace.launchRootAttributes());
+        const jsReady = this.jsReadyMs?.();
+        await this.log("app.start", {
+            ...this.trace.launchRootAttributes(),
+            ...(jsReady === undefined ? {} : { "app.start.js_ready_ms": jsReady }),
+        });
     }
 
     /**

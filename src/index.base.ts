@@ -46,6 +46,19 @@ export abstract class TelemetryBase {
         } catch (err) { swallow(err); }
     }
 
+    /**
+     * "This screen is usable now" (#171). Synchronous, no arguments: it marks the **current**
+     * view, so your name and the SDK's cannot disagree. The time is taken now; the view is
+     * chosen one macrotask later, so a mark from a new screen's mount effect lands on that
+     * screen even though the navigation that opened it settles behind it. The `view` row then
+     * carries `view.ready_time` and `view.ready_outcome`. First mark per view wins. Before init
+     * the mark is buffered and lands on the initial view.
+     */
+    markScreenReady(): void {
+        const at = Date.now();
+        this.now((inst) => { setTimeout(() => inst.views.markReady(at), 0); }, "markScreenReady");
+    }
+
     // ---------- Manual spans (#164) ----------
 
     /**

@@ -7,6 +7,7 @@ import {
 } from "@react-navigation/core";
 import type { TelemetryEvent } from "./core/telemetry";
 import { memoryStore } from "./core/memoryStore";
+import { useScreenReady } from "./react";
 
 // #170 — `attachNavigation` against a *real* React Navigation container and a real nested
 // navigator, on both builds: the joined root-to-leaf name reaches the Sender, the initial
@@ -100,6 +101,41 @@ for (const build of ["native", "web"] as const) {
       const last = sent.find((e) => e.eventName === "custom_event")!;
       expect(last.attributes!["view.name"]).toBe("SearchTab/Details");
       expect(JSON.stringify(sent)).not.toMatch(/acc_9/);
+      act(() => r.unmount());
+    });
+
+    // #171's mandatory proof: React runs the screen's mount effect *before* the container's
+    // effect fires `state`, and `recordRouteChange()` mints behind awaits — so a mark bound
+    // synchronously would land on the screen being left. The deferred bind must not.
+    it("a mount-effect useScreenReady mark lands on the arriving screen, not the departing one", async () => {
+      const { t, sent } = await launch();
+      function Ready() { useScreenReady(t); return null; }
+      function ReadyApp({ navRef }: { navRef: any }) {
+        return (
+          <BaseNavigationContainer ref={navRef}>
+            <Stack>
+              <Screen name="Home" component={Blank} />
+              <Screen name="Profile" component={Ready} />
+              <Screen name="Settings" component={Blank} />
+            </Stack>
+          </BaseNavigationContainer>
+        );
+      }
+      const ref = createNavigationContainerRef<any>();
+      let r!: TestRenderer.ReactTestRenderer;
+      await t.attachNavigation(ref);
+      await act(async () => { r = TestRenderer.create(<ReadyApp navRef={ref} />); });
+      await settle();
+      await act(async () => { ref.navigate("Profile"); });
+      await settle();
+      await act(async () => { ref.navigate("Settings"); });
+      await settle();
+      await t.flush();
+
+      const byName = Object.fromEntries(sent.filter((e) => e.eventName === "view").map((e) => [e.attributes!["view.name"], e.attributes!]));
+      expect(byName.Home).not.toHaveProperty("view.ready_outcome");
+      expect(byName.Profile).toMatchObject({ "view.ready_outcome": "ready" });
+      expect(byName.Profile["view.ready_time"]).toBeGreaterThanOrEqual(0);
       act(() => r.unmount());
     });
 

@@ -341,6 +341,24 @@ await telemetry.screenStart("Checkout");   // native only — names the current 
 > new view, so a `screenStart()` name only renames the screen it was called on. Call it from that
 > screen's own effect.
 
+### Mark a screen ready
+
+```tsx
+import { useScreenReady } from "@nathanclaire/edge-telemetry-sdk";
+
+function ProfileScreen() {
+  const { data } = useProfile();
+  useScreenReady(telemetry, !!data);   // or call telemetry.markScreenReady() yourself
+  // …
+}
+```
+
+The `view` row then carries `view.ready_time` (ms from opening the screen to the mark) and
+`view.ready_outcome: "ready"`. The app's first screen is measured from **process start**, so its
+`view.ready_time` is cold-start-to-usable. If the user leaves a screen you have marked before
+without it becoming ready, the row says `"abandoned"`; screens you never mark carry neither key,
+and leaving by backgrounding is never judged. The first mark per screen wins.
+
 ### Reading the results
 
 `view` events carry `view.loading_time`, measured as **network settle**: the point where the
@@ -728,7 +746,7 @@ unreachable — `log("page_load")` now arrives as `custom_event`. Their jobs are
 
 ## API
 
-Every method returns a Promise, except the three span methods, which are synchronous.
+Every method returns a Promise, except the span methods and `markScreenReady()`, which are synchronous.
 
 ### Core — both platforms
 
@@ -746,6 +764,7 @@ startSpan(name: string, attributes?: Record<string, unknown>): SpanHandle
   // SpanHandle.end(opts?: { outcome?: "completed" | "failed" | "abandoned"; attributes? })
 withSpan<T>(name: string, fn: () => T, attributes?: Record<string, unknown>): T
 endSpan(name: string, outcome?: "completed" | "failed" | "abandoned", attributes?: Record<string, unknown>): void
+markScreenReady(): void
 ```
 
 ### Identity — both platforms
@@ -810,6 +829,7 @@ import {
   type BeforeSend,
   type SpanHandle, type TaskOutcome,
   EdgeErrorBoundary,        // the render-error boundary
+  useScreenReady,           // marks the current screen ready
   type EdgeErrorBoundaryProps,
   type Store, type SyncStore, type AsyncStore, type StoreRead, type StoreWrite,
   type MemoryStoreOpts,

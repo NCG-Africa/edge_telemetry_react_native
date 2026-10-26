@@ -56,7 +56,7 @@ src/
 ├── index.web.ts / index.native.ts        ← public entries: createTelemetry + types only (#159)
 ├── telemetryWeb.web.ts / telemetryNative.native.ts ← TelemetryWeb / TelemetryNative
 ├── index.base.ts                         ← TelemetryBase: shared delegation for both
-├── react.ts                              ← <EdgeErrorBoundary> — the React module, main entry, no JSX
+├── react.ts                              ← <EdgeErrorBoundary> + useScreenReady — the React module, main entry, no JSX
 ├── core/
 │   ├── telemetry.ts       ← Telemetry: queue, batch, retry, session lifecycle, log/logMetric
 │   ├── breadcrumbs.ts     ← ring buffer (last 20) for error.breadcrumbs
@@ -152,6 +152,7 @@ Methods (both classes, all return Promises — except the three span methods, wh
 
 ```ts
 startSpan(name, attrs?) → { end({outcome?, attributes?}) } / withSpan(name, fn, attrs?) / endSpan(name, outcome?, attrs?)
+markScreenReady()                         // sync; view.ready_time / view.ready_outcome (#171)
 log(event, data?) / flush() / shutdown()
 identify({userId?, name?, email?, phone?, avatar?, customAttributes?})  // emits user.profile.update
 setUserId / setUserProfile / setUserDetails / updateUserProfile
@@ -513,6 +514,31 @@ handed the tracker to `inst.start()` — a method core never had — so the reje
 rung 3 (`url`) never fed a single web view. #163 wires it through `autoTrackNavigation()`, so a web
 app without `attachNavigation` now gets `view` rows named by normalized path where it had one
 `"unknown"` view per page load.
+
+**Screen-ready marks** (#171, decisions #145/#146) **complement** `view.loading_time` on the same
+`view` row — never average the two. `markScreenReady()` is sync, no-arg, on `TelemetryBase`, and
+marks the **current** view; `useScreenReady(telemetry, ready = true)` in `src/react.ts` is a
+`useEffect` around it.
+
+| Rule | Why |
+|---|---|
+| T stamped **synchronously**, bound to a view **one macrotask later** (`setTimeout(0)` → `ViewManager.markReady`) | React runs a screen's mount effect *before* the container's effect fires `state`, and `recordRouteChange()` mints behind awaits — a sync bind lands on the screen being **left**. Proven against real React Navigation in `src/navigation.real.test.tsx` |
+| `view.ready_time = max(0, T − anchor)`, present ⇔ `view.ready_outcome = ready` | a static screen honestly reports ~0 |
+| anchor: route views at entry; the **initial view at process start** (`anchorInitial`: web `performance.timeOrigin`, native `rnStartupTiming.startTime`) | the launch screen's ready time *is* cold-start-to-ready, with no second method |
+| no process-start marker ⇒ initial view **not judged** | one column, one anchor — never silently re-anchored at SDK init |
+| first mark per view wins, **no cap** | view exit bounds it |
+| only `initial_load` / `route_change` views carry a token; `resume` and `session_rotation` successors never do | a mark after background is a no-op |
+| `abandoned` only on a route-change or rotation exit **and** only for a `view.name` this process has seen marked (in-memory `markedNames`) | an uninstrumented screen never reads as abandoned |
+| a background exit is **not judged** — neither key | background is not abandonment |
+| pre-init mark buffered on `instancePromise`, bound a macrotask after settle | the initial view keeps its cold-start-to-ready row |
+
+`endView(cause)` now takes the exit's successor load type so it can tell background from route
+change; core's two direct callers (rotation, cross-tab adoption) default to `session_rotation`.
+
+**`app.start.js_ready_ms`** (§4.3) ships on **native only**, = `executeJavaScriptBundleEntryPointEnd −
+startTime`, read **when `app.start` is emitted** (after the resume's AsyncStorage round-trip, which
+is past the bundle-end stamp) and omitted when either field is missing. Never awaited: init must
+not block on a timer for one key. **Web never ships it** — its marker is `load`, after `app.start`.
 
 **`ViewManager.onBoundary()` is the view-boundary seam** (§5.1, #104). A subscriber is awaited
 inside `beginView` while the departing view is still current — that is what lets the frame window
@@ -1657,11 +1683,17 @@ above rather than defects.
   More rows, not different ones — every one follows the rung-3 rules that were already documented.
 - **`app.start` needs backend allowlist sign-off before it ships** — it is already in
   `ALLOWED_NAMES`, so it is being emitted, and an unlisted name is dropped on ingest.
-- **`app.start.js_ready_ms` (§4.3) is not built.** #98 mints the event as §6.2's launch root;
-  the payload key needs a ruling first. The marker is only known when the platform publishes
-  it — on web that is the `load` event, which arrives *long after* `app.start` — so shipping
-  it means either delaying `app.start` (and with it the launch root, which the initial view
-  parents to) or shipping a key that is near-always absent on web. Neither is a local call.
+- **`app.start.js_ready_ms` is native-only and best-effort** (#171). Read at `app.start`'s emit,
+  it is omitted if the runtime had not stamped bundle-end yet — possible only where the store
+  resolves without a macrotask (an injected sync store on native). Web never ships it.
+- **A screen's first visit per process can't be `abandoned`** — the learned set is in memory and
+  empty at launch, so a user who bounces off a slow screen on their first visit reports neither
+  key. Deliberate: claiming `abandoned` for a screen nobody instruments is the worse error.
+- **A ready mark landing after a tab-away is lost.** Background exits are unjudged and the resume
+  successor has no token, so a screen that finishes loading while hidden reports nothing.
+- **A buffered pre-init mark binds to whatever view is current a macrotask after init** — the
+  initial view in every real wiring, since no route change can be recorded before init.
+- **`view.ready_time` / `view.ready_outcome` need backend sign-off** (columns on `view`).
 - **An expired-record cold launch leaves the retired launch trace rootless.** The rotation
   re-mints the launch root so `trace.id` cannot span a `session.id`, which means the initial
   `view` row — emitted under the *old* session — is a child of a root whose row never ships.

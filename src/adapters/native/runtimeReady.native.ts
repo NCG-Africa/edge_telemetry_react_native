@@ -8,7 +8,13 @@
 // launch report `abandoned`.
 
 /** Epoch ms of "bundle evaluated", or undefined where the runtime does not publish it. */
-type StartupTiming = { executeJavaScriptBundleEntryPointEnd?: unknown };
+type StartupTiming = { startTime?: unknown; executeJavaScriptBundleEntryPointEnd?: unknown };
+
+/** Epoch ms of process start (#171's initial-view anchor), or undefined where unpublished. */
+export function processStartAt(): number | undefined {
+    const start = (globalThis as { performance?: { rnStartupTiming?: StartupTiming } }).performance?.rnStartupTiming?.startTime;
+    return typeof start === "number" && start > 0 ? start : undefined;
+}
 
 function read(): number | undefined {
     // `performance` is a native-only global here and the field is absent on the Old
