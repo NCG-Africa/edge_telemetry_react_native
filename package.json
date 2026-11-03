@@ -47,8 +47,8 @@
     }
   },
   "scripts": {
-    "build": "node api.js && vite build",
-    "dev": "node api.js && vite",
+    "build": "vite build",
+    "dev": "vite",
     "clean": "rimraf dist",
     "prepare": "npm run build",
     "typecheck": "tsc --noEmit",
