@@ -21,10 +21,10 @@ const event = (eventName: string): TelemetryEvent => ({
   attributes: { "user.id": "user_1_0000000000000000" },
 });
 
-describe("nativeSender — v3 transport envelope (Seam 2)", () => {
+describe("nativeSender — the 4.x transport envelope (Seam 2, #179)", () => {
   beforeEach(() => vi.restoreAllMocks());
 
-  it("POSTs a telemetry_batch envelope with both credential headers, no tenant_id", async () => {
+  it("POSTs a telemetry_batch envelope with X-API-Key only, no tenant_id", async () => {
     const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }) as any);
     vi.stubGlobal("fetch", fetchMock);
 
@@ -40,12 +40,13 @@ describe("nativeSender — v3 transport envelope (Seam 2)", () => {
 
     const headers = init.headers as Record<string, string>;
     expect(headers["X-API-Key"]).toBe("edge_test_key");
-    // Both headers, always, same value: the collector reads one or the other by AUTH_MODE (#90).
-    expect(headers["Authorization"]).toBe("Bearer edge_test_key");
+    // X-API-Key only: 4.x drops Authorization: Bearer (processor #29).
+    expect(headers["Authorization"]).toBeUndefined();
     expect(headers["Content-Type"]).toBe("application/json");
 
     const body = JSON.parse(init.body as string);
     expect(body.type).toBe("telemetry_batch");
+    expect(body.contract_version).toMatch(/^4\./);
     expect(typeof body.timestamp).toBe("string");
     expect(body.batch_size).toBe(2);
     expect(body.events).toHaveLength(2);
@@ -99,6 +100,34 @@ describe("nativeSender — the offline queue through the Store port (#89)", () =
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(await store.get(FAILED_EVENTS_KEY)).toEqual({ status: "miss" });
+  });
+
+  it("replays a mixed-launch queue as one envelope per identity (#179)", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 200 }) as any);
+    vi.stubGlobal("fetch", fetchMock);
+    const at = (v: string, name: string): TelemetryEvent =>
+      ({ ...event(name), attributes: { "app.version": v, "device.id": "d1" } });
+    const store = seeded([at("1.0.0", "app.crash"), at("1.1.0", "view"), at("1.0.0", "app.error")]);
+
+    await nativeSender("https://x/collect", "edge_k", store).replayFailed!();
+
+    const bodies = fetchMock.mock.calls.map(c => JSON.parse((c as any)[1].body));
+    expect(bodies.map(b => [b.app.version, b.events.map((e: any) => e.eventName)])).toEqual([
+      ["1.0.0", ["app.crash", "app.error"]],
+      ["1.1.0", ["view"]],
+    ]);
+  });
+
+  it("a rejected group is dropped and the unsent groups go back to the store (#179, §2.5)", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: false, status: 400 }) as any);
+    vi.stubGlobal("fetch", fetchMock);
+    const at = (v: string, name: string): TelemetryEvent => ({ ...event(name), attributes: { "app.version": v } });
+    const store = seeded([at("1.0.0", "app.crash"), at("1.1.0", "view")]);
+
+    await expect(nativeSender("https://x/collect", "edge_k", store).replayFailed!()).rejects.toMatchObject({ status: 400 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(decodeFailed(await store.get(FAILED_EVENTS_KEY)).map(e => e.eventName)).toEqual(["view"]);
   });
 
   it("re-persists when the replay fails again, so nothing is dropped", async () => {

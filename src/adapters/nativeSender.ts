@@ -3,7 +3,7 @@ import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { Store } from "../core/store";
 import { nativeStore } from "./native/store.native";
 import { decodeFailed, encodeFailed, guardedDrain, FAILED_EVENTS_KEY } from "./failedEvents";
-import { buildBatch, buildHeaders, DEFAULT_ENDPOINT, isRejected, sendWithRetry } from "./batch";
+import { buildBatch, buildHeaders, DEFAULT_ENDPOINT, replayGroups, sendWithRetry } from "./batch";
 
 // The offline queue goes through the Store port (#89). Unlike web, these await: on the
 // native build a write is not guaranteed to have landed when the app is killed, so the
@@ -65,15 +65,11 @@ export function nativeSender(
             const stored = await takeFailed(store);
             if (stored.length === 0) return;
             debug.log("Replaying failed events, count:", stored.length);
-            try {
-                await post(endpoint, apiKey, stored);
-            } catch (err) {
-                // If replay fails again, re-store. Exactly one copy: this path never goes
-                // through core's flush(), so onFailure() does not also persist it.
-                // A 4xx is the exception (§2.5): a rejected batch is dropped, never kept.
-                if (!isRejected(err)) await persistFailed(store, stored);
-                throw err;
-            }
+            // One POST per identity, so a prior launch's rows ride that launch's `app` block.
+            // A failure re-stores exactly one copy of what is unsent: this path never goes
+            // through core's flush(), so onFailure() does not also persist it. A 4xx group is
+            // dropped, never kept (§2.5).
+            await replayGroups(stored, events => post(endpoint, apiKey, events), events => persistFailed(store, events));
         }),
     };
 }

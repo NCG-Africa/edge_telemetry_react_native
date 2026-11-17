@@ -1,24 +1,87 @@
 import type { TelemetryEvent } from "../core/telemetry";
 
-// v3 wire envelope. Shared by both senders so the web and native POST bodies
-// stay byte-identical to the EdgeRum telemetry_batch contract.
+/**
+ * The catalogue's contract version this build speaks (#179, processor #29). Only the major gates
+ * parsing; the minor follows the catalogue tag pinned in `catalogue.version`.
+ */
+export const CONTRACT_VERSION = "4.3.0";
+
+/**
+ * Per-event identity copies the Context block stamps and the envelope lifts to its root
+ * (processor #29). Tier A in `beforeSend` (`device.id` Tier B), so a hook cannot delete the
+ * envelope out from under the batch. `sdk.platform` has no envelope slot: `sdk.name` +
+ * `app.platform` carry it.
+ */
+const IDENTITY = ["device.id", "app.name", "app.package_name", "app.version", "app.build_number", "sdk.version", "sdk.platform"];
+
+const identityOf = (e: TelemetryEvent) => JSON.stringify(IDENTITY.map(k => e.attributes?.[k]));
+
+/**
+ * The 8-key 4.x envelope (`envelope.yaml`), shared by both senders so the web and native POST
+ * bodies stay byte-identical. Identity comes from the rows themselves, so a batch persisted by
+ * a prior launch replays under that launch's `app` block. Every row of one batch shares it:
+ * the live queue has one identity per process, and `byIdentity()` splits a replayed one.
+ */
 export function buildBatch(events: TelemetryEvent[]): string {
+    const a = events[0]?.attributes ?? {};
     return JSON.stringify({
         type: "telemetry_batch",
+        contract_version: CONTRACT_VERSION,
         timestamp: new Date().toISOString(),
         batch_size: events.length,
-        events,
+        device_id: a["device.id"],
+        sdk: { name: "react_native", version: a["sdk.version"] },
+        app: {
+            name: a["app.name"],
+            package_name: a["app.package_name"],
+            platform: a["device.platform"],
+            version: a["app.version"],
+            build_number: a["app.build_number"],
+        },
+        events: events.map(e => {
+            const attributes = { ...e.attributes };
+            for (const k of IDENTITY) delete attributes[k];
+            return { ...e, attributes };
+        }),
     });
 }
 
-// Auth (#90, contract §11.1). The collector's credentialFromRequest reads Authorization under
-// AUTH_MODE=jwt and X-API-Key otherwise — exactly one, never both. Sending both, always, with
-// the same value makes one build work in the shared and the segmented (bank / on-prem)
-// topologies with no mode flag. Do not sniff the credential's shape to pick a header.
+/** Rows grouped by identity, first-seen order — one envelope per group on replay. */
+export function byIdentity(events: TelemetryEvent[]): TelemetryEvent[][] {
+    const groups = new Map<string, TelemetryEvent[]>();
+    for (const e of events) {
+        const k = identityOf(e);
+        groups.set(k, [...(groups.get(k) ?? []), e]);
+    }
+    return [...groups.values()];
+}
+
+/**
+ * Replay a recovered queue, one POST per identity. On a failure the unsent rows go back to the
+ * store — minus the failed group itself when it was rejected (§2.5: a 4xx is dropped, never kept).
+ */
+export async function replayGroups(
+    stored: TelemetryEvent[],
+    post: (events: TelemetryEvent[]) => Promise<void>,
+    persist: (events: TelemetryEvent[]) => unknown,
+): Promise<void> {
+    const groups = byIdentity(stored);
+    for (let i = 0; i < groups.length; i++) {
+        try {
+            await post(groups[i]);
+        } catch (err) {
+            const rest = groups.slice(isRejected(err) ? i + 1 : i).flat();
+            if (rest.length > 0) await persist(rest);
+            throw err;
+        }
+    }
+}
+
+// Auth (processor #29): `X-API-Key` only. 4.x drops `Authorization: Bearer`.
 export function buildHeaders(credential: string | undefined): Record<string, string> {
     return {
         "Content-Type": "application/json",
-        ...(credential ? { "X-API-Key": credential, "Authorization": `Bearer ${credential}` } : {}),
+        ...(credential ? { "X-API-Key": credential } : {}),
     };
 }
 
