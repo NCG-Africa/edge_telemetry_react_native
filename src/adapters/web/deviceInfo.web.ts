@@ -40,7 +40,7 @@ export class DeviceInfoTrackerWeb {
                 product: undefined,
 
                 // iOS placeholders
-                ios_system_name: undefined,
+                system_name: undefined,
 
                 // `cpu_abi` / `low_ram` are native-only (§3.3's `N`) — a browser exposes
                 // neither, and a fabricated value is worse than an absent key.

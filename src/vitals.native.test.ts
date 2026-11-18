@@ -91,7 +91,7 @@ describe("TelemetryNative emits no vital, ever (§5.3)", () => {
         });
         const inst: any = await (t as any).instancePromise;
         await inst.views.background();      // the boundary web drains CLS/INP at
-        await t.log("custom_event");
+        await t.log("custom.event");
         await t.flush();
 
         const vitals = ["LCP", "FCP", "CLS", "INP", "TTFB"];

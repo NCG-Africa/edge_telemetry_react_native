@@ -1536,9 +1536,10 @@ ingest.
 - Publishing is **manual** (`npm publish`) — no release workflow.
 - **Size budget (§5, #158):** `src/size.budget.test.ts` walks each entry's built chunk graph,
   esbuild-minifies (esbuild ships with vite — no new dependency), gzips and fails above
-  **20 KB gz native / 26 KB gz web**. Measured at #158: native **15.1 KB**, web **22.1 KB**; at #174 (all of v5): native **19.9 KB**,
-  web **25.5 KB** — ⚠ native has ~0.1 KB of slack left, so the next native feature needs a cut or a cap ruling
-  (v4: 23.7 / 22.7). A feature costing more than ~1 KB gz justifies itself against the slack.
+  **21 KB gz native / 27 KB gz web** — raised from 20 / 26 by cap ruling at #179. Measured at #158: native
+  **15.1 KB**, web **22.1 KB**; at #174 (all of v5): native **19.9 KB**, web **25.5 KB**; at #179: native
+  **20.6 KB**, web **26.1 KB** — ⚠ native has ~0.4 KB of slack left, so the next native feature needs a cut
+  or another cap ruling (v4: 23.7 / 22.7). A feature costing more than ~1 KB gz justifies itself against the slack.
 - `vite.config.ts`'s `external` is an **explicit allowlist**: `react`, `react-dom`,
   `react-native`, AsyncStorage, and — since #158 — `react-native-device-info`,
   `@react-native-community/netinfo` and `react-native-get-random-values`. Those three are
@@ -1946,3 +1947,17 @@ above rather than defects.
 6. New dependency? → peer dep? native-only? optional? Don't bundle RN/React.
 7. Changed behaviour? → update this file in the same commit — the affected section *and*
    Known gaps. It is the only description of this SDK there is.
+
+## Agent skills
+
+### Issue tracker
+
+GitHub Issues on `NCG-Africa/edge_telemetry_react_native` via `gh`; external PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at repo root, created lazily. See `docs/agents/domain.md`.

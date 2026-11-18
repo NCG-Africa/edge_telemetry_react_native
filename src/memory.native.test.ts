@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { TelemetryEvent } from "./core/telemetry";
 import { memoryStore } from "./core/memoryStore";
 
-// #105 / §5.2 — `memory_usage` is native-only, RSS-sourced and actually *periodic*.
+// #105 / §5.2 — `memory.usage` is native-only, RSS-sourced and actually *periodic*.
 // Asserted where the contract lives: the TelemetryEvent[] reaching the injected Sender —
 // keys, values and **absence** (`usage_mb`, `pressure_level`, `memory.unit` and every
 // trace key must be gone).
@@ -95,7 +95,7 @@ async function launch() {
 }
 
 const samplesOf = (sent: TelemetryEvent[]) =>
-  sent.filter((e) => e.type === "metric" && e.metricName === "memory_usage");
+  sent.filter((e) => e.type === "event" && e.eventName === "memory.usage");
 
 beforeEach(() => {
   silenceConsole();
@@ -110,20 +110,21 @@ afterEach(() => {
   vi.resetModules();
 });
 
-describe("#105 memory_usage on the native wire (§5.2)", () => {
-  it("ships rss, total_mb and metric.unit — and none of the three retired keys", async () => {
+describe("#105 memory.usage on the native wire (§5.2)", () => {
+  it("ships memory.usage_mb (MB), rss and total_mb as a memory.usage event (#179)", async () => {
     const { t, sent } = await launch();
     await flushUntilSampled(t, sent);
 
     const [s] = samplesOf(sent);
     expect(s).toBeDefined();
-    expect(s.value).toBe(128);
-    expect(s.attributes!["metric.unit"]).toBe("MB");
+    expect(s.attributes!["memory.usage_mb"]).toBe(128);
+    expect(s).not.toHaveProperty("value");
+    expect(s.attributes).not.toHaveProperty("metric.unit");
     expect(s.attributes!["memory.type"]).toBe("rss");
     expect(s.attributes!["memory.total_mb"]).toBe(4096);
     expect(s.attributes!["memory.source"]).toBe("android");
 
-    for (const gone of ["memory.usage_mb", "memory.pressure_level", "memory.unit"]) {
+    for (const gone of ["memory.pressure_level", "memory.unit"]) {
       expect(gone in s.attributes!).toBe(false);
     }
   });
@@ -159,7 +160,7 @@ describe("#105 memory_usage on the native wire (§5.2)", () => {
 
     const [s] = samplesOf(sent);
     expect(s).toBeDefined();
-    expect(s.value).toBe(128);
+    expect(s.attributes!["memory.usage_mb"]).toBe(128);
     expect("memory.total_mb" in s.attributes!).toBe(false);
   });
 
@@ -203,7 +204,7 @@ describe("#105 memory_usage on the native wire (§5.2)", () => {
   });
 });
 
-describe("#105 memory_usage is native-only (§5.2)", () => {
+describe("#105 memory.usage is native-only (§5.2)", () => {
   it("the web build never emits it", async () => {
     vi.resetModules();
     const { createTelemetry } = await import("./createTelemetry.web");

@@ -83,14 +83,14 @@ describe("#160 web triage", () => {
         await t.shutdown();
         await hide();
         await t.flush();
-        expect(sent.filter(e => e.metricName === "CLS" || e.metricName === "INP")).toEqual([]);
+        expect(sent.filter(e => e.metricName === "perf.cls" || e.metricName === "perf.inp")).toEqual([]);
         // Control: without shutdown() the same boundary does ship the held value.
         doc.visibilityState = "visible";
         const control = await launch();
         subs.CLS[subs.CLS.length - 1]({ name: "CLS", value: 0.2, rating: "poor", navigationType: "navigate" });
         await hide();
         await control.t.flush();
-        expect(control.sent.filter(e => e.metricName === "CLS")).toHaveLength(1);
+        expect(control.sent.filter(e => e.metricName === "perf.cls")).toHaveLength(1);
     });
 
     it("trackErrors() resolves and captures — the web handler, not the native one", async () => {

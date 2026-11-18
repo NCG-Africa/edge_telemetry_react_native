@@ -94,18 +94,18 @@ describe("#92 native session continuity — the async Store resumes across proce
     const store = memoryStore({ async: true });
 
     const first = await launch(store);
-    await first.t.log("custom_event");
+    await first.t.log("custom.event");
     await first.t.flush();
-    const id = attrsOf(first.sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(first.sent, "custom.event")[0]["session.id"];
     expect(id).toMatch(/^session_\d+_[0-9a-f]{16}_android$/);
 
     vi.setSystemTime(Date.now() + 29 * MIN);   // process killed and relaunched
 
     const second = await launch(store);
-    await second.t.log("custom_event");
+    await second.t.log("custom.event");
     await second.t.flush();
 
-    expect(attrsOf(second.sent, "custom_event")[0]["session.id"]).toBe(id);
+    expect(attrsOf(second.sent, "custom.event")[0]["session.id"]).toBe(id);
     expect(second.names()).not.toContain("session.started");
   });
 
@@ -113,20 +113,20 @@ describe("#92 native session continuity — the async Store resumes across proce
     const store = memoryStore({ async: true });
 
     const first = await launch(store);
-    await first.t.log("custom_event");
+    await first.t.log("custom.event");
     await first.t.flush();
-    const id = attrsOf(first.sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(first.sent, "custom.event")[0]["session.id"];
 
     vi.setSystemTime(Date.now() + 31 * MIN);
 
     const second = await launch(store);
-    await second.t.log("custom_event");
+    await second.t.log("custom.event");
     await second.t.flush();
 
     expect(attrsOf(second.sent, "session.finalized")[0]["session.reason"]).toBe("idle");
     expect(attrsOf(second.sent, "session.finalized")[0]["session.id"]).toBe(id);
     expect(attrsOf(second.sent, "session.started")[0]["session.reason"]).toBe("idle");
-    expect(attrsOf(second.sent, "custom_event")[0]["session.id"]).not.toBe(id);
+    expect(attrsOf(second.sent, "custom.event")[0]["session.id"]).not.toBe(id);
   });
 });
 
@@ -134,9 +134,9 @@ describe("#92 native lifecycle transitions no longer touch the session (§4.2)",
   it("background then foreground keeps one session: no finalize, no second started", async () => {
     const before = appState.listenerCount();
     const { t, sent, names } = await launch(memoryStore({ async: true }));
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    const id = attrsOf(sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(sent, "custom.event")[0]["session.id"];
 
     // the AppState listener attaches asynchronously behind instancePromise
     await vi.waitFor(() => expect(appState.listenerCount()).toBeGreaterThan(before));
@@ -144,15 +144,15 @@ describe("#92 native lifecycle transitions no longer touch the session (§4.2)",
     vi.setSystemTime(Date.now() + 5 * MIN);
     appState.emit("active");
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await vi.waitFor(async () => {
       await t.flush();
-      expect(names().filter((n) => n === "app_lifecycle")).toHaveLength(2);
+      expect(names().filter((n) => n === "app.lifecycle")).toHaveLength(2);
     });
 
     expect(names()).not.toContain("session.finalized");
     expect(names().filter((n) => n === "session.started")).toHaveLength(1);
-    expect(attrsOf(sent, "custom_event")[1]["session.id"]).toBe(id);
+    expect(attrsOf(sent, "custom.event")[1]["session.id"]).toBe(id);
   });
 
   it("still flushes on background — the queue only lives in memory and the process may not come back", async () => {
@@ -162,10 +162,10 @@ describe("#92 native lifecycle transitions no longer touch the session (§4.2)",
     sent.length = 0;
 
     await vi.waitFor(() => expect(appState.listenerCount()).toBeGreaterThan(before));
-    await t.log("custom_event");
-    expect(names()).not.toContain("custom_event");   // batchSize 50: still queued
+    await t.log("custom.event");
+    expect(names()).not.toContain("custom.event");   // batchSize 50: still queued
 
     appState.emit("background");
-    await vi.waitFor(() => expect(names()).toContain("custom_event"));
+    await vi.waitFor(() => expect(names()).toContain("custom.event"));
   });
 });

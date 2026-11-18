@@ -128,53 +128,40 @@ type SessionHydration =
 /** The collector caps `user.id` at 255; truncate at source rather than be rejected (§3.2). */
 const USER_ID_MAX = 255;
 
-// Names the backend routes. Anything else is remapped to `custom_event` with the
-// original name carried as `event.name`. Includes metric names so the metric path
-// (slice: native metrics) isn't remapped.
+// Names the backend routes — the processor's event catalogue (`catalogue.version`, #179). Anything
+// else is remapped to `custom.event` with the original name carried as `event.name`, and that
+// includes `custom.event` itself, so the row always carries its `event.name`. Includes metric
+// names so the metric path isn't remapped.
 const ALLOWED_NAMES = new Set<string>([
     // `navigation` and `screen.duration` are **removed in v5** (#163, §4.0): the `view` entity
-    // is the only screen feed. Off this list, a consumer's `log("navigation")` is rewritten to
-    // `custom_event` like any unknown name.
-    "session.started", "session.finalized", "app_lifecycle",
-    "http.request", "network_change",
-    "user.profile.update", "custom_event", "app.crash", "view",
-    // ⚠ `app.error` needs backend allowlist sign-off before it ships (#100, §4.7).
-    "app.error",
-    // §4.6/#102 — replaces `user.interaction`, which is off the list as of v4. The
-    // `rum_ui_interactions` columns are already built; the name still needs sign-off.
-    "ui.interaction",
-    // ⚠ `app.start` needs backend allowlist sign-off before it ships (#98, §4.3/§6.2) — an
-    // unlisted eventName is dropped on ingest. It is listed here, so it is being emitted.
-    "app.start",
-    // ⚠ #164's manual span terminal — needs backend allowlist sign-off before it ships.
-    "task.complete",
-    // ⚠ #165's JS-thread stall — needs backend allowlist sign-off before it ships.
-    "app.hang",
-    "frame_render_time", "memory_usage",
-    "LCP", "FCP", "CLS", "INP", "TTFB",
+    // is the only screen feed; the processor derives both from it (catalogue `derives:`).
+    "session.started", "session.finalized", "app.lifecycle",
+    "http.request", "network.change",
+    "user.profile.update", "app.crash", "view", "screen.load",
+    "app.error", "ui.interaction", "app.start", "task.complete", "app.hang",
+    "frame.summary", "memory.usage", "custom.metric",
+    "perf.lcp", "perf.fcp", "perf.cls", "perf.inp", "perf.ttfb",
     // ⚠ `page_load`, `resource_timing` and `long_task` are **retired, not deferred**
-    // (§10.2, #109) — as `user.interaction` was in #102, four in total for a net-zero v4.
-    // Do not add them back: `page_load`'s job is done three ways over (`view` +
-    // `view.loading_time` + the vitals), `resource_timing` would blow the 500-event queue on
-    // one asset-heavy view for a namespace with no column, and `long_task`'s only APIs are
-    // Chromium-only while `frame_render_time` detects jank on every runtime. A name off this
-    // list is rewritten to `custom_event`, so all four are unreachable, not merely unused.
+    // (§10.2, #109) — as `user.interaction` was in #102. Do not add them back: `page_load`'s
+    // job is done three ways over (`view` + `view.loading_time` + the vitals), `resource_timing`
+    // would blow the 500-event queue on one asset-heavy view, and `long_task`'s only APIs are
+    // Chromium-only while `frame.summary` detects jank on every runtime.
 ]);
 
 /**
- * §5.1's `metric.unit` — NULL on every RN row ever landed until v4. Without it a CLS of
- * `0.08` renders as a flat zero line beside an LCP of `4000` in the same `value` column,
- * so `score` for CLS is the key entry, not `ms`.
- *
- * A name absent from this map ships no unit: absent means the SDK had nothing, and a
- * consumer's own `recordMetric()` name has no unit we can honestly claim.
+ * §5.1's `metric.unit` on the SDK's own metrics — the five vitals. A CLS of `0.08` is a
+ * `score`, not `ms`. These names are also **reserved** against `recordMetric()`.
  */
 const METRIC_UNIT: Record<string, string> = {
-    frame_render_time: "ms",
-    memory_usage: "MB",
-    LCP: "ms", FCP: "ms", INP: "ms", TTFB: "ms",
-    CLS: "score",
+    "perf.lcp": "ms", "perf.fcp": "ms", "perf.inp": "ms", "perf.ttfb": "ms",
+    "perf.cls": "score",
 };
+
+/**
+ * Catalogue *events* that keep metric semantics (#179): periodic samples, so they are not
+ * session activity, extend no breadcrumb trail and carry no trace keys (Tier 3).
+ */
+const SAMPLE_NAMES = new Set<string>(["frame.summary", "memory.usage"]);
 
 /**
  * §6.3's Tier 2 — annotation-only: `trace.id`, `rum.action.id` and `trace.root_type`, no
@@ -189,7 +176,7 @@ const METRIC_UNIT: Record<string, string> = {
  * all. `ui.interaction` is Tier 1: its keys are captured at the click's
  * mint and handed in as `data`, like the other three.
  */
-const TIER_2_NAMES = new Set<string>(["app.crash", "app.error", "custom_event"]);
+const TIER_2_NAMES = new Set<string>(["app.crash", "app.error", "custom.event"]);
 
 /**
  * §4.6's mint/emit split, for the one event that has one. A `ui.interaction` is emitted
@@ -306,11 +293,11 @@ export interface DeviceInfo {
         model?: string;
         manufacturer?: string;
         brand?: string;
-        android_sdk?: string;
+        android_sdk?: number;   // catalogue: int (#179)
         android_release?: string;
         hardware?: string;
         product?: string;
-        ios_system_name?: string;
+        system_name?: string;   // iOS only; catalogue device.system_name (#179)
         // §3.3 ✱ — native only. "Does this crash only on cheap devices?"
         cpu_abi?: string;
         low_ram?: boolean;
@@ -512,6 +499,8 @@ export class Telemetry {
     private appStartEmitted = false;
     /** `app.start.js_ready_ms` (§4.3, #171) — native only; the entry's reader, run at emit. */
     public jsReadyMs?: () => number | undefined;
+    /** `app.start.duration_ms` (#179) — the entry's reader; resolves `undefined` when unknown. */
+    public appStartMs?: () => Promise<number | undefined>;
     // Open manual spans (#164). Persisted with the session record.
     private readonly spans = new SpanRegistry();
     // Set while finalizeSession() emits its `abandoned` rows: they are bookkeeping, and
@@ -847,11 +836,20 @@ export class Telemetry {
     private async emitAppStart() {
         if (this.appStartEmitted) return;
         this.appStartEmitted = true;
-        const jsReady = this.jsReadyMs?.();
-        await this.log("app.start", {
-            ...this.trace.launchRootAttributes(),
-            ...(jsReady === undefined ? {} : { "app.start.js_ready_ms": jsReady }),
-        });
+        const emit = (ms?: number) => {
+            const jsReady = this.jsReadyMs?.();
+            return this.log("app.start", {
+                ...this.trace.launchRootAttributes(),
+                // Cold only by construction: RN's JS context survives backgrounding (§4.3).
+                "app.start.type": "cold",
+                ...(ms === undefined ? {} : { "app.start.duration_ms": Math.round(ms) }),
+                ...(jsReady === undefined ? {} : { "app.start.js_ready_ms": jsReady }),
+            });
+        };
+        // The end marker (first display) can land after init, and init must never wait for it.
+        const end = this.appStartMs?.();
+        if (!end) return emit();
+        end.then(emit, () => emit()).catch((err) => debug.warn("app.start failed:", err));
     }
 
     /**
@@ -1111,15 +1109,15 @@ export class Telemetry {
      * name is a no-op. With `only`, the close is a handle's, and a superseded handle cannot
      * close the span that replaced it.
      */
-    public async endSpan(name: unknown, outcome: TaskOutcome = "completed", attrs?: Record<string, unknown>, at: number = Date.now(), only?: OpenSpan) {
+    public async endSpan(name: unknown, outcome: TaskOutcome = "completed", attrs?: Record<string, unknown>, at: number = Date.now(), only?: OpenSpan, reason?: unknown) {
         const n = taskName(name);
         const span = n === undefined ? undefined : this.spans.take(n, only);
         if (!span) { debug.log(`endSpan: no open span named ${String(name)}`); return; }
         await span.ready;
-        await this.emitTask(span, outcome, spanAttributes(attrs), at);
+        await this.emitTask(span, outcome, spanAttributes(attrs), at, outcome === "failed" ? taskName(reason) : undefined);
     }
 
-    private async emitTask(span: OpenSpan, outcome: TaskOutcome, attrs: Record<string, unknown> | undefined, end: number) {
+    private async emitTask(span: OpenSpan, outcome: TaskOutcome, attrs: Record<string, unknown> | undefined, end: number, failureReason?: string) {
         if (!span.keys || !span.viewId || !span.sessionId || span.sessionStart === undefined) return;
         await this.log("task.complete", {
             ...span.attrs,
@@ -1127,6 +1125,7 @@ export class Telemetry {
             ...span.keys,
             "task.name": span.name,
             "task.outcome": outcome,
+            ...(failureReason === undefined ? {} : { "task.failure_reason": failureReason }),
             // On root *and* child — the flagged §6.3 exception: a declared end is not
             // derivable from children, so a root's width cannot be left to the server.
             "span.duration_ms": Math.max(0, end - span.start),
@@ -1334,7 +1333,15 @@ export class Telemetry {
         // `view` joins the session events here: it is emitted *by* a boundary, from inside
         // rotateSession() among others, so letting it re-enter the expiry check would recurse
         // forever on an already-expired session. It is bookkeeping, not user activity.
-        if (!name.startsWith('session.') && name !== 'view' && !this.finalizing) {
+        // `screen.load` (#179) is emitted from the same endView() call, so it is exempt too —
+        // without it an expired session rotated, ended its view, re-entered, and looped to OOM.
+        // Samples (`frame.summary`, `memory.usage`) are checked against the boundaries like a
+        // metric but never refresh activity: a periodic sampler must not keep a session alive.
+        const sample = SAMPLE_NAMES.has(name);
+        if (sample) {
+            const reason = this.expiryReason(Date.now());
+            if (reason) await this.rotateSession(reason);
+        } else if (!name.startsWith('session.') && name !== 'view' && name !== 'screen.load' && !this.finalizing) {
             const now = Date.now();
             const reason = this.expiryReason(now);
             if (reason) await this.rotateSession(reason);
@@ -1350,9 +1357,9 @@ export class Telemetry {
         // The boundary bookkeeping above still runs, so the rotation that re-rolls the
         // decision still happens on schedule.
         if (this.sampled) {
-            // v3 allowlist: unknown names ship as custom_event, original kept as event.name
+            // The allowlist: unknown names ship as custom.event, original kept as event.name
             const isAllowed = ALLOWED_NAMES.has(name);
-            const eventName = isAllowed ? name : 'custom_event';
+            const eventName = isAllowed ? name : 'custom.event';
 
             const attributes = await this.collectContext(data);
             if (!isAllowed) attributes['event.name'] = name;
@@ -1379,7 +1386,7 @@ export class Telemetry {
             }
             if (eventName === 'app.crash') {
                 crashed = true;
-            } else {
+            } else if (!sample) {
                 this.breadcrumbs.add({ name: eventName, timestamp: new Date().toISOString() });
             }
 
@@ -1589,7 +1596,7 @@ export class Telemetry {
      * don't extend the breadcrumb trail and don't count as session activity — a periodic sampler
      * (memory/frames) must not keep a session alive and defeat the 30-min idle rotation.
      */
-    async logMetric(metricName: string, value: number, data?: Record<string, any>, unitOverride?: string) {
+    async logMetric(metricName: string, value: number, data?: Record<string, any>, unitOverride?: string, hostName?: string) {
         if (!this.enabled) return;   // #172 — this is where the rAF loop's samples are discarded
         this.eventCount++;
         // A metric is a sample, not a user action: it must not refresh `lastActivity` and
@@ -1606,6 +1613,7 @@ export class Telemetry {
         // unit of the column it lands in. Omitted for a name we have no unit for.
         const unit = METRIC_UNIT[metricName] ?? unitOverride;
         if (unit) attributes['metric.unit'] = unit;
+        if (hostName !== undefined) attributes['metric.name'] = hostName;
 
         this.enqueue({
             type: 'metric',
@@ -1719,9 +1727,9 @@ export class Telemetry {
 
 
     /**
-     * The public metric path (#167). The SDK's own names are **reserved** — a consumer row in
-     * the vitals, frame or memory series would be indistinguishable from ours — and keep their
-     * own unit. A non-finite value is dropped, never shipped as a fabricated number. `unit`
+     * The public metric path (#167), sent as `custom.metric` with the host's name in
+     * `metric.name` (processor #41). The SDK's own names stay **reserved**, and no cap on distinct
+     * names. A non-finite value is dropped, never shipped as a fabricated number. `unit`
      * becomes `metric.unit`, stamped after `data` so an attribute cannot mislabel it.
      */
     recordMetric(name: string, value: number, data?: Record<string, any>, opts?: { unit?: string }) {
@@ -1729,7 +1737,8 @@ export class Telemetry {
         if (Object.prototype.hasOwnProperty.call(METRIC_UNIT, name)) { debug.warn(`recordMetric: ${name} is reserved by the SDK — dropped`); return; }
         if (typeof value !== "number" || !Number.isFinite(value)) { debug.warn(`recordMetric: ${name} value is not finite — dropped`); return; }
         const unit = typeof opts?.unit === "string" && opts.unit !== "" ? opts.unit : undefined;
-        return this.logMetric(name, value, data, unit);
+        // `custom.metric` (processor #41): the host's name rides `metric.name`, after `data`.
+        return this.logMetric("custom.metric", value, data, unit, name);
     }
 
     // ---------- Flush / Persistence ----------

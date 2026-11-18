@@ -144,7 +144,7 @@ for (const build of ["native", "web"] as const) {
 
     it("the initial view anchors at process start; a pre-init mark is buffered onto it", async () => {
       if (build === "native") {
-        (performance as any).rnStartupTiming = { startTime: T0 - 1200, executeJavaScriptBundleEntryPointEnd: T0 - 400 };
+        (performance as any).rnStartupTiming = { startTime: T0 - 1200, executeJavaScriptBundleEntryPointEnd: T0 - 400, endTime: T0 - 100 };
       }
       const { t, inst, sent } = await launch((tel) => tel.markScreenReady());
       await inst.enterView("Home", "route");     // names the initial view in place
@@ -160,6 +160,24 @@ for (const build of ["native", "web"] as const) {
       else expect(start).not.toHaveProperty("app.start.js_ready_ms");
     });
 
+    if (build === "web") {
+      it("app.start (web): duration_ms = loadEventEnd from navigation start, type cold (#179)", async () => {
+        const savedWindow = g.window;
+        g.window = { addEventListener: () => {} };
+        const entries = vi.spyOn(performance, "getEntriesByType").mockReturnValue([{ loadEventEnd: 950 }] as any);
+        try {
+          const { t, sent } = await launch();
+          await t.flush();
+          expect(sent.find((e) => e.eventName === "app.start")!.attributes).toMatchObject({
+            "app.start.duration_ms": 950, "app.start.type": "cold",
+          });
+        } finally {
+          entries.mockRestore();
+          g.window = savedWindow;
+        }
+      });
+    }
+
     if (build === "native") {
       it("no process-start marker: the initial view is not judged and js_ready_ms is omitted", async () => {
         (performance as any).rnStartupTiming = undefined;
@@ -169,6 +187,42 @@ for (const build of ["native", "web"] as const) {
         await t.flush();
         expect(viewNamed(sent, "Home")[0]).not.toHaveProperty("view.ready_outcome");
         expect(sent.find((e) => e.eventName === "app.start")!.attributes).not.toHaveProperty("app.start.js_ready_ms");
+      });
+
+      // #179 — the standard app.start (catalogue app_start.yaml): process start → first display.
+      it("app.start carries duration_ms = endTime − startTime and type cold", async () => {
+        (performance as any).rnStartupTiming = { startTime: T0 - 1200, executeJavaScriptBundleEntryPointEnd: T0 - 400, endTime: T0 - 100 };
+        const { t, sent } = await launch();
+        await t.flush();
+        expect(sent.find((e) => e.eventName === "app.start")!.attributes).toMatchObject({
+          "app.start.duration_ms": 1100, "app.start.type": "cold", "app.start.js_ready_ms": 800,
+        });
+      });
+
+      it("app.start waits for endTime when first display has not happened yet, then ships once", async () => {
+        const timing: any = { startTime: T0 - 1200, executeJavaScriptBundleEntryPointEnd: T0 - 400 };
+        (performance as any).rnStartupTiming = timing;
+        const { t, sent } = await launch();
+        await t.flush();
+        expect(sent.filter((e) => e.eventName === "app.start")).toHaveLength(0);
+        timing.endTime = T0 + 300;
+        await vi.advanceTimersByTimeAsync(200);
+        await settle();
+        await t.flush();
+        const starts = sent.filter((e) => e.eventName === "app.start");
+        expect(starts).toHaveLength(1);
+        expect(starts[0].attributes!["app.start.duration_ms"]).toBe(1500);
+      });
+
+      it("no endTime ever: app.start still ships after the cap, typed cold, without a duration", async () => {
+        (performance as any).rnStartupTiming = { startTime: T0 - 1200 };
+        const { t, sent } = await launch();
+        await vi.advanceTimersByTimeAsync(11_000);
+        await settle();
+        await t.flush();
+        const a = sent.find((e) => e.eventName === "app.start")!.attributes!;
+        expect(a["app.start.type"]).toBe("cold");
+        expect(a).not.toHaveProperty("app.start.duration_ms");
       });
     }
   });

@@ -25,8 +25,8 @@ function fakeTelemetry() {
 /** The emitter chains the view boundary onto the log promise; let the microtasks drain. */
 const settle = () => new Promise((r) => setTimeout(r, 0));
 
-describe("AppLifecycleEmitter (v3 app_lifecycle)", () => {
-  it("emits app_lifecycle with the direction on each foreground/background transition", async () => {
+describe("AppLifecycleEmitter (v3 app.lifecycle)", () => {
+  it("emits app.lifecycle with the direction on each foreground/background transition", async () => {
     const { telemetry, calls } = fakeTelemetry();
     const emitter = new AppLifecycleEmitter(telemetry);
 
@@ -34,9 +34,9 @@ describe("AppLifecycleEmitter (v3 app_lifecycle)", () => {
     emitter.onState(false);   // foreground → background
     emitter.onState(true);    // background → foreground
 
-    expect(calls.map((c) => c.name)).toEqual(["app_lifecycle", "app_lifecycle"]);
-    expect(calls[0].data["app_lifecycle.state"]).toBe("background");
-    expect(calls[1].data["app_lifecycle.state"]).toBe("foreground");
+    expect(calls.map((c) => c.name)).toEqual(["app.lifecycle", "app.lifecycle"]);
+    expect(calls[0].data["lifecycle.state"]).toBe("background");
+    expect(calls[1].data["lifecycle.state"]).toBe("foreground");
     await settle();
   });
 

@@ -93,10 +93,10 @@ describe("#93 native — beforeSend", () => {
       },
     });
 
-    await t.log("custom_event", { "navigation.to_screen": "Home" });
+    await t.log("custom.event", { "navigation.to_screen": "Home" });
     await t.flush();
 
-    const a = attrsOf(sent, "custom_event")[0];
+    const a = attrsOf(sent, "custom.event")[0];
     expect(a["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_android$/);
     expect(a["sdk.version"]).toBeDefined();
     expect(a["app.name"]).toBe("NativeApp");             // all app.* is Tier A
@@ -114,16 +114,16 @@ describe("#93 native — beforeSend", () => {
       },
     });
 
-    await t.log("custom_event");   // throws → failed
+    await t.log("custom.event");   // throws → failed
     mode = "null";
-    await t.log("custom_event");   // null → dropped
+    await t.log("custom.event");   // null → dropped
     mode = "pass";
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    expect(sent.map((e) => e.eventName)).toEqual(["custom_event"]);
-    const a = attrsOf(sent, "custom_event")[0];
-    expect(a["sdk.hook_failed"]).toBe(3);    // session.started + app.start + the first custom_event
+    expect(sent.map((e) => e.eventName)).toEqual(["custom.event"]);
+    const a = attrsOf(sent, "custom.event")[0];
+    expect(a["sdk.hook_failed"]).toBe(3);    // session.started + app.start + the first custom.event
     expect(a["sdk.hook_dropped"]).toBe(1);
   });
 });
@@ -133,7 +133,7 @@ describe("#93 native — sessionSampleRate over the async Store", () => {
     const send = vi.fn(async () => {});
     const { t } = await launch({ sessionSampleRate: 0, sender: { send } });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.log("app.crash", { "error.message": "boom" });
     await t.flush();
 
@@ -145,23 +145,23 @@ describe("#93 native — sessionSampleRate over the async Store", () => {
     const roll = vi.spyOn(Math, "random").mockReturnValue(0.9);   // sampled out at 0.5
 
     const first = await launch({ store, sessionSampleRate: 0.5 });
-    await first.t.log("custom_event");
+    await first.t.log("custom.event");
     await first.t.flush();
     expect(first.sent).toHaveLength(0);
 
     roll.mockReturnValue(0.1);   // a roll that would sample in — a resume must ignore it
     vi.setSystemTime(Date.now() + 10 * MIN);
     const second = await launch({ store, sessionSampleRate: 0.5 });
-    await second.t.log("custom_event");
+    await second.t.log("custom.event");
     await second.t.flush();
     expect(second.sent).toHaveLength(0);
 
     vi.setSystemTime(Date.now() + 45 * MIN);
     const third = await launch({ store, sessionSampleRate: 0.5 });
-    await third.t.log("custom_event");
+    await third.t.log("custom.event");
     await third.t.flush();
     // `app.start` is once per *process*, so each relaunch emits its own (§6.2).
-    expect(third.names()).toEqual(["session.started", "app.start", "custom_event"]);
+    expect(third.names()).toEqual(["session.started", "app.start", "custom.event"]);
     for (const e of third.sent) expect(e.attributes!["session.sample_rate"]).toBe(0.5);
   });
 });

@@ -9,8 +9,8 @@ const SAMPLE_INTERVAL_MS = 30000;
 const BYTES_PER_MB = 1024 * 1024;
 
 /**
- * §5.2 / #105 — `memory_usage`: RSS, **native only**, sampled every 30 s. The rationale for
- * every part of that sentence lives in CLAUDE.md's `memory_usage` section; this file is the
+ * §5.2 / #105 — `memory.usage`: RSS, **native only**, sampled every 30 s. The rationale for
+ * every part of that sentence lives in CLAUDE.md's `memory.usage` section; this file is the
  * mechanism.
  */
 export class TelemetryMemoryUsageNative {
@@ -19,7 +19,7 @@ export class TelemetryMemoryUsageNative {
     constructor(private telemetry: Telemetry) { }
 
     /**
-     * One sample: `value` = resident MB, with the device total alongside so headroom is
+     * One sample: `memory.usage_mb` = resident MB, with the device total alongside so headroom is
      * readable without a second join. An unusable read emits nothing — a fabricated 0 would
      * drag every percentile down and read as a memory *win*.
      *
@@ -40,7 +40,8 @@ export class TelemetryMemoryUsageNative {
             attrs["memory.total_mb"] = totalBytes / BYTES_PER_MB;
         }
 
-        await this.telemetry.logMetric("memory_usage", usedBytes / BYTES_PER_MB, attrs);
+        // `memory.usage` is a catalogue *event* (#179): the MB figure rides `memory.usage_mb`.
+        await this.telemetry.log("memory.usage", { ...attrs, "memory.usage_mb": usedBytes / BYTES_PER_MB });
     }
 
     /**
@@ -75,7 +76,7 @@ async function readBytes(read: () => Promise<number>): Promise<number | undefine
         const bytes = await read();
         return Number.isFinite(bytes) && bytes >= 0 ? bytes : undefined;
     } catch (err) {
-        debug.warn("memory_usage read failed:", err);
+        debug.warn("memory.usage read failed:", err);
         return undefined;
     }
 }

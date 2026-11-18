@@ -92,6 +92,8 @@ beforeEach(() => {
 
   doc._listeners = {} as Record<string, ((e: any) => void)[]>;
   doc.visibilityState = "visible";
+  // #179: app.start waits for the load marker; a loaded page releases it at once.
+  doc.readyState = "complete";
   doc.addEventListener = (type: string, fn: (e: any) => void) => {
     (doc._listeners[type] ??= []).push(fn);
   };
@@ -108,11 +110,12 @@ afterEach(() => {
 describe("#98 app.start — the launch root", () => {
   it("is emitted at launch, on the allowlist, as a root", async () => {
     const { t, sent } = launch();
-    await settle();
+    await (t as any).instancePromise;
+    await vi.advanceTimersByTimeAsync(0);   // #179: app.start lands a tick after init
     await t.flush();
 
     const a = one(sent, "app.start");
-    expect(a).toBeDefined();                          // not remapped to custom_event
+    expect(a).toBeDefined();                          // not remapped to custom.event
     expect(a["event.name"]).toBeUndefined();
     expect(a["trace.root_type"]).toBe("launch");
     expect(a["trace.id"]).toMatch(/^[0-9a-f]{32}$/);
@@ -126,10 +129,12 @@ describe("#98 app.start — the launch root", () => {
   it("ships once per process, even when the session resumes", async () => {
     const store = memoryStore();
     const first = launch(store);
+    await vi.advanceTimersByTimeAsync(0);   // #179: app.start lands a tick after init
     await first.t.flush();
 
     vi.setSystemTime(Date.now() + 5 * MIN);   // inside the idle window: a resume
     const second = launch(store);
+    await vi.advanceTimersByTimeAsync(0);
     await second.t.flush();
 
     expect(second.sent.some((e) => e.eventName === "session.started")).toBe(false);
@@ -232,11 +237,11 @@ describe("#98 the three tiers (§6.3)", () => {
     const { t, sent } = launch();
     await settle();
     await crash(t, { "error.message": "boom" });
-    await t.log("checkout_started", { cart: 42 });   // → custom_event
+    await t.log("checkout_started", { cart: 42 });   // → custom.event
     await t.flush();
 
     const start = one(sent, "app.start");
-    for (const name of ["app.crash", "custom_event"]) {
+    for (const name of ["app.crash", "custom.event"]) {
       const a = one(sent, name);
       expect(a["trace.id"]).toBe(start["trace.id"]);
       expect(a["rum.action.id"]).toBe(start["span.id"]);
@@ -267,16 +272,16 @@ describe("#98 the three tiers (§6.3)", () => {
     const inst = await (t as any).instancePromise;
     await inst.logMetric("frame_render_time", 16);
     await inst.logMetric("memory_usage", 42);
-    await t.log("app_lifecycle", { "app_lifecycle.state": "background" });
-    await t.log("network_change", { "network.type": "cellular" });
+    await t.log("app.lifecycle", { "lifecycle.state": "background" });
+    await t.log("network.change", { "network.type": "cellular" });
     await t.identify({ name: "Ada" });
     vi.setSystemTime(Date.now() + 31 * MIN);
-    await t.log("custom_event");                    // forces the idle rotation
+    await t.log("custom.event");                    // forces the idle rotation
     await t.flush();
 
     const tier3 = sent.filter((e) =>
       e.type === "metric"
-      || ["app_lifecycle", "network_change", "session.started", "session.finalized",
+      || ["app.lifecycle", "network.change", "session.started", "session.finalized",
           "user.profile.update"].includes(e.eventName ?? ""));
     expect(tier3.length).toBeGreaterThanOrEqual(6);
     for (const e of tier3) {
@@ -381,9 +386,9 @@ describe("#98 §6.6's invariants, asserted directly", () => {
   it("trace.id never spans a session.id", async () => {
     const { t, sent } = launch();
     await settle();
-    await t.log("custom_event");
+    await t.log("custom.event");
     vi.setSystemTime(Date.now() + 31 * MIN);
-    await t.log("custom_event");           // the idle rotation
+    await t.log("custom.event");           // the idle rotation
     await request();
     await t.flush();
 

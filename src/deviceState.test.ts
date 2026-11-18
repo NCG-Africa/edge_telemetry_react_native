@@ -69,7 +69,7 @@ for (const build of ["native", "web"] as const) {
 
     it("accessibility rides session.started only", async () => {
       const { t, sent } = await launch();
-      await t.log("custom_event");
+      await t.log("custom.event");
       await t.flush();
       const started = row(sent, "session.started");
       if (build === "native") {
@@ -79,21 +79,21 @@ for (const build of ["native", "web"] as const) {
         expect(started).not.toHaveProperty("device.screen_reader");
         expect(started).not.toHaveProperty("device.font_scale");
       }
-      expect(row(sent, "custom_event")).not.toHaveProperty("device.reduce_motion");
+      expect(row(sent, "custom.event")).not.toHaveProperty("device.reduce_motion");
     });
 
     it("battery rides failure rows only, native only, from the cache", async () => {
       const { t, inst, sent } = await launch();
       await t.captureError(new Error("x"));
       await inst.log("app.crash", { "error.message": "y" });
-      await t.log("custom_event");
+      await t.log("custom.event");
       await t.flush();
       for (const name of ["app.error", "app.crash"]) {
         const r = row(sent, name);
         if (build === "native") expect(r).toMatchObject({ "device.battery_level": 42, "device.battery_charging": true, "device.power_save": false });
         else for (const k of BATTERY) expect(r).not.toHaveProperty(k);
       }
-      for (const k of BATTERY) expect(row(sent, "custom_event")).not.toHaveProperty(k);
+      for (const k of BATTERY) expect(row(sent, "custom.event")).not.toHaveProperty(k);
     });
 
     if (build === "native") {

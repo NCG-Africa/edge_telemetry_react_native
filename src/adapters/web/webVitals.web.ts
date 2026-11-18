@@ -100,6 +100,6 @@ export class WebVitalsTracker {
         // `metric.unit` is stamped by core's METRIC_UNIT map — `ms` for four of them and
         // **`score` for CLS**, without which a 0.08 renders as a flat zero line beside an
         // LCP of 4000 in the same `value` column.
-        return this.telemetry.logMetric(m.name, m.value, vitalAttributes(m));
+        return this.telemetry.logMetric(`perf.${m.name.toLowerCase()}`, m.value, vitalAttributes(m));
     }
 }

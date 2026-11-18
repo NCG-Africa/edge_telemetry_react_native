@@ -89,8 +89,10 @@ export class TelemetryWeb extends TelemetryBase {
             const { seedRuntimeReady } = await import("./adapters/seedRuntimeReady");
             seedRuntimeReady(telemetry.views, runtimeReadyAt, "Web");
             // #171: the initial view's ready anchor is true navigation start. Web never ships
-            // `app.start.js_ready_ms` — its marker is `load`, which lands after `app.start`.
+            // `app.start.js_ready_ms` — it has no bundle-evaluated marker.
             telemetry.views.anchorInitial(typeof performance !== "undefined" ? performance.timeOrigin : undefined);
+            // #179: app.start.duration_ms — navigation start → the document's load marker.
+            telemetry.appStartMs = () => runtimeReadyAt().then((at) => at === undefined ? undefined : at - performance.timeOrigin);
 
             await telemetry.resumeOrStartSession()
                 .catch(err => debug.warn("Web session resume failed:", err));

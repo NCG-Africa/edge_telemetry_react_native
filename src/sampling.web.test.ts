@@ -80,7 +80,7 @@ describe("#93 beforeSend — constructor-only, at enqueue, over events and metri
       },
     });
 
-    await t.log("custom_event", { "vital.target": "#pay > input" });
+    await t.log("custom.event", { "vital.target": "#pay > input" });
     await logMetric(t, "memory_usage", 42, { "vital.target": "#pay > input" });
     await t.flush();
 
@@ -119,10 +119,10 @@ describe("#93 beforeSend — the tiers hold on the wire", () => {
       },
     });
 
-    await t.log("custom_event", { "navigation.to_screen": "Home" });
+    await t.log("custom.event", { "navigation.to_screen": "Home" });
     await t.flush();
 
-    const a = attrsOf(sent, "custom_event")[0];
+    const a = attrsOf(sent, "custom.event")[0];
     expect(a["session.id"]).toMatch(/^session_/);
     expect(a["session.start_time"]).toBeDefined();
     expect(a["sdk.platform"]).toBe("react-native-web");
@@ -136,10 +136,10 @@ describe("#93 beforeSend — the tiers hold on the wire", () => {
       beforeSend: (e) => { e.attributes!["device.id"] = "sha256:deadbeef"; return e; },
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    expect(attrsOf(sent, "custom_event")[0]["device.id"]).toBe("sha256:deadbeef");
+    expect(attrsOf(sent, "custom.event")[0]["device.id"]).toBe("sha256:deadbeef");
   });
 });
 
@@ -148,14 +148,14 @@ describe("#93 beforeSend — dropped is not failed", () => {
     let drop = true;
     const { t, sent } = launch({ beforeSend: (e) => (drop ? null : e) });
 
-    await t.log("custom_event");     // dropped, along with session.started and app.start
+    await t.log("custom.event");     // dropped, along with session.started and app.start
     drop = false;
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    expect(sent.map((e) => e.eventName)).toEqual(["custom_event"]);
-    const a = attrsOf(sent, "custom_event")[0];
-    expect(a["sdk.hook_dropped"]).toBe(3);   // session.started + app.start + custom_event
+    expect(sent.map((e) => e.eventName)).toEqual(["custom.event"]);
+    const a = attrsOf(sent, "custom.event")[0];
+    expect(a["sdk.hook_dropped"]).toBe(3);   // session.started + app.start + custom.event
     expect(a["sdk.hook_failed"]).toBe(0);
   });
 
@@ -168,15 +168,15 @@ describe("#93 beforeSend — dropped is not failed", () => {
       },
     });
 
-    await t.log("custom_event", { "user.email": "ada@x.io" });
+    await t.log("custom.event", { "user.email": "ada@x.io" });
     boom = false;
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     // The original is never sent — it carries the exact field the hook existed to remove.
-    expect(sent.map((e) => e.eventName)).toEqual(["custom_event"]);
-    const a = attrsOf(sent, "custom_event")[0];
-    expect(a["sdk.hook_failed"]).toBe(3);   // session.started + app.start + custom_event
+    expect(sent.map((e) => e.eventName)).toEqual(["custom.event"]);
+    const a = attrsOf(sent, "custom.event")[0];
+    expect(a["sdk.hook_failed"]).toBe(3);   // session.started + app.start + custom.event
     expect(a["sdk.hook_dropped"]).toBe(0);
   });
 });
@@ -186,7 +186,7 @@ describe("#93 sessionSampleRate — sticky, and silent when it says no", () => {
     const send = vi.fn(async () => {});
     const { t } = launch({ sessionSampleRate: 0, sender: { send } });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.log("app.crash", { "error.message": "boom" });
     await logMetric(t, "memory_usage", 42);
     await t.flush();
@@ -198,7 +198,7 @@ describe("#93 sessionSampleRate — sticky, and silent when it says no", () => {
     vi.spyOn(Math, "random").mockReturnValue(0.1);   // 0.1 < 0.5 — sampled in
     const { t, sent } = launch({ sessionSampleRate: 0.5 });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     expect(sent.length).toBeGreaterThan(0);
@@ -208,11 +208,11 @@ describe("#93 sessionSampleRate — sticky, and silent when it says no", () => {
   it("an out-of-range rate falls back to 1 rather than muting the deployment", async () => {
     const { t, sent } = launch({ sessionSampleRate: Number.NaN });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     expect(sent.length).toBeGreaterThan(0);
-    expect(attrsOf(sent, "custom_event")[0]["session.sample_rate"]).toBe(1);
+    expect(attrsOf(sent, "custom.event")[0]["session.sample_rate"]).toBe(1);
   });
 
   it("ignores a persisted rate it cannot trust rather than stamping it as a divisor", async () => {
@@ -228,10 +228,10 @@ describe("#93 sessionSampleRate — sticky, and silent when it says no", () => {
     });
 
     const { t, sent } = launch({ store, sessionSampleRate: 1 });
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    expect(attrsOf(sent, "custom_event")[0]["session.sample_rate"]).toBe(1);
+    expect(attrsOf(sent, "custom.event")[0]["session.sample_rate"]).toBe(1);
   });
 
   it("the decision survives process death and is re-rolled only at rotation", async () => {
@@ -239,7 +239,7 @@ describe("#93 sessionSampleRate — sticky, and silent when it says no", () => {
     const roll = vi.spyOn(Math, "random").mockReturnValue(0.9);   // 0.9 >= 0.5 — sampled out
 
     const first = launch({ store, sessionSampleRate: 0.5 });
-    await first.t.log("custom_event");
+    await first.t.log("custom.event");
     await first.t.flush();
     expect(first.sent).toHaveLength(0);
 
@@ -248,17 +248,17 @@ describe("#93 sessionSampleRate — sticky, and silent when it says no", () => {
     roll.mockReturnValue(0.1);
     vi.setSystemTime(Date.now() + 10 * MIN);
     const second = launch({ store, sessionSampleRate: 0.5 });
-    await second.t.log("custom_event");
+    await second.t.log("custom.event");
     await second.t.flush();
     expect(second.sent).toHaveLength(0);
 
     // Past the idle boundary the session rotates, and the fresh one re-rolls.
     vi.setSystemTime(Date.now() + 45 * MIN);
     const third = launch({ store, sessionSampleRate: 0.5 });
-    await third.t.log("custom_event");
+    await third.t.log("custom.event");
     await third.t.flush();
     // `app.start` is once per *process*, so each relaunch emits its own (§6.2).
-    expect(third.names()).toEqual(["session.started", "app.start", "custom_event"]);
+    expect(third.names()).toEqual(["session.started", "app.start", "custom.event"]);
     // session.finalized belonged to the sampled-out session and correctly never shipped.
     expect(third.names()).not.toContain("session.finalized");
   });

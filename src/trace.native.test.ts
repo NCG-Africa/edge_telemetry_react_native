@@ -196,16 +196,16 @@ describe("#98 native — the three tiers", () => {
   it("Tier 2 annotates without a span; Tier 3 carries no trace key at all", async () => {
     const { t, sent } = await launch();
     await crash(t, { "error.message": "boom" });
-    await t.log("checkout_started");                 // → custom_event
+    await t.log("checkout_started");                 // → custom.event
     const inst = await (t as any).instancePromise;
     await inst.logMetric("frame_render_time", 16);
-    await t.log("app_lifecycle", { "app_lifecycle.state": "background" });
-    await t.log("network_change", { "network.type": "cellular" });
+    await t.log("app.lifecycle", { "lifecycle.state": "background" });
+    await t.log("network.change", { "network.type": "cellular" });
     await t.identify({ name: "Ada" });
     await t.flush();
 
     const start = one(sent, "app.start");
-    for (const name of ["app.crash", "custom_event"]) {
+    for (const name of ["app.crash", "custom.event"]) {
       const a = one(sent, name);
       expect(a["trace.id"]).toBe(start["trace.id"]);
       expect(a["rum.action.id"]).toBe(start["span.id"]);
@@ -217,7 +217,7 @@ describe("#98 native — the three tiers", () => {
 
     const tier3 = sent.filter((e) =>
       e.type === "metric"
-      || ["app_lifecycle", "network_change", "session.started",
+      || ["app.lifecycle", "network.change", "session.started",
           "user.profile.update"].includes(e.eventName ?? ""));
     expect(tier3.length).toBeGreaterThanOrEqual(5);
     for (const e of tier3) {
@@ -249,9 +249,9 @@ describe("#98 native — the carrier's boundaries", () => {
 
   it("trace.id never spans a session.id (§6.6, invariant 2)", async () => {
     const { t, sent } = await launch();
-    await t.log("custom_event");
+    await t.log("custom.event");
     vi.setSystemTime(Date.now() + 31 * MIN);
-    await t.log("custom_event");           // the idle rotation
+    await t.log("custom.event");           // the idle rotation
     await request();
     await t.flush();
 

@@ -30,12 +30,12 @@ describe("createTelemetry (web) — public API → wire", () => {
       flushIntervalMs: 0,
     });
 
-    await t.log("custom_event", { "navigation.to_screen": "Home" });
+    await t.log("custom.event", { "navigation.to_screen": "Home" });
     await t.flush();
 
     // session.started rides on init (#29); assert the navigation event is contract-valid
     expect(sent.some((e) => e.eventName === "session.started")).toBe(true);
-    const e = sent.find((ev) => ev.eventName === "custom_event")!;
+    const e = sent.find((ev) => ev.eventName === "custom.event")!;
     expect(e).toBeDefined();
     expect(e.type).toBe("event");
     expect(typeof e.timestamp).toBe("string");
@@ -63,7 +63,7 @@ describe("createTelemetry (web) — public API → wire", () => {
 
     await t.getDeviceInfo();
     await t.getNetworkInfo();
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     const names = sent.map((e) => e.eventName);
@@ -107,9 +107,9 @@ describe("createTelemetry (web) — Context keys are snake_case on the wire (#88
       flushIntervalMs: 0,
       captureConsole: false,
     });
-    await t.log("custom_event", { "navigation.to_screen": "Home" });
+    await t.log("custom.event", { "navigation.to_screen": "Home" });
     await t.flush();
-    return sent.find((e) => e.eventName === "custom_event")!.attributes!;
+    return sent.find((e) => e.eventName === "custom.event")!.attributes!;
   }
 
   it("ships all seven respelled keys", async () => {
@@ -123,7 +123,7 @@ describe("createTelemetry (web) — Context keys are snake_case on the wire (#88
     // #108 — absent, not present-with-undefined: a key the SDK has nothing for is omitted
     expect(Object.keys(a)).not.toContain("device.android_sdk");
     expect(Object.keys(a)).not.toContain("device.android_release");
-    expect(Object.keys(a)).not.toContain("device.ios_system_name");
+    expect(Object.keys(a)).not.toContain("device.system_name");
     expect(a["network.is_connected"]).toBe(true);
   });
 
@@ -147,7 +147,7 @@ describe("createTelemetry (web) — Context keys are snake_case on the wire (#88
 // through the public API and the in-memory Store fake; asserted at the injected Sender.
 describe("createTelemetry (web) — identity (#91)", () => {
   async function emit(t: ReturnType<typeof createTelemetry>) {
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
   }
 
@@ -266,11 +266,11 @@ describe("createTelemetry (web) — identity (#91)", () => {
 });
 
 // §4.0/§10.2 (#109) — the four retirements. They are unreachable, not merely unproduced:
-// a consumer calling `log("page_load")` gets `custom_event` like any other unknown name.
+// a consumer calling `log("page_load")` gets `custom.event` like any other unknown name.
 describe("createTelemetry (web) — the retired allowlist names (#109)", () => {
   const RETIRED = ["user.interaction", "page_load", "resource_timing", "long_task"];
 
-  it("rewrites every retired name to custom_event, keeping the original as event.name", async () => {
+  it("rewrites every retired name to custom.event, keeping the original as event.name", async () => {
     silenceConsole();
     const sent: TelemetryEvent[] = [];
     const t = createTelemetry({
@@ -287,7 +287,7 @@ describe("createTelemetry (web) — the retired allowlist names (#109)", () => {
 
     for (const name of RETIRED) {
       expect(sent.some((e) => e.eventName === name)).toBe(false);
-      expect(sent.some((e) => e.eventName === "custom_event" && e.attributes?.["event.name"] === name)).toBe(true);
+      expect(sent.some((e) => e.eventName === "custom.event" && e.attributes?.["event.name"] === name)).toBe(true);
     }
   });
 });

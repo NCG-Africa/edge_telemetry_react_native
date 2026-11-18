@@ -100,10 +100,10 @@ export class TelemetryNative extends TelemetryBase {
             // The module is awaited so the seed is armed before `instancePromise` resolves,
             // but never rethrown into it: a failed chunk load must not brick every public
             // method for the life of the process. A missing reader just releases the gate.
-            const { runtimeReadyAt, processStartAt } = await import("./adapters/native/runtimeReady.native")
+            const { runtimeReadyAt, processStartAt, startupDurationMs } = await import("./adapters/native/runtimeReady.native")
                 .catch((err: unknown) => {
                     debug.warn("Native runtime-ready module unavailable:", err);
-                    return { runtimeReadyAt: async () => undefined, processStartAt: () => undefined };
+                    return { runtimeReadyAt: async () => undefined, processStartAt: () => undefined, startupDurationMs: undefined };
                 });
             const { seedRuntimeReady } = await import("./adapters/seedRuntimeReady");
             seedRuntimeReady(telemetry.views, runtimeReadyAt, "Native");
@@ -120,6 +120,7 @@ export class TelemetryNative extends TelemetryBase {
                     ? end - processStart : undefined;
             };
 
+            telemetry.appStartMs = startupDurationMs;   // #179: process start → first display
             await telemetry.resumeOrStartSession()
                 .catch(err => debug.warn("Native session resume failed:", err));
 

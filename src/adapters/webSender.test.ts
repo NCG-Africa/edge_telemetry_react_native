@@ -138,7 +138,7 @@ describe("webSender — a rejected replay is dropped, not re-persisted (#162, §
     const store = memoryStore();
     vi.stubGlobal("fetch", vi.fn(async () => { throw new Error("down"); }));
     const sender = webSender("https://x/telemetry", "edge_k", store, 1);
-    await sender.onFailure!([event("custom_event")]);
+    await sender.onFailure!([event("custom.event")]);
     expect(decodeFailed(store.get(FAILED_EVENTS_KEY))).toHaveLength(1);
 
     const fetch401 = vi.fn(async () => ({ ok: false, status: 401, headers: { get: () => null } }) as any);

@@ -65,7 +65,7 @@ const NATIVE_PRESENT = [
 
 const NATIVE_OMITTED = [
   "user.id", "app.build_id", "device.id_ephemeral", "sdk.drop_reason",
-  "device.ios_system_name",   // off-iOS
+  "device.system_name",   // off-iOS
 ];
 
 async function build(opts: Record<string, any> = {}) {
@@ -90,39 +90,39 @@ describe("#108 the Context block — native", () => {
 
   it("carries exactly §3.3's native key set, and nothing else", async () => {
     const { t, attrs } = await build();
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    const keys = Object.keys(attrs("custom_event"));
+    const keys = Object.keys(attrs("custom.event"));
     for (const k of NATIVE_PRESENT) expect(keys).toContain(k);
     for (const k of NATIVE_OMITTED) expect(keys).not.toContain(k);
     expect(keys.filter((k) => !NATIVE_PRESENT.includes(k)).sort())
-      .toEqual(["rum.action.id", "trace.id", "trace.root_type"]);
+      .toEqual(["event.name", "rum.action.id", "trace.id", "trace.root_type"]);   // event.name: custom.event (#179)
     // 34 present + 5 omitted = §3.3's 39, and the web mirror asserts the other split.
     expect(NATIVE_PRESENT.length + NATIVE_OMITTED.length).toBe(39);
   });
 
   it("ships sdk.platform as react-native-{Platform.OS} on both native OSes", async () => {
     const android = await build();
-    await android.t.log("custom_event");
+    await android.t.log("custom.event");
     await android.t.flush();
-    expect(android.attrs("custom_event")["sdk.platform"]).toBe("react-native-android");
+    expect(android.attrs("custom.event")["sdk.platform"]).toBe("react-native-android");
 
     platform.OS = "ios";
     const ios = await build();
-    await ios.t.log("custom_event");
+    await ios.t.log("custom.event");
     await ios.t.flush();
-    expect(ios.attrs("custom_event")["sdk.platform"]).toBe("react-native-ios");
+    expect(ios.attrs("custom.event")["sdk.platform"]).toBe("react-native-ios");
     // and the iOS key appears exactly where the Android ones drop out
-    expect(Object.keys(ios.attrs("custom_event"))).toContain("device.ios_system_name");
-    expect(Object.keys(ios.attrs("custom_event"))).not.toContain("device.android_sdk");
+    expect(Object.keys(ios.attrs("custom.event"))).toContain("device.system_name");
+    expect(Object.keys(ios.attrs("custom.event"))).not.toContain("device.android_sdk");
   });
 
   it("populates the capability and viewport keys (§3.3 ✱)", async () => {
     const { t, attrs } = await build();
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    const a = attrs("custom_event");
+    const a = attrs("custom.event");
     expect(a["device.cpu_abi"]).toBe("arm64-v8a");
     expect(a["device.low_ram"]).toBe(false);
     expect(a["device.screen_density"]).toBe(3);
@@ -134,7 +134,7 @@ describe("#108 the Context block — native", () => {
   it("ships none of §3.4's deleted keys", async () => {
     const { t, attrs } = await build();
     await t.identify({ userId: "u1", name: "Ada", email: "ada@x.io" });
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     for (const k of [
@@ -142,21 +142,21 @@ describe("#108 the Context block — native", () => {
       "user.fullName", "user.firstName", "user.lastName",
       "user.avatar", "user.createdAt", "user.updatedAt",
       "user.name", "user.email", "user.phone",
-    ]) expect(Object.keys(attrs("custom_event"))).not.toContain(k);
+    ]) expect(Object.keys(attrs("custom.event"))).not.toContain(k);
 
-    expect(attrs("custom_event")["user.id"]).toBe("u1");
+    expect(attrs("custom.event")["user.id"]).toBe("u1");
   });
 
   it("lets caller data override app./device./network.* but never an identity key", async () => {
     const { t, attrs } = await build();
-    await t.log("custom_event", {
+    await t.log("custom.event", {
       "device.model": "spoof", "network.type": "spoof", "app.name": "spoof",
       "session.id": "forged", "view.id": "forged",
       "sdk.platform": "forged", "device.id": "forged",
     });
     await t.flush();
 
-    const a = attrs("custom_event");
+    const a = attrs("custom.event");
     expect(a["device.model"]).toBe("spoof");
     expect(a["network.type"]).toBe("spoof");
     expect(a["app.name"]).toBe("spoof");
@@ -168,7 +168,7 @@ describe("#108 the Context block — native", () => {
 
   it("carries a non-null view.id on every row — events and metrics alike", async () => {
     const { t, sent } = await build();
-    await t.log("custom_event");
+    await t.log("custom.event");
     const inst = await (t as any).instancePromise;
     await inst.logMetric("frame_render_time", 12);
     await t.flush();
@@ -182,10 +182,10 @@ describe("#108 the Context block — native", () => {
 
   it("suffixes session.id with the OS on native too (§3.3 / §12's item 13)", async () => {
     const { t, attrs } = await build();
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    expect(attrs("custom_event")["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_android$/);
-    expect(attrs("custom_event")["device.id"]).toMatch(/^device_\d+_[0-9a-f]{16}_android$/);
+    expect(attrs("custom.event")["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_android$/);
+    expect(attrs("custom.event")["device.id"]).toMatch(/^device_\d+_[0-9a-f]{16}_android$/);
   });
 });
 
@@ -249,7 +249,7 @@ describe("#108 the attribution freeze (§3.1) — native", () => {
 
     // Four hours later — §4.2's maximum-length cap — the response lands.
     advance(4 * 60 * 60 * 1000 + 1000);
-    await t.log("custom_event");      // trips the lazy rotation check
+    await t.log("custom.event");      // trips the lazy rotation check
     expect(inst.getSessionId()).not.toBe(before);
 
     settle();
@@ -320,7 +320,7 @@ describe("#108 the attribution freeze (§3.1) — native", () => {
     await tick();
     await t.flush();
 
-    // The block rides *every* row, not just a custom_event: an http.request must carry the
+    // The block rides *every* row, not just a custom.event: an http.request must carry the
     // same 39-key shape, with its own http.* / span keys on top and nothing missing under.
     const keys = Object.keys(sent.find((e) => e.eventName === "http.request")!.attributes!);
     for (const k of NATIVE_PRESENT) expect(keys).toContain(k);

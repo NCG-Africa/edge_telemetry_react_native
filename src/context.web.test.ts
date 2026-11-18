@@ -50,7 +50,7 @@ const WEB_OMITTED = [
   "device.id_ephemeral",                           // the Store worked (§3.2)
   "sdk.drop_reason",                               // nothing dropped (§3.7)
   "device.android_sdk", "device.android_release", "device.hardware", "device.product",
-  "device.ios_system_name",                        // off-native
+  "device.system_name",                        // off-native
   "device.cpu_abi", "device.low_ram",              // §3.3's `N`
 ];
 
@@ -75,31 +75,31 @@ describe("#108 the Context block — web", () => {
 
   it("carries exactly §3.3's web key set, and nothing else", async () => {
     const { t, attrs } = build();
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    const keys = Object.keys(attrs("custom_event"));
+    const keys = Object.keys(attrs("custom.event"));
     for (const k of WEB_PRESENT) expect(keys).toContain(k);
     for (const k of WEB_OMITTED) expect(keys).not.toContain(k);
     // Nothing beyond the contract's set except §6.3's Tier 2 annotation, which a
-    // `custom_event` carries when a root is live. No stray key, no leftover camelCase.
+    // `custom.event` carries when a root is live. No stray key, no leftover camelCase.
     expect(keys.filter((k) => !WEB_PRESENT.includes(k)).sort())
-      .toEqual(["rum.action.id", "trace.id", "trace.root_type"]);
+      .toEqual(["event.name", "rum.action.id", "trace.id", "trace.root_type"]);   // event.name: custom.event (#179)
     expect(WEB_PRESENT.length + WEB_OMITTED.length).toBe(39);
   });
 
   it("ships sdk.platform as react-native-web (§3.3 / §12's item 10)", async () => {
     const { t, attrs } = build();
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    expect(attrs("custom_event")["sdk.platform"]).toBe("react-native-web");
+    expect(attrs("custom.event")["sdk.platform"]).toBe("react-native-web");
   });
 
   it("populates the four viewport keys from the live window (§3.3 ✱)", async () => {
     const { t, attrs } = build();
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    const a = attrs("custom_event");
+    const a = attrs("custom.event");
     expect(a["device.screen_density"]).toBe(2);
     expect(a["device.screen_width_px"]).toBe(1600);
     expect(a["device.screen_height_px"]).toBe(1200);
@@ -109,7 +109,7 @@ describe("#108 the Context block — web", () => {
   it("ships none of §3.4's deleted keys — the fingerprint, the phone's name, the six user fields", async () => {
     const { t, attrs } = build();
     await t.identify({ userId: "u1", name: "Ada", email: "ada@x.io", phone: "+254700000000" });
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     const dead = [
@@ -119,15 +119,15 @@ describe("#108 the Context block — web", () => {
       // moved to user.profile.update in #107, and they must not come back here
       "user.name", "user.email", "user.phone",
     ];
-    for (const k of dead) expect(Object.keys(attrs("custom_event"))).not.toContain(k);
+    for (const k of dead) expect(Object.keys(attrs("custom.event"))).not.toContain(k);
     // the join key stays, and the profile event still carries the payload
-    expect(attrs("custom_event")["user.id"]).toBe("u1");
+    expect(attrs("custom.event")["user.id"]).toBe("u1");
     expect(attrs("user.profile.update")["user.email"]).toBe("ada@x.io");
   });
 
   it("lets caller data override app./device./network.* but never an identity key", async () => {
     const { t, attrs } = build();
-    await t.log("custom_event", {
+    await t.log("custom.event", {
       "device.model": "spoof",
       "network.type": "spoof",
       "app.name": "spoof",
@@ -138,7 +138,7 @@ describe("#108 the Context block — web", () => {
     });
     await t.flush();
 
-    const a = attrs("custom_event");
+    const a = attrs("custom.event");
     expect(a["device.model"]).toBe("spoof");
     expect(a["network.type"]).toBe("spoof");
     expect(a["app.name"]).toBe("spoof");
@@ -150,7 +150,7 @@ describe("#108 the Context block — web", () => {
 
   it("carries a non-null view.id on every row — events and metrics alike", async () => {
     const { t, sent } = build();
-    await t.log("custom_event");
+    await t.log("custom.event");
     const inst = await (t as any).instancePromise;
     inst.logMetric("frame_render_time", 12);
     await t.flush();

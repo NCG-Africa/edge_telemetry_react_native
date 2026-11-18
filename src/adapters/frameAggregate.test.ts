@@ -1,25 +1,32 @@
 import { describe, it, expect } from "vitest";
 import { aggregateFrames } from "./frameAggregate";
 
-describe("aggregateFrames", () => {
-    it("computes max, p95 and dropped_count for a 60fps window", () => {
-        // 16ms budget → drop threshold 33.3ms. Two frames (40, 60) exceed it.
+// `frame.summary` (#179, catalogue frames_memory.yaml): one frame window, classified SDK-side.
+describe("aggregateFrames — the frame.summary window", () => {
+    it("counts total, slow and frozen frames and carries max/p95 for a 60 Hz window", () => {
+        // 16ms budget → slow threshold 33.3ms. Two frames (40, 60) exceed it; none reach 700.
         const deltas = [16, 16, 16, 16, 16, 16, 16, 16, 40, 60];
-        const { value, attributes } = aggregateFrames(deltas, 10000, "requestAnimationFrame");
+        const a = aggregateFrames(deltas, 10000, "requestAnimationFrame");
 
-        expect(attributes["frame.max_ms"]).toBe(60);
-        expect(attributes["frame.dropped_count"]).toBe(2);
-        expect(attributes["frame.target_fps"]).toBe(60);
-        expect(attributes["frame.window_duration_ms"]).toBe(10000);
-        expect(attributes["frame.source"]).toBe("requestAnimationFrame");
+        expect(a["frame.total_frames"]).toBe(10);
+        expect(a["frame.slow_frames"]).toBe(2);
+        expect(a["frame.frozen_frames"]).toBe(0);
+        expect(a["frame.max_total_duration_ms"]).toBe(60);
+        expect(a["display.refresh_rate"]).toBe(60);
+        expect(a["frame.window_duration_ms"]).toBe(10000);
+        expect(a["frame.source"]).toBe("requestAnimationFrame");
         // nearest-rank p95 of 10 samples = ceil(0.95*10)-1 = index 9 (largest) = 60
-        expect(attributes["frame.p95_ms"]).toBe(60);
-        expect(value).toBe(attributes["frame.p95_ms"]);
+        expect(a["frame.p95_ms"]).toBe(60);
     });
 
-    it("reports zero drops when every frame is within budget", () => {
-        const { attributes } = aggregateFrames([10, 12, 14, 16], 500, "raf");
-        expect(attributes["frame.dropped_count"]).toBe(0);
+    it("a frame of 700 ms or more is frozen, and slow too", () => {
+        const a = aggregateFrames([16, 16, 700, 900], 2000, "raf");
+        expect(a["frame.frozen_frames"]).toBe(2);
+        expect(a["frame.slow_frames"]).toBe(2);
+    });
+
+    it("reports zero slow frames when every frame is within budget", () => {
+        expect(aggregateFrames([10, 12, 14, 16], 500, "raf")["frame.slow_frames"]).toBe(0);
     });
 
     // §5.1 — the refresh rate is measured from the delta floor, not hardcoded 60.
@@ -27,37 +34,39 @@ describe("aggregateFrames", () => {
         ["60 Hz", 1000 / 60, 60],
         ["90 Hz", 1000 / 90, 90],
         ["120 Hz", 1000 / 120, 120],
-    ])("measures frame.target_fps from a %s stream", (_label, interval, expected) => {
+    ])("measures display.refresh_rate from a %s stream", (_label, interval, expected) => {
         const deltas = Array.from({ length: 40 }, (_, i) => interval * (1 + (i % 3) * 0.05));
-        expect(aggregateFrames(deltas, 1000, "raf").attributes["frame.target_fps"]).toBe(expected);
+        expect(aggregateFrames(deltas, 1000, "raf")["display.refresh_rate"]).toBe(expected);
     });
 
-    it("budgets dropped frames against the measured rate, not 60", () => {
-        // A 120 Hz stream: budget 8.3ms, threshold 16.6ms. A 20ms frame is a drop here and
+    it("budgets slow frames against the measured rate, not 60", () => {
+        // A 120 Hz stream: budget 8.3ms, threshold 16.6ms. A 20ms frame is slow here and
         // would not have been under the old hardcoded 60 (threshold 33ms).
-        const deltas = [...Array(20).fill(1000 / 120), 20];
-        const { attributes } = aggregateFrames(deltas, 1000, "raf");
-        expect(attributes["frame.target_fps"]).toBe(120);
-        expect(attributes["frame.dropped_count"]).toBe(1);
+        const a = aggregateFrames([...Array(20).fill(1000 / 120), 20], 1000, "raf");
+        expect(a["display.refresh_rate"]).toBe(120);
+        expect(a["frame.slow_frames"]).toBe(1);
     });
 
     // The floor is p5, not the minimum: one artefact must not snap 60 Hz to 120 and double
-    // the dropped-frame count — the exact defect the measured key exists to fix.
+    // the slow-frame count — the exact defect the measured key exists to fix.
     it("shrugs off a spurious short delta in a 60 Hz stream", () => {
         const deltas = [...Array(300).fill(1000 / 60), 4, 0.5];
-        expect(aggregateFrames(deltas, 5000, "raf").attributes["frame.target_fps"]).toBe(60);
+        expect(aggregateFrames(deltas, 5000, "raf")["display.refresh_rate"]).toBe(60);
     });
 
     it("falls back to 60 when no positive delta was sampled", () => {
-        expect(aggregateFrames([0, 0], 100, "raf").attributes["frame.target_fps"]).toBe(60);
+        expect(aggregateFrames([0, 0], 100, "raf")["display.refresh_rate"]).toBe(60);
     });
 
     it("rounds window_duration_ms and never reports a negative window", () => {
-        expect(aggregateFrames([16], 33.7, "raf").attributes["frame.window_duration_ms"]).toBe(34);
-        expect(aggregateFrames([16], -5, "raf").attributes["frame.window_duration_ms"]).toBe(0);
+        expect(aggregateFrames([16], 33.7, "raf")["frame.window_duration_ms"]).toBe(34);
+        expect(aggregateFrames([16], -5, "raf")["frame.window_duration_ms"]).toBe(0);
     });
 
-    it("never carries a frame.target_hz", () => {
-        expect(aggregateFrames([16], 100, "raf").attributes).not.toHaveProperty("frame.target_hz");
+    it("carries none of the frame_render_time keys the catalogue aliases", () => {
+        const a = aggregateFrames([16], 100, "raf");
+        for (const old of ["frame.sample_count", "frame.dropped_count", "frame.max_ms", "frame.target_fps", "frame.target_hz"]) {
+            expect(a).not.toHaveProperty(old);
+        }
     });
 });

@@ -72,8 +72,8 @@ describe("native transport hardening (#94)", () => {
     const r = recordingSender();
     const t = await makeTelemetry(r.sender, { batchSize: 50 });
 
-    await t.log("custom_event");
-    await t.log("custom_event");
+    await t.log("custom.event");
+    await t.log("custom.event");
     await t.flush();
 
     const sent = r.sent();
@@ -87,8 +87,8 @@ describe("native transport hardening (#94)", () => {
     const t = await makeTelemetry(r.sender, { batchSize: 5000 });
 
     await crash(t, { "error.message": "first" });
-    await t.log("custom_event", { marker: "oldest-ordinary" });
-    for (let i = 0; i < 600; i++) await t.log("custom_event", { i });
+    await t.log("custom.event", { marker: "oldest-ordinary" });
+    for (let i = 0; i < 600; i++) await t.log("custom.event", { i });
     await t.flush();
 
     expect(r.batches[r.batches.length - 1].length).toBeLessThanOrEqual(500);
@@ -101,12 +101,13 @@ describe("native transport hardening (#94)", () => {
     const r = recordingSender();
     const t = await makeTelemetry(r.sender, { batchSize: 2 });
 
+    await new Promise((r) => setTimeout(r, 0));   // #179: app.start emits after its end marker resolves
     await t.flush();                       // drain session.started + app.start
     await Promise.resolve(); await Promise.resolve();
     r.batches.length = 0;
     r.persisted.length = 0;
 
-    await t.log("custom_event", { n: 2 });
+    await t.log("custom.event", { n: 2 });
     await crash(t, { "error.message": "boom" });
 
     expect(r.batches).toHaveLength(1);
@@ -123,7 +124,7 @@ describe("native transport hardening (#94)", () => {
     const r = recordingSender();
     const t = await makeTelemetry(r.sender, { batchSize: 5000 });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
     expect(r.sent().every(e => !("sdk.drop_reason" in e.attributes!))).toBe(true);
     expect(r.sent().every(e => e.attributes!["sdk.events_dropped"] === 0)).toBe(true);

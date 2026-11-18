@@ -51,7 +51,8 @@ describe("ViewManager — the name ladder", () => {
     await vm.navigate("Details", "route");
     expect(vm.id).not.toBe(first);
     expect(vm.name).toBe("Details");
-    expect(logged.map((l) => l.name)).toEqual(["view"]);
+    // #179: an initial_load / route_change exit also emits its `screen.load` companion.
+    expect(logged.map((l) => l.name)).toEqual(["view", "screen.load"]);
     expect(logged[0].data["view.name_source"]).toBe("route");
     expect(logged[0].data["view.load_type"]).toBe("initial_load");   // the view that just ended
     expect(logged[0].data["view.referrer"]).toBe("");                // first view of the process
@@ -96,16 +97,18 @@ describe("ViewManager — the name ladder", () => {
     vm.requestStarted(); vm.requestStarted(); vm.requestStarted();
 
     await vm.navigate("Cart", "route");
-    const [{ data }] = logged;
+    const views = logged.filter((l) => l.name === "view");   // #179: skip `screen.load`
+    const [{ data }] = views;
     expect(data["view.error_count"]).toBe(2);
     expect(data["view.action_count"]).toBe(1);
     expect(data["view.request_count"]).toBe(3);
     expect(typeof data["view.time_spent"]).toBe("number");
     // Counters are per view, so the successor starts at zero.
     await vm.navigate("Checkout", "route");
-    expect(logged[1].data["view.error_count"]).toBe(0);
-    expect(logged[1].data["view.referrer"]).toBe("Home");
-    expect(logged[1].data["view.load_type"]).toBe("route_change");
+    views.splice(0, views.length, ...logged.filter((l) => l.name === "view"));
+    expect(views[1].data["view.error_count"]).toBe(0);
+    expect(views[1].data["view.referrer"]).toBe("Home");
+    expect(views[1].data["view.load_type"]).toBe("route_change");
   });
 
   it("background emits, mints a `resume` successor, and stops the dwell clock", async () => {
@@ -115,14 +118,16 @@ describe("ViewManager — the name ladder", () => {
 
     await vm.background();
     expect(vm.id).not.toBe(before);
-    expect(logged.map((l) => l.name)).toEqual(["view"]);
+    expect(logged.map((l) => l.name)).toEqual(["view", "screen.load"]);   // #179: initial_load exit
 
     // Paused: nothing accrues while backgrounded, however long it lasts.
     await new Promise((r) => setTimeout(r, 20));
     vm.foreground();
     await vm.navigate("Cart", "route");
-    expect(logged[1].data["view.load_type"]).toBe("resume");
-    expect(logged[1].data["view.time_spent"]).toBeLessThan(20);
+    const resumed = logged.filter((l) => l.name === "view")[1];
+    expect(resumed.data["view.load_type"]).toBe("resume");
+    expect(resumed.data["view.time_spent"]).toBeLessThan(20);
+    expect(logged[logged.length - 1].name).toBe("view");   // a resume exit is not judged: no `screen.load`
   });
 });
 
@@ -226,5 +231,42 @@ describe("nameOf — §3.1's log-time lookup on a frozen view.id", () => {
     expect(vm.nameOf(oldest)).toBe(UNKNOWN_VIEW_NAME);
     // and the ring still names everything inside the bound
     expect(vm.nameOf(vm.id)).toBe(`screen-${MAX_RETIRED_VIEW_NAMES + 1}`);
+  });
+});
+
+// #179 — `screen.load` (catalogue navigation.yaml): one per judged view (initial or route change),
+// emitted beside its `view` at exit. Reported when the host marked it ready, else inferred from
+// the network settle.
+describe("ViewManager — screen.load", () => {
+  const loads = (logged: Array<{ name: string; data: any }>) => logged.filter((l) => l.name === "screen.load").map((l) => l.data);
+
+  it("an unmarked route view ships an inferred screen.load with the settle outcome", async () => {
+    const { vm, logged } = manager();
+    await vm.navigate("Home", "route");
+    await vm.navigate("Cart", "route");
+    expect(loads(logged)).toEqual([
+      { "screen.name": "Home", "screen.load.source": "inferred", "screen.load.outcome": "no_activity" },
+    ]);
+  });
+
+  it("a marked view ships reported, settled, with settled_ms = ready time", async () => {
+    const { vm, logged } = manager();
+    await vm.navigate("Home", "route");
+    await vm.navigate("Cart", "route");
+    vm.markReady(Date.now() + 40);
+    await vm.navigate("Pay", "route");
+    const cart = loads(logged).find((l) => l["screen.name"] === "Cart");
+    expect(cart).toMatchObject({ "screen.load.source": "reported", "screen.load.outcome": "settled" });
+    expect(cart["screen.load.settled_ms"]).toBeGreaterThanOrEqual(40);
+  });
+
+  it("a resume successor is not judged: no screen.load", async () => {
+    const { vm, logged } = manager();
+    await vm.navigate("Home", "route");
+    await vm.background();
+    vm.foreground();
+    logged.length = 0;
+    await vm.navigate("Cart", "route");
+    expect(loads(logged)).toEqual([]);
   });
 });

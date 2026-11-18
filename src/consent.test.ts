@@ -66,12 +66,12 @@ for (const build of ["native", "web"] as const) {
     it("disable() drops the queue and the stores; while off nothing is sent or written", async () => {
       const { t, inst, sent, writes, store } = await launch();
       await store.set("telemetry_failed_events", "[]");
-      await t.log("custom_event", { before: true });   // queued, never flushed
+      await t.log("custom.event", { before: true });   // queued, never flushed
       t.disable();
       expect(inst.isEnabled()).toBe(false);            // flipped synchronously
       writes.length = 0;
 
-      await t.log("custom_event");
+      await t.log("custom.event");
       await t.recordMetric("cart", 1);
       await inst.logMetric("frame_render_time", 16);   // the rAF loop's path
       t.startSpan("journey").end();
@@ -107,7 +107,7 @@ for (const build of ["native", "web"] as const) {
       await vi.advanceTimersByTimeAsync(31 * MIN);
       t.enable();
       await settle();
-      await t.log("custom_event", { after: true });
+      await t.log("custom.event", { after: true });
       await t.flush();
 
       const names = sent.map((e) => e.eventName);
@@ -119,14 +119,14 @@ for (const build of ["native", "web"] as const) {
 
     it("enabled: false starts dark; enable() announces the session and skips app.start", async () => {
       const { t, sent, writes } = await launch({ enabled: false });
-      await t.log("custom_event", { dark: true });
+      await t.log("custom.event", { dark: true });
       await t.flush();
       expect(sent).toEqual([]);
       expect(writes).toEqual([]);
 
       t.enable();
       await settle();
-      await t.log("custom_event", { lit: true });
+      await t.log("custom.event", { lit: true });
       await t.flush();
       const names = sent.map((e) => e.eventName);
       expect(names).toContain("session.started");

@@ -94,11 +94,11 @@ for (const build of ["native", "web"] as const) {
       await settle();
       await act(async () => { ref.navigate("SearchTab", { screen: "Details", params: { id: "acc_92" } }); });
       await settle();
-      await t.log("custom_event");
+      await t.log("custom.event");
       await t.flush();
 
       expect(viewNames(sent)).toEqual(["HomeTab/Feed", "HomeTab/Details"]);
-      const last = sent.find((e) => e.eventName === "custom_event")!;
+      const last = sent.find((e) => e.eventName === "custom.event")!;
       expect(last.attributes!["view.name"]).toBe("SearchTab/Details");
       expect(JSON.stringify(sent)).not.toMatch(/acc_9/);
       act(() => r.unmount());
@@ -147,10 +147,10 @@ for (const build of ["native", "web"] as const) {
       expect(ref.isReady()).toBe(true);
       await t.attachNavigation(ref);
       await settle();
-      await t.log("custom_event");
+      await t.log("custom.event");
       await t.flush();
 
-      expect(sent.find((e) => e.eventName === "custom_event")!.attributes!["view.name"]).toBe("HomeTab/Feed");
+      expect(sent.find((e) => e.eventName === "custom.event")!.attributes!["view.name"]).toBe("HomeTab/Feed");
       act(() => r.unmount());
     });
   });
