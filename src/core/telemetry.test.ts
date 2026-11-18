@@ -93,7 +93,8 @@ describe("log()", () => {
     expect(device.collect).toHaveBeenCalled();
     expect(network.collect).toHaveBeenCalled();
     expect(device.start).not.toHaveBeenCalled();
-    expect(network.start).not.toHaveBeenCalled();
+    // #179: the network tracker starts once, at construction (it emits network.change) — never per log()
+    expect(network.start).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -426,7 +427,7 @@ describe("v3 session lifecycle — started / finalized", () => {
     await t.log("custom.event");
     await t.log("app.crash", { "error.source": "global_handler" });
     await t.captureError(new Error("handled"));
-    await t.finalizeSession("idle");   // no explicit flush() — finalize flushes immediately
+    await t.finalizeSession("timeout");   // no explicit flush() — finalize flushes immediately
 
     const fin = sent.find((e) => e.eventName === "session.finalized")!;
     expect(fin).toBeDefined();

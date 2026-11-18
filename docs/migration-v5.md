@@ -37,6 +37,10 @@ explains the behaviour behind each entry. The source list is #156 §1.
 | 5 | `react-native-device-info`, `@react-native-community/netinfo` and `react-native-get-random-values` are **externalized**, not bundled (#158) | runtime | the copy that runs is **your installed one**, not the one we built against. An old `device-info` lacks `supportedAbis` / `isLowRamDevice` / the battery reads, and those keys are then omitted | keep those packages current. Netinfo and get-random-values are still `dependencies`, so npm installs them |
 | 6 | **§2.5 status handling and a draining `flush()`** (#162): a 4xx (except 429) drops the batch — no retry, no persist; a 429 requeues and halts until `X-RateLimit-Reset`; `flush()` drains up to 50 batches | runtime | a wrong `apiKey` used to fill the offline store and stay there; it is now dropped, with one `__DEV__` warning. `flush()` can reject on a 4xx or 429 | check the dev console for the rejected-batch warning — on a 401 it is the **only** signal you get, because the `rejected` count rides a row that never gets through |
 
+**Plus the 4.x wire (#179).** Every event name changed to the processor's event catalogue and the
+batch envelope changed shape. Nothing breaks in your code, but every dashboard keyed on a v4 name
+does. The rename table is at the top of [`backend-wire-contract.md`](./backend-wire-contract.md).
+
 ---
 
 ## Notice only — what an existing series means at the boundary (B1–B5)

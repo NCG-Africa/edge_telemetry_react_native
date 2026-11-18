@@ -115,8 +115,8 @@ describe("#92 session continuity — resume across process death", () => {
     await second.t.log("custom.event");
     await second.t.flush();
 
-    expect(attrsOf(second.sent, "session.finalized")[0]["session.reason"]).toBe("idle");
-    expect(attrsOf(second.sent, "session.started")[0]["session.reason"]).toBe("idle");
+    expect(attrsOf(second.sent, "session.finalized")[0]["session.reason"]).toBe("timeout");
+    expect(attrsOf(second.sent, "session.started")[0]["session.reason"]).toBe("timeout");
     // the finalize ships under the *old* id, the fresh session under a new one
     expect(attrsOf(second.sent, "session.finalized")[0]["session.id"]).toBe(id);
     expect(attrsOf(second.sent, "custom.event")[0]["session.id"]).not.toBe(id);
@@ -147,7 +147,7 @@ describe("#92 session continuity — resume across process death", () => {
     await t.flush();
 
     expect(names()).toContain("session.started");
-    expect(attrsOf(sent, "session.started")[0]["session.reason"]).toBe("launch");
+    expect(attrsOf(sent, "session.started")[0]["session.reason"]).toBeUndefined();
     expect(names()).not.toContain("session.finalized");
   });
 
@@ -189,16 +189,16 @@ describe("#92 session continuity — resume across process death", () => {
     await t.log("custom.event");
     await t.flush();
 
-    expect(attrsOf(sent, "session.started")[0]["session.reason"]).toBe("launch");
+    expect(attrsOf(sent, "session.started")[0]["session.reason"]).toBeUndefined();
     expect(attrsOf(sent, "custom.event")[0]["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_web$/);
   });
 });
 
 describe("#92 session boundaries — idle and the 4-hour cap", () => {
-  it("emits session.reason: launch on the very first session", async () => {
+  it("omits session.reason on the very first session (catalogue: no launch value)", async () => {
     const { t, sent } = launch(memoryStore());
     await t.flush();
-    expect(attrsOf(sent, "session.started")[0]["session.reason"]).toBe("launch");
+    expect(attrsOf(sent, "session.started")[0]["session.reason"]).toBeUndefined();
   });
 
   it("rotates a live session at the 4-hour cap, with the cap reason", async () => {
@@ -248,7 +248,7 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
     await restore();
     await t.flush();
 
-    expect(attrsOf(sent, "session.finalized")[0]["session.reason"]).toBe("idle");
+    expect(attrsOf(sent, "session.finalized")[0]["session.reason"]).toBe("timeout");
     expect(attrsOf(sent, "session.finalized")[0]["session.id"]).toBe(id);
     expect(names().filter((n) => n === "session.started")).toHaveLength(2);
   });
@@ -311,7 +311,7 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
     await inst.logMetric("memory_usage", 43);       // ...so this one trips the idle boundary
     await t.flush();
 
-    expect(attrsOf(sent, "session.finalized")[0]["session.reason"]).toBe("idle");
+    expect(attrsOf(sent, "session.finalized")[0]["session.reason"]).toBe("timeout");
     const lastMetric = [...sent].reverse().find((e) => e.metricName === "memory_usage")!;
     expect(lastMetric.attributes!["session.id"]).not.toBe(id);
   });
@@ -342,10 +342,10 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
     await t.flush();
 
     for (const a of attrsOf(sent, "session.started")) {
-      expect(["launch", "idle", "max_duration"]).toContain(a["session.reason"]);
+      expect([undefined, "timeout", "max_duration"]).toContain(a["session.reason"]);
     }
     for (const a of attrsOf(sent, "session.finalized")) {
-      expect(["idle", "max_duration"]).toContain(a["session.reason"]);
+      expect(["timeout", "max_duration"]).toContain(a["session.reason"]);
     }
   });
 });

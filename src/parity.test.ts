@@ -73,7 +73,7 @@ for (const build of ["native", "web"] as const) {
       const finalized = sent.filter((e) => e.eventName === "session.finalized");
       const started = sent.filter((e) => e.eventName === "session.started");
       expect(finalized.map((e) => e.attributes!["session.reason"])).toEqual(["manual"]);
-      expect(started.map((e) => e.attributes!["session.reason"])).toEqual(["launch", "manual"]);
+      expect(started.map((e) => e.attributes!["session.reason"])).toEqual([undefined, "manual"]);
       expect(started[1].attributes!["session.id"]).not.toBe(started[0].attributes!["session.id"]);
       const last = sent.filter((e) => e.eventName === "custom.event").slice(-1)[0];
       expect(last.attributes!["session.id"]).toBe(started[1].attributes!["session.id"]);

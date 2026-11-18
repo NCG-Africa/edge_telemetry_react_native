@@ -14,6 +14,7 @@ Two documents outrank this one, and only within their scope:
 
 | Document | Authority |
 |---|---|
+| the **event catalogue** — `docs/catalogue/*.yaml` in `NCG-Africa/edge_telemetry_processor_go`, at the tag in `catalogue.version` | **every event name, key, type and enum domain** (#179). The cross-SDK source of truth; `test/golden/` + `scripts/conform.sh` hold this SDK to it |
 | `docs/backend-wire-contract.md` | **every wire key** — name, type, null discipline, cardinality, enum domain. It is a cross-SDK contract; where it and this doc disagree, it wins. |
 | `docs/wire-inventory.md` | a **historical record**, pinned to v3.0.1 at `9b7bf83`. Read it for what shipped then, never for what ships now. |
 
@@ -89,7 +90,7 @@ src/
 │   ├── webVitals.ts       ← §5.3 pure half: the four shared keys + the ten per-vital ones
 │   ├── frameTracker.ts    ← the shared rAF loop; the window resets at every view boundary
 │   ├── uiInteraction.ts   ← §4.6 role gate, the five-rung name ladder, the rage window
-│   ├── networkChange.ts   ← edge-triggered network_change emitter
+│   ├── networkChange.ts   ← edge-triggered network.change emitter
 │   ├── webSender.ts / nativeSender.ts
 │   ├── web/               ← *.web.ts capture adapters (+ store.web.ts over localStorage,
 │   │                        webVitals.web.ts — the only `web-vitals` importer in the tree)
@@ -177,7 +178,7 @@ with no Expo dependency. A ready ref is read **on attach**; an unready one **on 
 event**, so the first screen is named without waiting for a navigation. Proven against a real
 nested navigator in `src/navigation.real.test.tsx`.
 
-Native-only on `TelemetryNative`: `screenStart(name)` (rung 1, `explicit`), `trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory_usage` is (§5.2).
+Native-only on `TelemetryNative`: `screenStart(name)` (rung 1, `explicit`), `trackTap(name)`, `trackMemoryUsage()` — the last is native-only because `memory.usage` is (§5.2).
 `screenEnd(name)` and `trackRoute(from, to)` are **`@deprecated` no-ops** since v5 (#163), deleted
 in v6.
 
@@ -198,21 +199,25 @@ vital nobody has.
 POST <endpoint>
 Content-Type: application/json
 X-API-Key: edge_...
-Authorization: Bearer edge_...      # same credential, always both — see below
 
 {
   "type": "telemetry_batch",
+  "contract_version": "4.3.0",
   "timestamp": "2026-06-14T10:30:00.512Z",   // ISO 8601
   "batch_size": 13,
+  "device_id": "device_…",
+  "sdk": { "name": "react_native", "version": "5.0.0" },
+  "app": { "name", "package_name", "platform", "version", "build_number" },
   "events": [ /* Event | Metric */ ]
 }
 ```
 
-Both credential headers are built by `buildHeaders()` in `adapters/batch.ts` and sent on **every**
-POST with the same value: the collector reads `Authorization` under `AUTH_MODE=jwt` and `X-API-Key`
-otherwise, so one build serves the shared and the segmented (bank / on-prem) topologies. Never sniff
-the credential shape to pick one, and never tighten `assertApiKey` to the collector's ≥3-part API-key
-check — that would hard-reject every `edge_<jwt>`. The collector's path is `POST /telemetry`.
+**The 8-key 4.x envelope** (#179, processor #29, catalogue `envelope.yaml`). `buildBatch()` lifts
+`device.id`, `app.*`, `sdk.version` and `sdk.platform` off the rows into the root, so the rows no
+longer carry them. A replayed queue posts one envelope per identity (`byIdentity()`), so a prior
+launch's rows keep that launch's `app` block. **`X-API-Key` only** — 4.x dropped
+`Authorization: Bearer`. Never tighten `assertApiKey` to the collector's ≥3-part API-key check —
+that would hard-reject every `edge_<jwt>`. The collector's path is `POST /telemetry`.
 
 Built by `adapters/batch.ts` so both senders are byte-identical. Web uses
 `fetch({keepalive:true})` — **not** `sendBeacon`, which cannot set the credential headers.
@@ -355,7 +360,7 @@ values primitive.
 
 Freezing `session.id` is not optional: §4.2's 4-hour cap can rotate a session **while a request is
 in flight**, which would otherwise put S1's trace on an S2 row and break the invariant §6.6 tells
-you to assert. Point events — `app.crash`, `custom_event`, `app_lifecycle`, `network_change`,
+you to assert. Point events — `app.crash`, `custom.event`, `app.lifecycle`, `network.change`,
 `user.profile.update`, every metric — pass no snapshot, so the freeze is a no-op on them.
 
 **The mint/emit split and the freeze are one mechanism.** `ui.interaction` snapshots at the click
@@ -746,9 +751,9 @@ its child and **a web hard load is `launch`, never `navigation`**. Web's launch 
 **not the same interval** — do not compare native and web launch envelopes.
 
 **Three tiers.** Tier 1 span-carrying: `app.start`, `view`, `http.request`, `ui.interaction`, `task.complete`. Tier 2 annotation-only — `trace.id`, `rum.action.id`, `trace.root_type`, no span:
-`app.crash`, `app.error`, `custom_event` and `app.hang` (read at its last good tick, not at emit). ⚠ `custom_event` is the one place RN goes
+`app.crash`, `app.error`, `custom.event` and `app.hang` (read at its last good tick, not at emit). ⚠ `custom.event` is the one place RN goes
 past Android, flagged as an invention. **Tier 3 is trace-free**: *all metrics*, plus
-`app_lifecycle`, `network_change`, the session events and `user.profile.update`. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
+`app.lifecycle`, `network.change`, the session events and `user.profile.update`. A windowed aggregate belongs to no single action, and a `rum.action.id` on a p95 would
 invite a `GROUP BY` over a number that was never attributable — and the join would look valid.
 
 **Tier 2 never mints**: with no live root it carries no trace keys at all, rather than inventing a
@@ -1050,8 +1055,9 @@ batch) and the eviction reprieve.
 `core/telemetry.ts`'s `METRIC_UNIT` map + `adapters/frameAggregate.ts` + `adapters/frameTracker.ts`
 (§5.1, #104). Metrics are Tier 3 — **trace-free, all of them**.
 
-**`metric.unit` ships on every metric whose name has one**: `ms` for `frame_render_time` and the four
-timing vitals, `MB` for `memory_usage`, **`score` for `CLS`**. Without the CLS entry every chart that
+**`metric.unit` ships on every metric whose name has one**: `ms` for the four timing vitals,
+**`score` for `perf.cls`** (`frame.summary` and `memory.usage` are events since #179 and carry their
+units in the key names). Without the CLS entry every chart that
 does not special-case `metric_name` renders a CLS of `0.08` as a flat zero line beside an LCP of
 `4000` in the same `value` column. It is stamped **after** caller `data`, so a stray attribute cannot
 mislabel the unit of the column the row lands in, and it is **omitted** for a name not in the map —
@@ -1060,7 +1066,7 @@ passes one (`recordMetric(name, value, attrs?, { unit })`, #167). The map's name
 `recordMetric` drops them (a consumer row in the vitals/frame/memory series would be
 indistinguishable from ours), and drops a non-finite value rather than ship a fabricated number.
 
-**`frame.target_fps` is measured, not assumed** — and `frame.target_hz` is gone. rAF cannot fire
+**`display.refresh_rate` (was `frame.target_fps`) is measured, not assumed** — and `frame.target_hz` is gone. rAF cannot fire
 faster than the display, so the floor of the window's deltas *is* the refresh interval; no new
 platform API is involved. ⚠ The floor is the **5th percentile, not the minimum**: one spurious
 short delta would snap a 60 Hz device to 120 and double its `frame.dropped_count`, reintroducing
@@ -1089,7 +1095,7 @@ The rAF loop is **one shared `FrameDropTracker`**, not a `.web`/`.native` pair �
 `performance.now()` are globals both runtimes provide, so there was nothing platform-specific left to
 split and the two builds cannot drift on window length, measurement or the reset.
 
-### `memory_usage` — RSS, native only, and a sampler that runs
+### `memory.usage` — RSS, native only, and a sampler that runs
 
 `adapters/native/memoryNative.native.ts` (§5.2, #105). There is **no web counterpart** — the file was
 deleted, not stubbed, and `TelemetryWeb` has no `trackMemoryUsage` method at all. `performance.memory`
@@ -1176,7 +1182,7 @@ loses both on a closed tab. LCP, FCP and TTFB fire once on the initial load and 
 the callback.
 
 **The boundary seam is `ViewManager.onBoundary()`, which now hands the subscriber the successor's
-load type.** `frame_render_time` wants every boundary; vitals want **`"resume"` — background —
+load type.** `frame.summary` wants every boundary; vitals want **`"resume"` — background —
 only.** Emitting a page-load-scoped vital at a soft navigation would ship a second row for the same
 page load and stamp it with a `view.id` that is not the initial view's. A held value that has not
 moved since its last row is skipped, so a tab hidden twice with no shifts in between is one CLS
@@ -1403,7 +1409,7 @@ queue only lives in memory and that is when the process is most likely to be kil
 
 | Boundary | Rule |
 |---|---|
-| Idle | 30 min since the last non-session event → `rotateSession("idle")` |
+| Idle | 30 min since the last non-session event → `rotateSession("timeout")` |
 | Maximum length | 4 h since `session.start` → `rotateSession("max_duration")` |
 
 Both are checked lazily, in `log()` and again at init. Idle is tested first: a long session that
@@ -1421,7 +1427,7 @@ never land behind the host app's first event. It resolves one of three ways:
 
 - record inside the window → **resume silently**. A resumed session must **not** re-emit
   `session.started`, or `COUNT(session.started)` stops equalling session count (§4.1).
-- no record, corrupt record, or `unavailable` → fresh session, `session.reason: "launch"`.
+- no record, corrupt record, or `unavailable` → fresh session, **no** `session.reason` (a launch).
 - expired record → adopt it, emit `session.finalized` **under the old `session.id` and
   `session.start_time`**, then start a fresh one carrying the same reason.
 
@@ -1443,8 +1449,9 @@ Metrics are samples, not user actions: they never refresh `lastActivity`, but th
 against both boundaries — otherwise a backgrounded app sampling memory would ship forever under a
 session that expired hours ago, which is the exact thing the 4-hour cap exists to stop.
 
-`session.reason` ships on both: 4 values on `session.started` (`launch|idle|max_duration|manual`), 3 on
-`session.finalized` (`idle|max_duration|manual`). `manual` is `startNewSession()` (#167) — the same
+`session.reason` is the catalogue's enum (#179): `timeout|max_duration|manual` on both events, and
+**absent** on a launch-started `session.started` — the catalogue has no `launch` value. (v4 sent
+`launch` and `idle`.) `manual` is `startNewSession()` (#167) — the same
 `rotateSession()` pair as the two boundaries, for logout/login. `session.finalized` keeps `duration_ms` and
 `event_count` even though the backend discards and derives both — the event survives as the
 carrier for `session.reason` and `sdk.error_count`. `duration_ms` is stamped from `lastActivity`,
@@ -1453,36 +1460,39 @@ followed it.
 
 ### Event allowlist
 
-`ALLOWED_NAMES` in `core/telemetry.ts`. Anything else is rewritten to `custom_event` with
-the original name as `event.name`. Currently emitted:
+`ALLOWED_NAMES` in `core/telemetry.ts`. Anything else is rewritten to `custom.event` with
+the original name as `event.name`. **Each event's keys are defined by the catalogue YAML** (see the
+authority table) and pinned by its golden in `test/golden/`. Currently emitted:
 
 | Event | Trigger |
 |---|---|
 | `session.started` / `session.finalized` | init (unless the session resumes), 30-min idle rotation, 4-hour cap |
-| `app_lifecycle` | foreground/background transition |
+| `app.lifecycle` | foreground/background transition (`lifecycle.state`) |
 | `http.request` | XHR only on native (fetch *is* XHR there); fetch + XHR on web |
 | `app.crash` | JS error or unhandled rejection — **unhandled only**, no public path (§4.7) |
 | `app.error` | `captureError()`, an opted-in `console.error`, and a re-routed public `log("app.crash")` |
 | `ui.interaction` | every web click, actionable or not; every native `trackTap(name)` (§4.6) |
 | `view` | each of the four view exit boundaries (§4.5) |
+| `screen.load` | beside every `view` — its load time in the catalogue's shape (#179) |
 | `app.start` | once per process at init — the `launch` root, and §4.3's launch compensator |
-| `network_change` | connectivity type transition |
+| `network.change` | connectivity type transition — the tracker starts at init (#179; before, only after a `getNetworkInfo()` call) |
 | `user.profile.update` | `identify()` |
 | `task.complete` | a manual span ends, or its session finalizes first (`abandoned`) (#164) |
 | `app.hang` | a JS-thread stall of 2–60 s, in the foreground, outside `__DEV__` (#165) |
-| `custom_event` | any non-allowlisted `log()` name |
-| `frame_render_time` | **metric** — p95 per window; the window closes at 10s **or at a view boundary** (§5.1) |
-| `memory_usage` | **metric** — resident MB, **native only**, sampled every 30 s (§5.2) |
-| `LCP` `FCP` `TTFB` | **metric** — **web only**, once on the initial load (§5.3) |
-| `CLS` `INP` | **metric** — **web only**, running values drained at the background boundary (§5.3) |
+| `custom.event` | any non-allowlisted `log()` name |
+| `custom.metric` | **metric** — `recordMetric(name, …)`; the host's name rides `metric.name` |
+| `frame.summary` | **event** (sample, Tier 3) — per window; the window closes at 10s **or at a view boundary** (§5.1) |
+| `memory.usage` | **event** (sample, Tier 3) — resident MB, **native only**, sampled every 30 s (§5.2) |
+| `perf.lcp` `perf.fcp` `perf.ttfb` | **metric** — **web only**, once on the initial load (§5.3) |
+| `perf.cls` `perf.inp` | **metric** — **web only**, running values drained at the background boundary (§5.3) |
 
 **Four names are retired across v4, not deferred** (§4.0) — off the list and *unreachable*, so a
-consumer's `log("page_load")` is rewritten to `custom_event` like any other unknown name. Do not
+consumer's `log("page_load")` is rewritten to `custom.event` like any other unknown name. Do not
 add them back. `user.interaction` came off with #102, superseded by `ui.interaction`; **#109 takes
 the other three** — §10.2's `page_load`, `resource_timing` and `long_task`. `page_load`'s job is
 done three ways over (`view` + `view.loading_time` + the vitals); `resource_timing` would blow the
 500-event queue on one asset-heavy view for a namespace with no column; and `long_task`'s only
-APIs are Chromium-only while `frame_render_time` detects jank on every runtime. All three were
+APIs are Chromium-only while `frame.summary` detects jank on every runtime. All three were
 **allowlisted but never produced**, so none adds anything to the migration story. With `view`,
 `ui.interaction`, `app.error` and `app.start` in, the allowlist's v4 movement is **net zero**.
 Asserted on both builds — `src/integration.web.test.ts`, `src/integration.native.test.ts`.
@@ -1532,11 +1542,19 @@ ingest.
   `npm test` → `vitest run`. `npm run clean` removes `dist/`.
 - `prepare` runs the build, so a git-dependency install builds automatically.
 - CI (`.github/workflows/ci.yml`): **on a `v*` tag push only** (#180) — `npm ci`, typecheck,
-  test, build. ⚠ Nothing runs on a PR or a push to master, so a PR's green comes from a local
-  run. Actions pinned by SHA. No lint step (no lint script in the repo).
+  test, conform, build. ⚠ Nothing runs on a PR or a push to master, so a PR's green comes from a
+  local run. Actions pinned by SHA. No lint step (no lint script in the repo).
 - Publishing is **tag-driven** (`.github/workflows/release.yml`, on the same `v*` tag): fails
-  unless the tag matches `package.json`'s version, then typecheck, test,
+  unless the tag matches `package.json`'s version, then typecheck, test, conform,
   `npm publish --provenance`, and a GitHub Release from the CHANGELOG.
+- **Golden batches + conformance (#179, processor #40).** `src/golden.native.test.ts` and
+  `src/golden.web.test.ts` drive one session each through `createTelemetry()` and the real
+  `buildBatch()`, and snapshot one normalized batch per event into `test/golden/` (web's files end
+  `-web.json`). `scripts/conform.sh` runs the processor's `cmd/conform` over that directory at the
+  tag in `catalogue.version` (needs Go; `PROCESSOR_DIR=…` reuses a local checkout). A wire change
+  fails the golden test — regenerate with `UPDATE_GOLDENS=1 npx vitest run src/golden` and review
+  the diff. A new key or event fails conform until the catalogue registers it: that is a processor
+  catalogue PR and a new tag, then bump `catalogue.version`.
 - **Size budget (§5, #158):** `src/size.budget.test.ts` walks each entry's built chunk graph,
   esbuild-minifies (esbuild ships with vite — no new dependency), gzips and fails above
   **21 KB gz native / 27 KB gz web** — raised from 20 / 26 by cap ruling at #179. Measured at #158: native
@@ -1599,7 +1617,7 @@ above rather than defects.
   `identify()` without it leaves anonymous traffic anonymous — so a profile can land with no
   `user.id` to upsert on. §4.10 calls the key "always present on this event by construction";
   that construction is the consumer passing `userId`, and the SDK will not invent one (§3.2).
-- **`memory_usage` is RSS, so it is not comparable to a v3 chart across the cutover.** v3
+- **`memory.usage` is RSS, so it is not comparable to a v3 chart across the cutover.** v3
   reported the JS heap under the same `memory_usage` name; a panel spanning the change
   compares two different quantities. `memory.type` (`heap` → `rss`) is what tells them apart.
 - **`memory.total_mb` is the *device* total, not a per-process limit**, so `value / total_mb`
@@ -1694,7 +1712,15 @@ above rather than defects.
   than 2000 chars has no newline inside the budget, so that one cut lands mid-frame. The
   `\n… [truncated]` marker is what makes the case countable.
 - No top-level `location` in the envelope, though the contract allows one.
-- **`session.reason: "launch"` undercounts launches.** A resume emits no `session.started` at
+- **`view.referrer` on a `resume` / `session_rotation` successor is the view's own name**, so the
+  processor's `view` → `navigation` derive (catalogue navigation.yaml) books a self-navigation
+  (`Checkout` → `Checkout`) on every foreground. Needs a ruling: omit the referrer there, or skip
+  derives where from = to processor-side.
+- **`catalogue.version` pins `catalogue-v4.5`, which exists only once the processor's
+  "React Native converges" catalogue PR is merged and tagged.** Until then `scripts/conform.sh`
+  (and so the release job) fails at the clone. Conform also runs on `v*` tags only (#180), not on
+  PRs as #179 asked.
+- **A reason-less `session.started` undercounts launches.** A resume emits no `session.started` at
   all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
   compensator and is not built — count launches from `app.start`, not from `session.reason`.
 - **Cross-tab sync merges, it does not lock** (#161). Two tabs logging in the same instant each
@@ -1725,7 +1751,7 @@ above rather than defects.
   latency runs a handler in the *old* view and belongs to the action envelope (§6.6), which is not
   built. A prefetched screen therefore reports `no_activity` — exact as "started no fetches of its
   own", wrong if read as "does not fetch".
-- **`frame.target_fps` is snapped to {60, 90, 120}** (§5.1's domain), so a 144 Hz panel reports
+- **`display.refresh_rate` is snapped to {60, 90, 120}** (§5.1's domain), so a 144 Hz panel reports
   120 and budgets its dropped frames at 8.3 ms rather than 6.9 ms. The key exists for the budget,
   not for a display census. Flag it if the backend wants the measured rate raw.
 - **`frame.dropped_count`'s values moved** with the measurement: on a 90/120 Hz device v3 budgeted
@@ -1918,7 +1944,7 @@ above rather than defects.
   entry-declared `platform` — reachable from tests only: core is not exported, and since #159
   neither are the entry classes as values, so `createTelemetry()` is the sole public path.
 - **The 39-key assertion is per-build, not per-row.** `context.web.test.ts` and
-  `context.native.test.ts` pin a clean anonymous `custom_event`; a row with a `buildId`, a
+  `context.native.test.ts` pin a clean anonymous `custom.event`; a row with a `buildId`, a
   `user.id`, an ephemeral `device.id` or a drop booked carries more of the 39, which is what
   "omitted until there is one" means. No test asserts a row can carry **all** 39 at once — several
   are mutually exclusive by platform.
