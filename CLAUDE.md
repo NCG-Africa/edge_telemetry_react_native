@@ -1545,6 +1545,17 @@ ingest.
   native-module JS the consumer already installed; bundling them ran our copy against *their*
   native module. `web-vitals` is deliberately **not** on it (§5.3). The size test asserts no
   reachable native chunk was built from a `node_modules/<pkg>/` source, via the sourcemaps.
+- **Running tests — safety rules.** An uncapped `vitest` forks one worker per core, and a leaking
+  worker once grew to 3–4 GB each (~30 GB on a 16 GB Mac) and kernel-panicked the machine.
+  `vite.config.ts`'s `test` block now caps `maxWorkers: 3` and each worker's heap at 2 GB
+  (`execArgv: ["--max-old-space-size=2048"]`), so a leak fails the file with `JavaScript heap out
+  of memory` instead of taking the machine down — treat that error as a real bug (the #179 one
+  was an infinite `log()` → `rotateSession()` → `endView()` recursion), never raise the cap.
+  1. Never run `vitest`, `npm test` or `vite build` without a worker cap — the config's, or an
+     explicit `--maxWorkers=2` if the config is ever in doubt.
+  2. Never chain typecheck, build and test in one command; run them one at a time.
+  3. Check `memory_pressure | tail -1` before a test run; stop if free memory is below 30%.
+  `vite-plugin-dts` is skipped when `mode === "test"`.
 - `dist/` and `*.tgz` are git-ignored and must stay untracked. If they show up in
   `git status`, something re-added them.
 
