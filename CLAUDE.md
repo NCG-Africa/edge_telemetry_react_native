@@ -1531,9 +1531,12 @@ ingest.
 - `npm run build` → `vite build` → `dist/`. `npm run typecheck` → `tsc --noEmit`.
   `npm test` → `vitest run`. `npm run clean` removes `dist/`.
 - `prepare` runs the build, so a git-dependency install builds automatically.
-- CI (`.github/workflows/ci.yml`): on push/PR to master + merge_group — `npm ci`, typecheck,
-  test, build. Actions pinned by SHA. No lint step (no lint script in the repo).
-- Publishing is **manual** (`npm publish`) — no release workflow.
+- CI (`.github/workflows/ci.yml`): **on a `v*` tag push only** (#180) — `npm ci`, typecheck,
+  test, build. ⚠ Nothing runs on a PR or a push to master, so a PR's green comes from a local
+  run. Actions pinned by SHA. No lint step (no lint script in the repo).
+- Publishing is **tag-driven** (`.github/workflows/release.yml`, on the same `v*` tag): fails
+  unless the tag matches `package.json`'s version, then typecheck, test,
+  `npm publish --provenance`, and a GitHub Release from the CHANGELOG.
 - **Size budget (§5, #158):** `src/size.budget.test.ts` walks each entry's built chunk graph,
   esbuild-minifies (esbuild ships with vite — no new dependency), gzips and fails above
   **21 KB gz native / 27 KB gz web** — raised from 20 / 26 by cap ruling at #179. Measured at #158: native
