@@ -66,18 +66,18 @@ describe("#92 session continuity — resume across process death", () => {
     const store = memoryStore();
 
     const first = launch(store);
-    await first.t.log("custom_event");
+    await first.t.log("custom.event");
     await first.t.flush();
-    const id = attrsOf(first.sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(first.sent, "custom.event")[0]["session.id"];
     expect(first.names().filter((n) => n === "session.started")).toHaveLength(1);
 
     vi.setSystemTime(Date.now() + 29 * MIN);   // hard reload / process death, inside the window
 
     const second = launch(store);
-    await second.t.log("custom_event");
+    await second.t.log("custom.event");
     await second.t.flush();
 
-    expect(attrsOf(second.sent, "custom_event")[0]["session.id"]).toBe(id);
+    expect(attrsOf(second.sent, "custom.event")[0]["session.id"]).toBe(id);
     expect(second.names()).not.toContain("session.started");
     expect(second.names()).not.toContain("session.finalized");
   });
@@ -86,15 +86,15 @@ describe("#92 session continuity — resume across process death", () => {
     const store = memoryStore();
 
     const first = launch(store);
-    await first.t.log("custom_event");
+    await first.t.log("custom.event");
     await first.t.flush();
-    const before = attrsOf(first.sent, "custom_event")[0];
+    const before = attrsOf(first.sent, "custom.event")[0];
 
     vi.setSystemTime(Date.now() + 5 * MIN);
     const second = launch(store);
-    await second.t.log("custom_event");
+    await second.t.log("custom.event");
     await second.t.flush();
-    const after = attrsOf(second.sent, "custom_event")[0];
+    const after = attrsOf(second.sent, "custom.event")[0];
 
     expect(after["session.start_time"]).toBe(before["session.start_time"]);
     // sequence counts acknowledged batches within a session; a resume must not reset it
@@ -105,30 +105,30 @@ describe("#92 session continuity — resume across process death", () => {
     const store = memoryStore();
 
     const first = launch(store);
-    await first.t.log("custom_event");
+    await first.t.log("custom.event");
     await first.t.flush();
-    const id = attrsOf(first.sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(first.sent, "custom.event")[0]["session.id"];
 
     vi.setSystemTime(Date.now() + 31 * MIN);
 
     const second = launch(store);
-    await second.t.log("custom_event");
+    await second.t.log("custom.event");
     await second.t.flush();
 
     expect(attrsOf(second.sent, "session.finalized")[0]["session.reason"]).toBe("idle");
     expect(attrsOf(second.sent, "session.started")[0]["session.reason"]).toBe("idle");
     // the finalize ships under the *old* id, the fresh session under a new one
     expect(attrsOf(second.sent, "session.finalized")[0]["session.id"]).toBe(id);
-    expect(attrsOf(second.sent, "custom_event")[0]["session.id"]).not.toBe(id);
+    expect(attrsOf(second.sent, "custom.event")[0]["session.id"]).not.toBe(id);
   });
 
   it("stamps duration_ms from lastActivity, not from the relaunch clock", async () => {
     const store = memoryStore();
 
     const first = launch(store);
-    await first.t.log("custom_event");
+    await first.t.log("custom.event");
     vi.setSystemTime(Date.now() + 2 * MIN);
-    await first.t.log("custom_event");    // two minutes of real use...
+    await first.t.log("custom.event");    // two minutes of real use...
     await first.t.flush();
 
     vi.setSystemTime(Date.now() + 6 * 60 * MIN);   // ...then six idle hours
@@ -156,7 +156,7 @@ describe("#92 session continuity — resume across process death", () => {
     // reached instancePromise the SDK would reject every call for the life of the process.
     const store = memoryStore();
     const first = launch(store);
-    await first.t.log("custom_event");
+    await first.t.log("custom.event");
     await first.t.flush();
 
     vi.setSystemTime(Date.now() + 31 * MIN);   // the relaunch owes a finalize
@@ -177,20 +177,20 @@ describe("#92 session continuity — resume across process death", () => {
       flushIntervalMs: 0,
     });
 
-    await expect(t.log("custom_event")).resolves.toBeUndefined();
+    await expect(t.log("custom.event")).resolves.toBeUndefined();
     await t.flush();
-    expect(sent.some((e) => e.eventName === "custom_event")).toBe(true);
+    expect(sent.some((e) => e.eventName === "custom.event")).toBe(true);
   });
 
   it("still starts a session when the Store is unavailable", async () => {
     const store = memoryStore({ unavailable: true });
 
     const { t, sent } = launch(store);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     expect(attrsOf(sent, "session.started")[0]["session.reason"]).toBe("launch");
-    expect(attrsOf(sent, "custom_event")[0]["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_web$/);
+    expect(attrsOf(sent, "custom.event")[0]["session.id"]).toMatch(/^session_\d+_[0-9a-f]{16}_web$/);
   });
 });
 
@@ -203,14 +203,14 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
 
   it("rotates a live session at the 4-hour cap, with the cap reason", async () => {
     const { t, sent, names } = launch(memoryStore());
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    const id = attrsOf(sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(sent, "custom.event")[0]["session.id"];
 
     // busy the whole time, so idle never fires — only the cap can end this one
     for (let i = 0; i < 9; i++) {
       vi.setSystemTime(Date.now() + 27 * MIN);
-      await t.log("custom_event");
+      await t.log("custom.event");
     }
     await t.flush();
 
@@ -218,31 +218,31 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
     expect(attrsOf(sent, "session.started")[1]["session.reason"]).toBe("max_duration");
     expect(names().filter((n) => n === "session.finalized")).toHaveLength(1);
 
-    const last = [...sent].reverse().find((e) => e.eventName === "custom_event")!;
+    const last = [...sent].reverse().find((e) => e.eventName === "custom.event")!;
     expect(last.attributes!["session.id"]).not.toBe(id);
   });
 
   it("a bfcache restore inside the window keeps the session and emits nothing", async () => {
     const { t, sent, names } = launch(memoryStore());
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    const id = attrsOf(sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(sent, "custom.event")[0]["session.id"];
 
     vi.setSystemTime(Date.now() + 20 * MIN);   // frozen in bfcache, restored inside the window
     await restore();
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
     expect(names()).not.toContain("session.finalized");
     expect(names().filter((n) => n === "session.started")).toHaveLength(1);
-    expect(attrsOf(sent, "custom_event")[1]["session.id"]).toBe(id);
+    expect(attrsOf(sent, "custom.event")[1]["session.id"]).toBe(id);
   });
 
   it("a bfcache restore after the window rotates on the spot", async () => {
     const { t, sent, names } = launch(memoryStore());
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    const id = attrsOf(sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(sent, "custom.event")[0]["session.id"];
 
     vi.setSystemTime(Date.now() + 31 * MIN);   // the freeze outlasted the idle window
     await restore();
@@ -258,38 +258,38 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
     // other tab already finalized.
     const store = memoryStore();
     const frozen = launch(store);
-    await frozen.t.log("custom_event");
+    await frozen.t.log("custom.event");
     await frozen.t.flush();
-    const original = attrsOf(frozen.sent, "custom_event")[0]["session.id"];
+    const original = attrsOf(frozen.sent, "custom.event")[0]["session.id"];
 
     vi.setSystemTime(Date.now() + 31 * MIN);
     const sibling = launch(store);           // the other tab rotates while this one is frozen
-    await sibling.t.log("custom_event");
+    await sibling.t.log("custom.event");
     await sibling.t.flush();
-    const rotated = attrsOf(sibling.sent, "custom_event")[0]["session.id"];
+    const rotated = attrsOf(sibling.sent, "custom.event")[0]["session.id"];
     expect(rotated).not.toBe(original);
 
     await restore();
-    await frozen.t.log("custom_event");
+    await frozen.t.log("custom.event");
     await frozen.t.flush();
 
-    const last = [...frozen.sent].reverse().find((e) => e.eventName === "custom_event")!;
+    const last = [...frozen.sent].reverse().find((e) => e.eventName === "custom.event")!;
     expect(last.attributes!["session.id"]).toBe(rotated);
   });
 
   it("a bfcache restore with an unavailable Store keeps the live session rather than re-announcing it", async () => {
     const { t, sent, names } = launch(memoryStore({ unavailable: true }));
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    const id = attrsOf(sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(sent, "custom.event")[0]["session.id"];
 
     vi.setSystemTime(Date.now() + 5 * MIN);
     await restore();
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     expect(names().filter((n) => n === "session.started")).toHaveLength(1);
-    expect(attrsOf(sent, "custom_event")[1]["session.id"]).toBe(id);
+    expect(attrsOf(sent, "custom.event")[1]["session.id"]).toBe(id);
   });
 
   it("a metric is not activity, but is still checked against the boundaries", async () => {
@@ -299,9 +299,9 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
     // logMetric() has no TelemetryBase delegate, so the core instance is the only way to
     // drive the metric path. This is the real method on the real object, not private state.
     const inst = await (t as any).instancePromise;
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    const id = attrsOf(sent, "custom_event")[0]["session.id"];
+    const id = attrsOf(sent, "custom.event")[0]["session.id"];
 
     vi.setSystemTime(Date.now() + 20 * MIN);
     await inst.logMetric("memory_usage", 42);       // does not refresh lastActivity
@@ -318,24 +318,27 @@ describe("#92 session boundaries — idle and the 4-hour cap", () => {
 
   it("session.finalized still carries duration_ms and event_count", async () => {
     const { t, sent } = launch(memoryStore());
-    await t.log("custom_event");
+    await (t as any).instancePromise;
+    for (const fn of listeners.load ?? []) fn({});   // #179: app.start waits for the load marker
+    await vi.advanceTimersByTimeAsync(0);
+    await t.log("custom.event");
     await t.log("app.crash", { "crash.cause": "Error" });
 
     vi.setSystemTime(Date.now() + 31 * MIN);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     const fin = attrsOf(sent, "session.finalized")[0];
     expect(typeof fin["session.duration_ms"]).toBe("number");
-    expect(fin["session.event_count"]).toBe(3);   // app.start + custom_event + app.crash
+    expect(fin["session.event_count"]).toBe(3);   // app.start + custom.event + app.crash
     expect(fin["sdk.error_count"]).toBe(1);
   });
 
   it("session.reason never leaves its domain: 3 values started, 2 finalized (§4.1/§4.2)", async () => {
     const { t, sent } = launch(memoryStore());
-    await t.log("custom_event");
+    await t.log("custom.event");
     vi.setSystemTime(Date.now() + 31 * MIN);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     for (const a of attrsOf(sent, "session.started")) {

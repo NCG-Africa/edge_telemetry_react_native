@@ -10,7 +10,8 @@ import type { TaskOutcome } from "./adapters/manualSpans";
 
 /** What `startSpan()` returns. `end()` is idempotent, never throws, and returns nothing to await. */
 export type SpanHandle = {
-    end(opts?: { outcome?: TaskOutcome; attributes?: Record<string, unknown> }): void;
+    /** `reason` becomes `task.failure_reason` on a `failed` end, and is ignored otherwise (#179). */
+    end(opts?: { outcome?: TaskOutcome; reason?: string; attributes?: Record<string, unknown> }): void;
 };
 
 type ProfileInput = {
@@ -117,7 +118,7 @@ export abstract class TelemetryBase {
                 if (ended) return;
                 ended = true;
                 const endAt = Date.now();
-                const close = () => this.now((inst) => span && inst.endSpan(name, opts?.outcome ?? "completed", opts?.attributes, endAt, span as any), "span.end");
+                const close = () => this.now((inst) => span && inst.endSpan(name, opts?.outcome ?? "completed", opts?.attributes, endAt, span as any, opts?.reason), "span.end");
                 // A pre-init start is still queued when `resolved` lands; an end in that gap
                 // must wait for it, or it sees no span. Otherwise close now, in call order.
                 if (startRan) close(); else void started.then(close);
@@ -148,10 +149,13 @@ export abstract class TelemetryBase {
         return result;
     }
 
-    /** Close an open span by name — for a journey that ends in a different component. */
-    endSpan(name: string, outcome: TaskOutcome = "completed", attributes?: Record<string, unknown>): void {
+    /**
+     * Close an open span by name — for a journey that ends in a different component. `reason`
+     * becomes `task.failure_reason` on a `failed` end (#179).
+     */
+    endSpan(name: string, outcome: TaskOutcome = "completed", attributes?: Record<string, unknown>, reason?: string): void {
         const at = Date.now();
-        this.now((inst) => inst.endSpan(name, outcome, attributes, at), "endSpan");
+        this.now((inst) => inst.endSpan(name, outcome, attributes, at, undefined, reason), "endSpan");
     }
 
     async log(event: string, data?: Record<string, any>) {

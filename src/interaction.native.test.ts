@@ -192,16 +192,16 @@ describe("#103 the mint/emit split (§4.6)", () => {
     await t.attachNavigation(nav.ref);
     nav.go("Home");
     await vi.advanceTimersByTimeAsync(0);
-    await t.log("custom_event");            // stamps the Home view's id
+    await t.log("custom.event");            // stamps the Home view's id
 
     const tap = (t as any).trackTap("checkout");
     nav.go("Cart");
     await vi.advanceTimersByTimeAsync(0);
     await tap;
-    await t.log("custom_event");            // stamps the Cart view's id
+    await t.log("custom.event");            // stamps the Cart view's id
     await t.flush();
 
-    const [home, cart] = attrsOf(sent, "custom_event");
+    const [home, cart] = attrsOf(sent, "custom.event");
     expect(cart["view.id"]).not.toBe(home["view.id"]);
     expect(attrsOf(sent, "ui.interaction")[0]["view.id"]).toBe(home["view.id"]);
   });

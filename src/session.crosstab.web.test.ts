@@ -62,14 +62,14 @@ describe("#161 cross-tab session sync", () => {
         // B is busy for 40 minutes while A sits idle; every B write reaches A.
         for (let i = 0; i < 4; i++) {
             vi.setSystemTime(Date.now() + 10 * MIN);
-            await b.t.log("custom_event");
+            await b.t.log("custom.event");
             await a.fire(record(store));
         }
-        await a.t.log("custom_event");
+        await a.t.log("custom.event");
         await a.t.flush(); await b.t.flush();
 
         expect(names(a.sent, "session.finalized")).toHaveLength(0);
-        const ids = new Set([...a.sent, ...b.sent].filter(e => e.eventName === "custom_event").map(e => e.attributes!["session.id"]));
+        const ids = new Set([...a.sent, ...b.sent].filter(e => e.eventName === "custom.event").map(e => e.attributes!["session.id"]));
         expect(ids.size).toBe(1);
     });
 
@@ -81,17 +81,17 @@ describe("#161 cross-tab session sync", () => {
         const s1 = names(a.sent, "session.started")[0].attributes!["session.id"];
 
         vi.setSystemTime(Date.now() + 31 * MIN);
-        await a.t.log("custom_event");            // A idle-rotates S1 → S2
+        await a.t.log("custom.event");            // A idle-rotates S1 → S2
         await b.fire(record(store));              // …and B hears about it
-        await b.t.log("custom_event");
+        await b.t.log("custom.event");
         await a.t.flush(); await b.t.flush();
 
         const all = [...a.sent, ...b.sent];
         const finalized = names(all, "session.finalized").map(e => e.attributes!["session.id"]);
         expect(finalized).toEqual([s1]);
-        const s2 = names(a.sent, "custom_event")[0].attributes!["session.id"];
+        const s2 = names(a.sent, "custom.event")[0].attributes!["session.id"];
         expect(s2).not.toBe(s1);
-        expect(names(b.sent, "custom_event")[0].attributes!["session.id"]).toBe(s2);
+        expect(names(b.sent, "custom.event")[0].attributes!["session.id"]).toBe(s2);
         // B announced nothing of its own: S2's session.started shipped from A.
         expect(names(b.sent, "session.started").filter(e => e.attributes!["session.id"] === s2)).toEqual([]);
 
@@ -99,7 +99,7 @@ describe("#161 cross-tab session sync", () => {
         // its live view under S2 is a fresh one.
         const bViews = names(b.sent, "view");
         expect(bViews.every(v => v.attributes!["session.id"] === s1)).toBe(true);
-        const bView2 = names(b.sent, "custom_event")[0].attributes!["view.id"];
+        const bView2 = names(b.sent, "custom.event")[0].attributes!["view.id"];
         expect(bViews.map(v => v.attributes!["view.id"])).not.toContain(bView2);
     });
 
@@ -111,7 +111,7 @@ describe("#161 cross-tab session sync", () => {
         b.t.startSpan("checkout");
 
         vi.setSystemTime(Date.now() + 31 * MIN);
-        await a.t.log("custom_event");
+        await a.t.log("custom.event");
         await b.fire(record(store));
         b.t.endSpan("checkout");                 // too late: it ended with S1
         for (let i = 0; i < 50; i++) await Promise.resolve();
@@ -126,8 +126,8 @@ describe("#161 cross-tab session sync", () => {
         const b = openTab(store); await ready(b);
         await b.fire(JSON.stringify({ id: "session_old", start: 1, lastActivity: 1 }));
         await b.fire("{not json");
-        await b.t.log("custom_event");
+        await b.t.log("custom.event");
         await b.t.flush();
-        expect(names(b.sent, "custom_event")[0].attributes!["session.id"]).not.toBe("session_old");
+        expect(names(b.sent, "custom.event")[0].attributes!["session.id"]).not.toBe("session_old");
     });
 });

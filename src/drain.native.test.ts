@@ -50,6 +50,7 @@ async function launch(s: ReturnType<typeof scriptedSender>, batchSize = 10) {
         store: memoryStore({ async: true }), batchSize, flushIntervalMs: 0,
     });
     await (t as any).instancePromise;
+    await vi.advanceTimersByTimeAsync(0);   // #179: app.start emits after its end marker resolves
     await t.flush();               // session.started + app.start out of the way
     s.batches.length = 0; s.at.length = 0; s.armed = true;
     return t;
@@ -58,7 +59,7 @@ async function launch(s: ReturnType<typeof scriptedSender>, batchSize = 10) {
 /** Enqueue without tripping the batch-full flush: everything goes through one explicit drain. */
 async function enqueue(t: any, n: number) {
     const inst = await t.instancePromise;
-    for (let i = 0; i < n; i++) await inst.log("custom_event", { i });
+    for (let i = 0; i < n; i++) await inst.log("custom.event", { i });
 }
 
 /** Run a flush to completion under fake timers, stepping the pacing sleeps. */
@@ -119,7 +120,7 @@ describe(`#162 §2.5 status handling (${PLATFORM})`, () => {
         await drain(t);
         await enqueue(t, 2);
         await drain(t);
-        await t.log("custom_event", { probe: true });
+        await t.log("custom.event", { probe: true });
         await drain(t);
 
         expect(s.persisted).toEqual([]);

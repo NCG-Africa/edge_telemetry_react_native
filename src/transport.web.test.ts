@@ -47,10 +47,10 @@ describe("batch defaults (§9.4)", () => {
     });
 
     // session.started is #1 and app.start #2, so events 3..49 must not trigger anything.
-    for (let i = 0; i < 47; i++) await t.log("custom_event", { i });
+    for (let i = 0; i < 47; i++) await t.log("custom.event", { i });
     expect(r.batches).toHaveLength(0);
 
-    await t.log("custom_event", { last: true });
+    await t.log("custom.event", { last: true });
     // The size-trigger flush is fire-and-forget; let the microtask queue drain.
     await Promise.resolve(); await Promise.resolve();
     expect(r.batches).toHaveLength(1);
@@ -64,7 +64,7 @@ describe("batch defaults (§9.4)", () => {
     const t = createTelemetry({
       apiKey: "edge_k", endpoint: "https://x/telemetry", sender: r.sender,
     });
-    await t.log("custom_event");
+    await t.log("custom.event");
 
     await vi.advanceTimersByTimeAsync(10_000);
     expect(r.batches).toHaveLength(0);   // the old default would have shipped here
@@ -84,8 +84,8 @@ describe("the in-memory queue cap (§9.4)", () => {
     });
 
     await crash(t, { "error.message": "first" });
-    await t.log("custom_event", { marker: "oldest-ordinary" });
-    for (let i = 0; i < 600; i++) await t.log("custom_event", { i });
+    await t.log("custom.event", { marker: "oldest-ordinary" });
+    for (let i = 0; i < 600; i++) await t.log("custom.event", { i });
     await t.flush();
 
     const sent = r.sent();
@@ -108,8 +108,8 @@ describe("event.sequence (§2.4)", () => {
       sender: r.sender, batchSize: 50, flushIntervalMs: 0,
     });
 
-    await t.log("custom_event");
-    await t.log("custom_event");
+    await t.log("custom.event");
+    await t.log("custom.event");
     await t.flush();
 
     const sent = r.sent();
@@ -126,15 +126,15 @@ describe("event.sequence (§2.4)", () => {
       beforeSend: (e) => (e.attributes?.secret ? null : e),
     });
 
-    await t.log("custom_event", { secret: true });
-    await t.log("custom_event", { secret: true });
-    await t.log("custom_event");
+    await t.log("custom.event", { secret: true });
+    await t.log("custom.event", { secret: true });
+    await t.log("custom.event");
     await t.flush();
 
     // session.started took 0 and app.start 1; the two scrubbed rows take nothing, so
     // navigation is 2, not 4. A gap here would be indistinguishable from real loss, which
     // is what §2.4 forbids.
-    expect(seq(r.sent().find(e => e.eventName === "custom_event")!)).toBe(2);
+    expect(seq(r.sent().find(e => e.eventName === "custom.event")!)).toBe(2);
   });
 
   it("continues across a resume — a restart at 0 would forge duplicate dedup keys", async () => {
@@ -156,7 +156,7 @@ describe("event.sequence (§2.4)", () => {
       sender: r.sender, batchSize: 50, flushIntervalMs: 0, store,
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     // Resumed: no session.started, and the ordinal picks up where the record left off.
@@ -164,7 +164,7 @@ describe("event.sequence (§2.4)", () => {
     // — so it takes 42 and navigation follows at 43.
     expect(r.sent().some(e => e.eventName === "session.started")).toBe(false);
     expect(seq(r.sent().find(e => e.eventName === "app.start")!)).toBe(42);
-    expect(seq(r.sent().find(e => e.eventName === "custom_event")!)).toBe(43);
+    expect(seq(r.sent().find(e => e.eventName === "custom.event")!)).toBe(43);
   });
 
   it("cannot be forged or deleted by beforeSend — it is Tier A", async () => {
@@ -180,7 +180,7 @@ describe("event.sequence (§2.4)", () => {
       },
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
     expect(r.sent().map(seq)).toEqual([0, 1, 2]);   // session.started, app.start, navigation
   });
@@ -195,7 +195,7 @@ describe("drop accounting (§3.7 / §11)", () => {
       sender: r.sender, batchSize: 5000, flushIntervalMs: 0,
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
     const clean = r.sent();
     expect(clean.every(e => e.attributes!["sdk.events_dropped"] === 0)).toBe(true);
@@ -203,8 +203,8 @@ describe("drop accounting (§3.7 / §11)", () => {
 
     // Overflow the queue, then emit one more so the counters have a row to ride on:
     // they are reported by the *next* event, never the one whose enqueue caused the drop.
-    for (let i = 0; i < 600; i++) await t.log("custom_event", { i });
-    await t.log("custom_event", { after: true });
+    for (let i = 0; i < 600; i++) await t.log("custom.event", { i });
+    await t.log("custom.event", { after: true });
     await t.flush();
 
     const last = r.sent().find(e => e.attributes?.after === true)!;
@@ -223,12 +223,13 @@ describe("the crash path (§2 / §9.4)", () => {
       sender: r.sender, batchSize: 2, flushIntervalMs: 0,
     });
 
+    await new Promise((r) => setTimeout(r, 0));   // #179: app.start emits after its end marker resolves
     await t.flush();                       // drain session.started + app.start
     await Promise.resolve(); await Promise.resolve();
     r.batches.length = 0;
     r.persisted.length = 0;
 
-    await t.log("custom_event", { n: 2 });
+    await t.log("custom.event", { n: 2 });
     await crash(t, { "error.message": "boom" });
 
     // One round trip, not a drain.
@@ -238,7 +239,7 @@ describe("the crash path (§2 / §9.4)", () => {
     // The persist is the guarantee; it covers the whole queue, not just the batch.
     expect(r.persisted).toHaveLength(1);
     expect(r.persisted[0].map(e => e.eventName)).toContain("app.crash");
-    expect(r.persisted[0].map(e => e.eventName)).toContain("custom_event");
+    expect(r.persisted[0].map(e => e.eventName)).toContain("custom.event");
   });
 
   it("persists each row once across repeated crashes — captureConsole makes this the common case", async () => {
@@ -252,9 +253,9 @@ describe("the crash path (§2 / §9.4)", () => {
       batchSize: 50, flushIntervalMs: 0,
     });
 
-    await t.log("custom_event", { n: 1 });
+    await t.log("custom.event", { n: 1 });
     await crash(t, { "error.message": "one" });
-    await t.log("custom_event", { n: 2 });
+    await t.log("custom.event", { n: 2 });
     await crash(t, { "error.message": "two" });
 
     // Re-persisting the whole queue each time would fill the store with copies of its own

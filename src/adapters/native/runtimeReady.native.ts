@@ -7,7 +7,7 @@
 // `undefined`, which releases the gate — a marker that never arrives must not make every
 // launch report `abandoned`.
 
-type StartupTiming = { startTime?: unknown; executeJavaScriptBundleEntryPointEnd?: unknown };
+type StartupTiming = { startTime?: unknown; endTime?: unknown; executeJavaScriptBundleEntryPointEnd?: unknown };
 type Perf = { now?: () => number; rnStartupTiming?: StartupTiming };
 
 /**
@@ -47,4 +47,23 @@ export async function runtimeReadyAt(): Promise<number | undefined> {
         (timer as { unref?: () => void })?.unref?.();
     });
     return read();
+}
+
+/**
+ * `app.start.duration_ms` (#179, catalogue app_start.yaml): process start → first display, read
+ * as `rnStartupTiming.endTime − startTime` (both on the native monotonic clock). `endTime` is
+ * stamped when the first content appears, usually after a module-scope init, so it is polled
+ * every 100 ms for up to 10 s. No marker at all (Old Architecture) resolves `undefined` at once.
+ */
+export async function startupDurationMs(): Promise<number | undefined> {
+    for (let i = 0; i <= 100; i++) {
+        const t = (globalThis as { performance?: Perf }).performance?.rnStartupTiming;
+        if (typeof t?.startTime !== "number") return undefined;
+        if (typeof t.endTime === "number" && t.endTime >= t.startTime) return t.endTime - t.startTime;
+        await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, 100);
+            (timer as { unref?: () => void })?.unref?.();
+        });
+    }
+    return undefined;
 }

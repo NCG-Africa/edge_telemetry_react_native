@@ -55,12 +55,12 @@ describe("log()", () => {
       networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event", { "navigation.to_screen": "Home" });
+    await t.log("custom.event", { "navigation.to_screen": "Home" });
     await t.flush();
 
     expect(sender.send).toHaveBeenCalledTimes(1);
     expect(sent).toHaveLength(1);
-    expect(sent[0].eventName).toBe("custom_event");
+    expect(sent[0].eventName).toBe("custom.event");
   });
 
   it("embeds device/network info via collect() (not the registration method) — no recursion", async () => {
@@ -110,12 +110,12 @@ describe("v3 wire contract — event shape", () => {
       networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event", { a: 1 });
+    await t.log("custom.event", { a: 1 });
     await t.flush();
 
     const e = sent[0];
     expect(e.type).toBe("event");
-    expect(e.eventName).toBe("custom_event");
+    expect(e.eventName).toBe("custom.event");
     // ISO 8601 string, not a ms-epoch number
     expect(typeof e.timestamp).toBe("string");
     expect(new Date(e.timestamp as unknown as string).toISOString()).toBe(e.timestamp);
@@ -138,7 +138,7 @@ describe("v3 wire contract — Context block identity", () => {
       networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     const a = sent[0].attributes!;
@@ -161,7 +161,7 @@ describe("v3 wire contract — Context block identity", () => {
       networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     const a = sent[0].attributes!;
@@ -185,7 +185,7 @@ describe("v3 wire contract — Context block identity", () => {
       networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     const a = sent[0].attributes!;
@@ -205,7 +205,7 @@ describe("v3 wire contract — sdk.version", () => {
       networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     expect(sent[0].attributes!["sdk.version"]).toBe(pkg.version);
@@ -224,10 +224,10 @@ describe("v3 wire contract — event-name allowlist", () => {
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("app_lifecycle", { "app_lifecycle.state": "foreground" });
+    await t.log("app.lifecycle", { "lifecycle.state": "foreground" });
     await t.flush();
 
-    expect(sent[0].eventName).toBe("app_lifecycle");
+    expect(sent[0].eventName).toBe("app.lifecycle");
     expect(sent[0].attributes!["event.name"]).toBeUndefined();
   });
 
@@ -241,11 +241,11 @@ describe("v3 wire contract — event-name allowlist", () => {
     await t.log("screen.duration");
     await t.flush();
     expect(sent.map(e => [e.eventName, e.attributes!["event.name"]])).toEqual([
-      ["custom_event", "navigation"], ["custom_event", "screen.duration"],
+      ["custom.event", "navigation"], ["custom.event", "screen.duration"],
     ]);
   });
 
-  it("remaps a non-allowlisted name to custom_event and preserves it as event.name", async () => {
+  it("remaps a non-allowlisted name to custom.event and preserves it as event.name", async () => {
     const sent: TelemetryEvent[] = [];
     const t = new Telemetry({
       sender: captureSender(sent), batchSize: 10, flushIntervalMs: 0,
@@ -255,7 +255,7 @@ describe("v3 wire contract — event-name allowlist", () => {
     await t.log("checkout_started", { cart_value: 42 });
     await t.flush();
 
-    expect(sent[0].eventName).toBe("custom_event");
+    expect(sent[0].eventName).toBe("custom.event");
     expect(sent[0].attributes!["event.name"]).toBe("checkout_started");
     // original payload still rides along
     expect(sent[0].attributes!["cart_value"]).toBe(42);
@@ -277,13 +277,13 @@ describe("v3 wire contract — id formats", () => {
 });
 
 describe("recordMetric", () => {
-  it("routes through the v3 metric path (logMetric)", () => {
+  it("routes through the metric path as custom.metric, the host's name in metric.name (processor #41)", () => {
     const t = new Telemetry({ flushIntervalMs: 0 });
     const metricSpy = vi.spyOn(t, "logMetric").mockResolvedValue(undefined);
 
     t.recordMetric("load_time", 123, { page: "home" });
 
-    expect(metricSpy).toHaveBeenCalledWith("load_time", 123, { page: "home" }, undefined);
+    expect(metricSpy).toHaveBeenCalledWith("custom.metric", 123, { page: "home" }, undefined, "load_time");
     expect((t as any).getMetricCount).toBeUndefined();
   });
 });
@@ -327,7 +327,7 @@ describe("v3 wire contract — metric shape", () => {
     });
 
     await t.logMetric("memory_usage", 128);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     expect(sent).toHaveLength(2);
@@ -366,7 +366,7 @@ describe("v3 wire contract — error.breadcrumbs", () => {
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event", { "navigation.to_screen": "Home" });
+    await t.log("custom.event", { "navigation.to_screen": "Home" });
     await t.log("http.request", { "http.route": "/x" });
     await t.log("app.crash", { "error.source": "global_handler" });
     await t.flush();
@@ -375,7 +375,7 @@ describe("v3 wire contract — error.breadcrumbs", () => {
     const raw = crash.attributes!["error.breadcrumbs"];
     expect(typeof raw).toBe("string");
     const trail = JSON.parse(raw);
-    expect(trail.map((b: any) => b.name)).toEqual(["custom_event", "http.request"]);
+    expect(trail.map((b: any) => b.name)).toEqual(["custom.event", "http.request"]);
     // the crash does not include itself in its own breadcrumb trail
     expect(trail.map((b: any) => b.name)).not.toContain("app.crash");
   });
@@ -387,7 +387,7 @@ describe("v3 wire contract — error.breadcrumbs", () => {
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    for (let i = 0; i < 25; i++) await t.log("custom_event", { i });
+    for (let i = 0; i < 25; i++) await t.log("custom.event", { i });
     await t.log("app.crash", { "error.source": "global_handler" });
     await t.flush();
 
@@ -423,7 +423,7 @@ describe("v3 session lifecycle — started / finalized", () => {
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.log("app.crash", { "error.source": "global_handler" });
     await t.captureError(new Error("handled"));
     await t.finalizeSession("idle");   // no explicit flush() — finalize flushes immediately
@@ -453,19 +453,19 @@ describe("v3 session lifecycle — 30-min idle rotation", () => {
       });
 
       await t.startSession("launch");
-      await t.log("custom_event");
+      await t.log("custom.event");
 
       vi.setSystemTime(new Date(31 * 60 * 1000));   // 31 minutes of inactivity
-      await t.log("custom_event", { "navigation.to_screen": "Home" });
+      await t.log("custom.event", { "navigation.to_screen": "Home" });
       await t.flush();   // drain everything still queued
 
-      const firstId = sent.find((e) => e.eventName === "custom_event")!.attributes!["session.id"];
+      const firstId = sent.find((e) => e.eventName === "custom.event")!.attributes!["session.id"];
       const names = sent.map((e) => e.eventName);
       expect(names).toContain("session.finalized");
       // session.started appears for both the initial session and the rotation
       expect(names.filter((n) => n === "session.started").length).toBeGreaterThanOrEqual(2);
 
-      const nav = [...sent].reverse().find((e) => e.eventName === "custom_event")!;
+      const nav = [...sent].reverse().find((e) => e.eventName === "custom.event")!;
       expect(nav.attributes!["session.id"]).not.toBe(firstId);
     } finally {
       vi.useRealTimers();
@@ -483,9 +483,9 @@ describe("v3 session lifecycle — 30-min idle rotation", () => {
       });
 
       await t.startSession("launch");
-      await t.log("custom_event");
+      await t.log("custom.event");
       vi.setSystemTime(new Date(10 * 60 * 1000));   // only 10 minutes
-      await t.log("custom_event");
+      await t.log("custom.event");
 
       expect(sent.some((e) => e.eventName === "session.finalized")).toBe(false);
     } finally {
@@ -503,12 +503,12 @@ describe("v3 session lifecycle — session.sequence", () => {
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event"); await t.flush();   // ack #1
-    await t.log("custom_event"); await t.flush();   // ack #2
-    await t.log("custom_event"); await t.flush();
+    await t.log("custom.event"); await t.flush();   // ack #1
+    await t.log("custom.event"); await t.flush();   // ack #2
+    await t.log("custom.event"); await t.flush();
 
     const seqs = sent
-      .filter((e) => e.eventName === "custom_event")
+      .filter((e) => e.eventName === "custom.event")
       .map((e) => e.attributes!["session.sequence"]);
     expect(seqs).toEqual([0, 1, 2]);
   });
@@ -524,15 +524,15 @@ describe("v3 session lifecycle — session.sequence", () => {
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await expect(t.flush()).rejects.toThrow("net");
 
     sender.send.mockImplementation((async (e: TelemetryEvent[]) => { sent.push(...e); }) as any);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     // the failed batch never bumped the sequence; the ret/ next event is still seq 0-era
-    expect(sent.find((e) => e.eventName === "custom_event")!.attributes!["session.sequence"]).toBe(0);
+    expect(sent.find((e) => e.eventName === "custom.event")!.attributes!["session.sequence"]).toBe(0);
   });
 });
 
@@ -545,9 +545,9 @@ describe("identify() — user.profile.update carries the PII, nothing else does 
       deviceInfoHandler: deviceHandler() as any, networkInfoHandler: networkHandler() as any,
     });
 
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.identify({ name: "Ada", email: "ada@x.io", phone: "123" });
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     // exactly one profile-update event
@@ -557,7 +557,7 @@ describe("identify() — user.profile.update carries the PII, nothing else does 
     expect(profiles[0].attributes!["user.email"]).toBe("ada@x.io");
     expect(profiles[0].attributes!["user.phone"]).toBe("123");
 
-    const customs = sent.filter((e) => e.eventName === "custom_event");
+    const customs = sent.filter((e) => e.eventName === "custom.event");
     const after = customs[customs.length - 1].attributes!;
     for (const key of ["user.name", "user.email", "user.phone"]) {
       expect(Object.keys(after)).not.toContain(key);

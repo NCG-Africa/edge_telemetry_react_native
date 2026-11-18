@@ -26,7 +26,7 @@ export class NetworkInfoTrackerNative {
     /**
      * collect() feeds the steady-state Context block on every event (no standalone
      * network_info event, ADR-0002). A connectivity *transition* is still its own
-     * v3 `network_change` event, emitted via the shared NetworkChangeEmitter.
+     * `network.change` event, emitted via the shared NetworkChangeEmitter.
      */
     async start(telemetry: Telemetry): Promise<NetworkInfo> {
         this.telemetry = telemetry;

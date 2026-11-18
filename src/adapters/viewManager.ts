@@ -316,6 +316,18 @@ export class ViewManager {
             "view.request_count": v.settle.requestCount,
             ...ready,
         });
+        // #179 — `screen.load` (catalogue navigation.yaml), for the views a load can be judged on:
+        // the launch view and route changes. `reported` when the host marked it ready, else
+        // `inferred` from the network settle — so an inferred number is never read as measured.
+        if (v.loadType !== "initial_load" && v.loadType !== "route_change") return;
+        const reported = typeof ready["view.ready_time"] === "number";
+        const settled = reported ? ready["view.ready_time"] : loadingTime;
+        await this.telemetry.log("screen.load", {
+            "screen.name": v.name,
+            "screen.load.source": reported ? "reported" : "inferred",
+            "screen.load.outcome": reported ? "settled" : outcome,
+            ...(settled === null ? {} : { "screen.load.settled_ms": settled }),
+        });
     }
 
     /**

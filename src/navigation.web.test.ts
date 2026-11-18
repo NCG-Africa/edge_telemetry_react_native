@@ -44,13 +44,13 @@ describe("#163 web navigation", () => {
         await settle();
         history.pushState({}, "", "/settings");
         await settle();
-        await t.log("custom_event");
+        await t.log("custom.event");
         await t.flush();
 
         expect(sent.map(e => e.eventName)).not.toContain("navigation");
         expect(JSON.stringify(sent)).not.toContain("token=secret");
         const views = sent.filter(e => e.eventName === "view").map(e => e.attributes!);
         expect(views.map(v => [v["view.name"], v["view.name_source"]])).toEqual([["/accounts/{id}/statements", "url"]]);
-        expect(sent.find(e => e.eventName === "custom_event")!.attributes!["view.name"]).toBe("/settings");
+        expect(sent.find(e => e.eventName === "custom.event")!.attributes!["view.name"]).toBe("/settings");
     });
 });

@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import type { TelemetryEvent } from "./core/telemetry";
 import { memoryStore } from "./core/memoryStore";
 
-// #104 / §5.1 — `metric.unit`, the measured `frame.target_fps` and the per-view frame
+// #104 / §5.1, #179 — `frame.summary`: the measured `display.refresh_rate` and the per-view frame
 // window, asserted where the contract lives: the TelemetryEvent[] that reaches the injected
 // Sender. Keys, values and **absence** — `frame.target_hz` must be gone and metrics stay
 // Tier 3 (trace-free).
@@ -64,7 +64,7 @@ async function launch() {
 }
 
 const framesOf = (sent: TelemetryEvent[]) =>
-  sent.filter((e) => e.type === "metric" && e.metricName === "frame_render_time");
+  sent.filter((e) => e.type === "event" && e.eventName === "frame.summary");
 
 beforeEach(() => {
   silenceConsole();
@@ -78,7 +78,7 @@ afterEach(() => {
 });
 
 describe("#104 frame metrics on the wire (§5.1)", () => {
-  it("ships metric.unit, a measured frame.target_fps and window_duration_ms — and no target_hz", async () => {
+  it("ships a frame.summary window: counts, a measured display.refresh_rate, window_duration_ms (#179)", async () => {
     const d = display();
     const { t, sent } = await launch();
     await vi.waitFor(() => expect(d.ready()).toBe(true));
@@ -90,9 +90,11 @@ describe("#104 frame metrics on the wire (§5.1)", () => {
     const rows = framesOf(sent);
     expect(rows.length).toBeGreaterThan(0);
     const a = rows[0].attributes!;
-    expect(a["metric.unit"]).toBe("ms");
-    expect(a["frame.target_fps"]).toBe(120);
-    expect(a).not.toHaveProperty("frame.target_hz");
+    expect(a).not.toHaveProperty("metric.unit");
+    expect(a["display.refresh_rate"]).toBe(120);
+    expect(a["frame.total_frames"]).toBeGreaterThan(0);
+    expect(a["frame.slow_frames"]).toBe(0);
+    expect(a).not.toHaveProperty("frame.target_fps");
     expect(a["frame.window_duration_ms"]).toBeGreaterThanOrEqual(10000);
     expect(a["frame.source"]).toBe("requestAnimationFrame");
     // Tier 3: a windowed aggregate belongs to no single action (§6.3).
@@ -110,7 +112,7 @@ describe("#104 frame metrics on the wire (§5.1)", () => {
     await settle();
     await t.flush();
 
-    expect(framesOf(sent)[0].attributes!["frame.target_fps"]).toBe(60);
+    expect(framesOf(sent)[0].attributes!["display.refresh_rate"]).toBe(60);
   });
 
   it("resets the window at a route change and books the frames to the departing view", async () => {

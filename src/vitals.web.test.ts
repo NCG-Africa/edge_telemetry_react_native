@@ -78,7 +78,8 @@ async function settle(t: any) {
 }
 
 const vitals = (sent: TelemetryEvent[], name?: string) =>
-    sent.filter(e => e.type === "metric" && (name ? e.metricName === name : ["LCP", "FCP", "CLS", "INP", "TTFB"].includes(e.metricName!)));
+    // On the wire as perf.lcp &c. (#179, catalogue misc.yaml); the library's names are the input.
+    sent.filter(e => e.type === "metric" && (name ? e.metricName === `perf.${name.toLowerCase()}` : ["perf.lcp", "perf.fcp", "perf.cls", "perf.inp", "perf.ttfb"].includes(e.metricName!)));
 
 let dom: ReturnType<typeof installDom>;
 beforeEach(() => {
@@ -105,7 +106,7 @@ describe("web vitals — the metric path (§5.3)", () => {
         await settle(t);
         await t.flush();
 
-        const byName = Object.fromEntries(vitals(sent).map(e => [e.metricName!, e]));
+        const byName = Object.fromEntries(vitals(sent).map(e => [e.metricName!.slice(5).toUpperCase(), e]));
         expect(Object.keys(byName).sort()).toEqual(["CLS", "FCP", "INP", "LCP", "TTFB"]);
         for (const e of vitals(sent)) expect(e.type).toBe("metric");
         expect(byName.LCP.value).toBe(2500);

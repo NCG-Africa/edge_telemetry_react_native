@@ -1,14 +1,21 @@
-import { defineConfig } from "vite";
+import { defineConfig } from "vitest/config";
 import dts from "vite-plugin-dts";
 import path from "path";
 
 export default defineConfig(({ mode }) => ({
-    plugins: [
+    // Declarations are a build artefact; vitest runs with mode "test" and must not pay for them.
+    plugins: mode === "test" ? [] : [
         dts({
             insertTypesEntry: true,
             exclude: ["**/*.test.ts", "**/*.test.tsx"],
         }),
     ],
+    test: {
+        // Uncapped, vitest forks one worker per core; at 3-4 GB each that panicked a 16 GB Mac.
+        maxWorkers: 3,
+        // Per-worker V8 heap cap (default pool is forks): a leaking worker OOMs, not the machine.
+        execArgv: ["--max-old-space-size=2048"],
+    },
     resolve: {
         extensions: [".web.ts", ".web.js", ".ts", ".js", ".json"],
         alias: {

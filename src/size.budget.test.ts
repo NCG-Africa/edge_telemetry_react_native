@@ -10,7 +10,8 @@ import { transformSync } from "esbuild";
 //
 // Measured at #158 (gz): native 15.1 KB, web 22.1 KB; at v5's #174: native 19.9 KB, web 25.5 KB. v4 was native 23.7 KB, 8.5 KB of it the
 // three native-module packages now externalized.
-const CAP_KB = { "index.native.js": 20, "index.web.js": 26 } as const;
+// #179: raised from 20 / 26 by cap ruling — the catalogue convergence measured 20.6 / 26.1.
+const CAP_KB = { "index.native.js": 21, "index.web.js": 27 } as const;
 const EXTERNALIZED = ["react-native-device-info", "@react-native-community/netinfo", "react-native-get-random-values"];
 
 const DIST = join(__dirname, "..", "dist");

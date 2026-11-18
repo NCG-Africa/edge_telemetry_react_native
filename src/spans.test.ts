@@ -76,7 +76,7 @@ for (const build of ["native", "web"] as const) {
       await inst.enterView("Cart", "route");   // a navigation, with no live root: mints one
       const span = t.startSpan("load_cart");
       const req = inst.trace.requestTrace(Date.now(), { url: "https://api/x", sampled: true }).finish(Date.now());
-      span.end({ outcome: "failed", attributes: { reason: "timeout" } });
+      span.end({ outcome: "failed", reason: "timeout", attributes: { step: 2 } });
       await settle();
       await t.flush();
 
@@ -84,8 +84,22 @@ for (const build of ["native", "web"] as const) {
       expect(row["trace.root_type"]).toBe("navigation");
       expect(row["parent.span.id"]).toBe(row["rum.action.id"]);
       expect(row["span.duration_ms"]).toBe(0);
-      expect(row).toMatchObject({ "task.outcome": "failed", reason: "timeout" });
+      // `task.failure_reason` (#179, catalogue actions.yaml) — not the bare `reason` it aliases.
+      expect(row).toMatchObject({ "task.outcome": "failed", "task.failure_reason": "timeout", step: 2 });
+      expect(row).not.toHaveProperty("reason");
       expect(req["parent.span.id"]).toBe(row["rum.action.id"]);
+    });
+
+    it("task.failure_reason rides a failed task only — endSpan's reason too (#179)", async () => {
+      const { t, sent } = await launch();
+      t.startSpan("pay"); t.endSpan("pay", "failed", undefined, "card declined");
+      const ok = t.startSpan("ok"); ok.end({ reason: "ignored" });
+      await settle();
+      await t.flush();
+
+      const rows = tasks(sent);
+      expect(rows.find((r) => r["task.name"] === "pay")!["task.failure_reason"]).toBe("card declined");
+      expect(rows.find((r) => r["task.name"] === "ok")).not.toHaveProperty("task.failure_reason");
     });
 
     it("withSpan times sync and async work, ends `failed` on throw and rethrows", async () => {
@@ -182,7 +196,7 @@ for (const build of ["native", "web"] as const) {
       await vi.advanceTimersByTimeAsync(20 * MIN);
       t.startSpan("long");
       await vi.advanceTimersByTimeAsync(20 * MIN);
-      await t.log("custom_event");
+      await t.log("custom.event");
       await t.flush();
       expect(sent.some((e) => e.eventName === "session.finalized")).toBe(false);
     });
@@ -191,9 +205,9 @@ for (const build of ["native", "web"] as const) {
       const { t, sent } = await launch();
       t.startSpan("left_open");
       await vi.advanceTimersByTimeAsync(1000);
-      await t.log("custom_event");
+      await t.log("custom.event");
       await vi.advanceTimersByTimeAsync(31 * MIN);
-      await t.log("custom_event");   // idle rotation
+      await t.log("custom.event");   // idle rotation
       await t.flush();
 
       const [row] = tasks(sent);

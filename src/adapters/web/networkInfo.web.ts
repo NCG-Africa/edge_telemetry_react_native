@@ -35,7 +35,7 @@ export class NetworkInfoTrackerWeb {
 
     async start(telemetry: Telemetry): Promise<NetworkInfo> {
         // collect() feeds the steady-state Context block (no standalone network_info event,
-        // ADR-0002). A connectivity *transition* is its own v3 `network_change` event,
+        // ADR-0002). A connectivity *transition* is its own `network.change` event,
         // emitted via the shared NetworkChangeEmitter (lockstep with native).
         this.telemetry = telemetry;
         const changes = new NetworkChangeEmitter(telemetry);

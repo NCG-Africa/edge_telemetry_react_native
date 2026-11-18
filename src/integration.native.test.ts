@@ -79,9 +79,9 @@ async function firstEventAttributes() {
     flushIntervalMs: 0,
     captureConsole: false,
   });
-  await t.log("custom_event", { "navigation.to_screen": "Home" });
+  await t.log("custom.event", { "navigation.to_screen": "Home" });
   await t.flush();
-  return sent.find((e) => e.eventName === "custom_event")!.attributes!;
+  return sent.find((e) => e.eventName === "custom.event")!.attributes!;
 }
 
 describe("createTelemetry (native) — Context keys are snake_case on the wire (#88)", () => {
@@ -92,20 +92,20 @@ describe("createTelemetry (native) — Context keys are snake_case on the wire (
     expect(a["app.build_number"]).toBe("77");
     expect(a["app.package_name"]).toBe("com.example.app");
     expect(a["device.platform_version"]).toBe("14");
-    expect(a["device.android_sdk"]).toBe("34");
+    expect(a["device.android_sdk"]).toBe(34);
     expect(a["device.android_release"]).toBe("14");
-    expect(Object.keys(a)).not.toContain("device.ios_system_name");   // #108 — omitted off-iOS
+    expect(Object.keys(a)).not.toContain("device.system_name");   // #108 — omitted off-iOS
     expect(a["network.is_connected"]).toBe(true);
   });
 
-  // device.ios_system_name is the one key with no value off-iOS; assert it carries
+  // device.system_name is the one key with no value off-iOS; assert it carries
   // one when it should, or the respelling is only presence-checked.
-  it("ships device.ios_system_name with a value on iOS", async () => {
+  it("ships device.system_name with a value on iOS", async () => {
     silenceConsole();
     platform.OS = "ios";
     try {
       const a = await firstEventAttributes();
-      expect(a["device.ios_system_name"]).toBe("iOS");
+      expect(a["device.system_name"]).toBe("iOS");
       expect(Object.keys(a)).not.toContain("device.iosSystemName");
     } finally {
       platform.OS = "android";
@@ -148,7 +148,7 @@ describe("createTelemetry (native) — identity (#91)", () => {
   }
 
   async function emit(t: any) {
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
   }
 
@@ -225,11 +225,11 @@ describe("createTelemetry (native) — identity (#91)", () => {
 });
 
 // §4.0/§10.2 (#109) — the four retirements, mirrored on native. They are unreachable, not
-// merely unproduced: a consumer's `log("page_load")` gets `custom_event` like any unknown name.
+// merely unproduced: a consumer's `log("page_load")` gets `custom.event` like any unknown name.
 describe("createTelemetry (native) — the retired allowlist names (#109)", () => {
   const RETIRED = ["user.interaction", "page_load", "resource_timing", "long_task"];
 
-  it("rewrites every retired name to custom_event, keeping the original as event.name", async () => {
+  it("rewrites every retired name to custom.event, keeping the original as event.name", async () => {
     silenceConsole();
     const { createTelemetry } = await import("./createTelemetry.native");
     const { memoryStore } = await import("./core/memoryStore");
@@ -249,7 +249,7 @@ describe("createTelemetry (native) — the retired allowlist names (#109)", () =
 
     for (const name of RETIRED) {
       expect(sent.some((e) => e.eventName === name)).toBe(false);
-      expect(sent.some((e) => e.eventName === "custom_event" && e.attributes?.["event.name"] === name)).toBe(true);
+      expect(sent.some((e) => e.eventName === "custom.event" && e.attributes?.["event.name"] === name)).toBe(true);
     }
   });
 });

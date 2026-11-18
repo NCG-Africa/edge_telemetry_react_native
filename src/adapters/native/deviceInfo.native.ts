@@ -69,7 +69,7 @@ export class DeviceInfoTrackerNative {
                 brand,
 
                 // Android fields
-                android_sdk: sdk ? String(sdk) : undefined,
+                android_sdk: typeof sdk === "number" && sdk > 0 ? sdk : undefined,
                 android_release: Platform.OS === "android" ? systemVersion : undefined,
                 hardware,
                 product,
@@ -77,7 +77,7 @@ export class DeviceInfoTrackerNative {
                 low_ram: lowRam,
 
                 // iOS fields
-                ios_system_name: iosSystemName,
+                system_name: iosSystemName,
 
                 // Viewport — both builds, never null (§3.3)
                 ...viewport,

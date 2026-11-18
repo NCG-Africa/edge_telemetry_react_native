@@ -1,17 +1,20 @@
-// Aggregate a window of frame deltas (ms) into the `frame_render_time` metric (§5.1).
-// Shared by both builds so the percentile math and the refresh-rate measurement live once.
+// Aggregate a window of frame deltas (ms) into one `frame.summary` window (§5.1, #179 — catalogue
+// frames_memory.yaml). Shared by both builds so the percentile math and the refresh-rate
+// measurement live once. The SDK classifies; analytics only sums.
 
-export interface FrameAggregate {
-    value: number;                        // metric value = p95 frame time (representative render time)
-    attributes: {
-        "frame.max_ms": number;
-        "frame.p95_ms": number;
-        "frame.dropped_count": number;    // frames slower than 2x budget
-        "frame.target_fps": number;
-        "frame.window_duration_ms": number;
-        "frame.source": string;
-    };
-}
+/** A frame at or over this is frozen (catalogue #33), whatever the refresh rate. */
+const FROZEN_MS = 700;
+
+export type FrameWindow = {
+    "frame.total_frames": number;
+    "frame.slow_frames": number;           // frames slower than 2x the measured budget
+    "frame.frozen_frames": number;         // >= 700 ms
+    "frame.max_total_duration_ms": number;
+    "frame.p95_ms": number;                // bag only
+    "display.refresh_rate": number;
+    "frame.window_duration_ms": number;
+    "frame.source": string;
+};
 
 /**
  * §5.1 fixes the domain at three values. A 144 Hz panel therefore snaps to 120 — the
@@ -43,25 +46,23 @@ function measureTargetFps(sorted: number[]): number {
 /**
  * `deltas` must be non-empty. Percentile is nearest-rank on the sorted deltas.
  * `windowMs` is the *actual* elapsed window — variable-length since §5.1's view-boundary
- * reset, which is exactly why `frame.window_duration_ms` is required on the wire.
+ * reset, which is exactly why `frame.window_duration_ms` rides every window.
+ *
+ * A rAF delta is a vsync interval, quantized to the budget: "slow" is a missed vsync, read as
+ * over twice the budget so jitter around one interval never counts.
  */
-export function aggregateFrames(deltas: number[], windowMs: number, source: string): FrameAggregate {
+export function aggregateFrames(deltas: number[], windowMs: number, source: string): FrameWindow {
     const sorted = [...deltas].sort((a, b) => a - b);
     const targetFps = measureTargetFps(sorted);
     const budget = 1000 / targetFps;
-    const max = sorted[sorted.length - 1];
-    const p95 = sorted[Math.ceil(0.95 * sorted.length) - 1];
-    const dropped = deltas.filter((d) => d > budget * 2).length;
-
     return {
-        value: p95,
-        attributes: {
-            "frame.max_ms": max,
-            "frame.p95_ms": p95,
-            "frame.dropped_count": dropped,
-            "frame.target_fps": targetFps,
-            "frame.window_duration_ms": Math.round(Math.max(0, windowMs)),
-            "frame.source": source,
-        },
+        "frame.total_frames": deltas.length,
+        "frame.slow_frames": deltas.filter((d) => d > budget * 2).length,
+        "frame.frozen_frames": deltas.filter((d) => d >= FROZEN_MS).length,
+        "frame.max_total_duration_ms": sorted[sorted.length - 1],
+        "frame.p95_ms": sorted[Math.ceil(0.95 * sorted.length) - 1],
+        "display.refresh_rate": targetFps,
+        "frame.window_duration_ms": Math.round(Math.max(0, windowMs)),
+        "frame.source": source,
     };
 }

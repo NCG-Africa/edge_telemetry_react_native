@@ -90,7 +90,7 @@ afterEach(() => {
 describe("#96 view.id / view.name on the Context block (native)", () => {
   it("rides every event and every metric, and is never null", async () => {
     const { t, sent } = await launch();
-    await t.log("custom_event");
+    await t.log("custom.event");
     const inst = await (t as any).instancePromise;
     await inst.logMetric("frame_render_time", 16);
     await t.flush();
@@ -140,10 +140,10 @@ describe("#163 the deprecated screen feeds are gone (§4.0)", () => {
     await (t as any).screenStart("Checkout");
     await (t as any).screenEnd("Checkout");
     await (t as any).trackRoute("Checkout", "Elsewhere");
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    expect(attrsOf(sent, "custom_event")[0]["view.name"]).toBe("Checkout");
+    expect(attrsOf(sent, "custom.event")[0]["view.name"]).toBe("Checkout");
   });
 
   it("a route name and an explicit name agree on the same view.name across builds", async () => {
@@ -152,20 +152,20 @@ describe("#163 the deprecated screen feeds are gone (§4.0)", () => {
     await t.attachNavigation(nav.ref);
     nav.go("Dashboard");
     await vi.advanceTimersByTimeAsync(0);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     // the same string the web build produces from the same ref — one GROUP BY spans both
-    expect(attrsOf(sent, "custom_event")[0]["view.name"]).toBe("Dashboard");
+    expect(attrsOf(sent, "custom.event")[0]["view.name"]).toBe("Dashboard");
   });
 });
 
 describe("#96 view lifetime boundaries (native)", () => {
   it("view.id never spans a session.id", async () => {
     const { t, sent } = await launch();
-    await t.log("custom_event");
+    await t.log("custom.event");
     vi.setSystemTime(Date.now() + 31 * 60 * 1000);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     const seen = new Map<string, string>();
@@ -186,7 +186,7 @@ describe("#96 the background boundary and the background flush (native)", () => 
     // the constructor attaches the AppState listener behind instancePromise
     await vi.waitFor(() => expect(appState.listenerCount()).toBeGreaterThan(0));
     await inst.enterView("Home", "route");
-    await t.log("custom_event");
+    await t.log("custom.event");
 
     // Backgrounding: the boundary emits a `view` row and the flush that follows exists to
     // rescue exactly that row from the OS kill that usually comes next. If the flush fires
@@ -199,9 +199,9 @@ describe("#96 the background boundary and the background flush (native)", () => 
     expect(view!.attributes!["view.name"]).toBe("Home");
     expect(view!.attributes!["view.load_type"]).toBe("initial_load");
 
-    // and the app_lifecycle row it follows is in the same batch, under the same view
-    const lifecycle = sent.find((e) => e.eventName === "app_lifecycle")!;
-    expect(lifecycle.attributes!["app_lifecycle.state"]).toBe("background");
+    // and the app.lifecycle row it follows is in the same batch, under the same view
+    const lifecycle = sent.find((e) => e.eventName === "app.lifecycle")!;
+    expect(lifecycle.attributes!["lifecycle.state"]).toBe("background");
     expect(lifecycle.attributes!["view.id"]).toBe(view!.attributes!["view.id"]);
   });
 
@@ -211,7 +211,7 @@ describe("#96 the background boundary and the background flush (native)", () => 
     await vi.waitFor(() => expect(appState.listenerCount()).toBeGreaterThan(0));
     await inst.enterView("Home", "route");
 
-    // the boundary is chained behind the app_lifecycle log; let it land before the next edge
+    // the boundary is chained behind the app.lifecycle log; let it land before the next edge
     appState.emit("background");
     await settle();
     appState.emit("active");
@@ -237,15 +237,15 @@ describe("#169 a route change always bounds a view", () => {
     nav.go("Home");
     await vi.advanceTimersByTimeAsync(0);
     await (t as any).screenStart("Home — signed in");   // upgrade window: same route, higher rung
-    await t.log("custom_event", { at: "home" });
+    await t.log("custom.event", { at: "home" });
     nav.go("Cart");                                       // a different route: always a boundary
     await vi.advanceTimersByTimeAsync(0);
-    await t.log("custom_event", { at: "cart" });
+    await t.log("custom.event", { at: "cart" });
     await t.flush();
 
     const views = attrsOf(sent, "view");
     expect(views.map((v) => [v["view.name"], v["view.name_source"]])).toEqual([["Home — signed in", "explicit"]]);
-    const [home, cart] = attrsOf(sent, "custom_event");
+    const [home, cart] = attrsOf(sent, "custom.event");
     expect(home["view.id"]).toBe(views[0]["view.id"]);
     expect(cart["view.name"]).toBe("Cart");
     expect(cart["view.id"]).not.toBe(home["view.id"]);
@@ -257,15 +257,15 @@ describe("#169 a route change always bounds a view", () => {
     await t.attachNavigation(nav.ref);
     nav.go("Home");
     await vi.advanceTimersByTimeAsync(0);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await (t as any).screenStart("Dashboard");
     nav.go("Home");                       // a re-render on the same route
     await vi.advanceTimersByTimeAsync(0);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     expect(attrsOf(sent, "view")).toEqual([]);
-    const [a, b] = attrsOf(sent, "custom_event");
+    const [a, b] = attrsOf(sent, "custom.event");
     expect(a["view.id"]).toBe(b["view.id"]);
     expect(b["view.name"]).toBe("Dashboard");
   });

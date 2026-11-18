@@ -38,7 +38,7 @@ for (const build of ["native", "web"] as const) {
       const { t, sent } = await launch();
       await t.recordMetric("cart_items", 3, { "metric.unit": "forged", store: "nairobi" }, { unit: "count" });
       await t.recordMetric("checkout_ms", 120);
-      for (const reserved of ["frame_render_time", "memory_usage", "LCP", "FCP", "CLS", "INP", "TTFB"]) {
+      for (const reserved of ["perf.lcp", "perf.fcp", "perf.cls", "perf.inp", "perf.ttfb"]) {
         await t.recordMetric(reserved, 1, undefined, { unit: "bogus" });
       }
       await t.recordMetric("bad", NaN);
@@ -46,7 +46,9 @@ for (const build of ["native", "web"] as const) {
       await t.flush();
 
       const metrics = sent.filter((e) => e.type === "metric");
-      expect(metrics.map((m) => m.metricName)).toEqual(["cart_items", "checkout_ms"]);
+      // custom.metric, the host's name in metric.name (#179, processor #41).
+      expect(metrics.map((m) => m.metricName)).toEqual(["custom.metric", "custom.metric"]);
+      expect(metrics.map((m) => m.attributes!["metric.name"])).toEqual(["cart_items", "checkout_ms"]);
       expect(metrics[0]).toMatchObject({ value: 3, attributes: { "metric.unit": "count", store: "nairobi" } });
       expect(metrics[1].attributes).not.toHaveProperty("metric.unit");
     });
@@ -63,9 +65,9 @@ for (const build of ["native", "web"] as const) {
 
     it("startNewSession rotates with session.reason: manual on both events", async () => {
       const { t, sent } = await launch();
-      await t.log("custom_event");
+      await t.log("custom.event");
       await t.startNewSession();
-      await t.log("custom_event");
+      await t.log("custom.event");
       await t.flush();
 
       const finalized = sent.filter((e) => e.eventName === "session.finalized");
@@ -73,7 +75,7 @@ for (const build of ["native", "web"] as const) {
       expect(finalized.map((e) => e.attributes!["session.reason"])).toEqual(["manual"]);
       expect(started.map((e) => e.attributes!["session.reason"])).toEqual(["launch", "manual"]);
       expect(started[1].attributes!["session.id"]).not.toBe(started[0].attributes!["session.id"]);
-      const last = sent.filter((e) => e.eventName === "custom_event").slice(-1)[0];
+      const last = sent.filter((e) => e.eventName === "custom.event").slice(-1)[0];
       expect(last.attributes!["session.id"]).toBe(started[1].attributes!["session.id"]);
       // the departing view is emitted under the old session, as with any rotation
       const view = sent.find((e) => e.eventName === "view")!;

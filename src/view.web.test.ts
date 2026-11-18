@@ -59,7 +59,7 @@ afterEach(() => {
 describe("#96 view.id / view.name on the Context block (web)", () => {
   it("rides every event and every metric, and is never null", async () => {
     const { t, sent } = launch();
-    await t.log("custom_event");
+    await t.log("custom.event");
     const inst = await (t as any).instancePromise;
     await inst.logMetric("memory_usage", 42);
     await t.flush();
@@ -82,10 +82,10 @@ describe("#96 view.id / view.name on the Context block (web)", () => {
 
     nav.go("Dashboard");
     await vi.advanceTimersByTimeAsync(0);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    expect(attrsOf(sent, "custom_event")[0]["view.name"]).toBe("Dashboard");
+    expect(attrsOf(sent, "custom.event")[0]["view.name"]).toBe("Dashboard");
     // §4.0/§4.11: web emits neither deprecated feed, and a shared attachNavigation must not
     // be the thing that starts it.
     expect(sent.map((e) => e.eventName)).not.toContain("screen.duration");
@@ -98,10 +98,10 @@ describe("#96 view.id / view.name on the Context block (web)", () => {
 
     nav.go("Tabs", { name: "Tabs", state: { index: 1, routes: [{ name: "Home" }, { name: "Settings" }] } });
     await vi.advanceTimersByTimeAsync(0);
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    expect(attrsOf(sent, "custom_event")[0]["view.name"]).toBe("Tabs/Settings");
+    expect(attrsOf(sent, "custom.event")[0]["view.name"]).toBe("Tabs/Settings");
   });
 
   it("a route change emits the departing view with dwell and the three counters", async () => {
@@ -141,9 +141,9 @@ describe("#96 view.id / view.name on the Context block (web)", () => {
 
     // and the successor is a different view under the same session
     const after = attrsOf(sent, "view")[0];
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
-    const next = attrsOf(sent, "custom_event")[0];
+    const next = attrsOf(sent, "custom.event")[0];
     expect(next["view.id"]).not.toBe(after["view.id"]);
     expect(next["view.name"]).toBe("Cart");
   });
@@ -155,12 +155,12 @@ describe("#96 the name ladder on the wire (web)", () => {
     const inst = await (t as any).instancePromise;
 
     await inst.enterView("/dashboard/{id}", "url");
-    await t.log("custom_event");
+    await t.log("custom.event");
     await inst.enterView("Dashboard", "route");
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    const [early, late] = attrsOf(sent, "custom_event");
+    const [early, late] = attrsOf(sent, "custom.event");
     expect(early["view.name"]).toBe("/dashboard/{id}");
     expect(late["view.name"]).toBe("Dashboard");
     expect(late["view.id"]).toBe(early["view.id"]);   // upgraded in place, never split
@@ -173,10 +173,10 @@ describe("#96 the name ladder on the wire (web)", () => {
 
     await inst.enterView("Checkout", "route");
     await inst.enterView("/checkout/7781", "url");
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    expect(attrsOf(sent, "custom_event")[0]["view.name"]).toBe("Checkout");
+    expect(attrsOf(sent, "custom.event")[0]["view.name"]).toBe("Checkout");
   });
 
   it("screenStart's name overrides a derived one and is never normalized", async () => {
@@ -185,10 +185,10 @@ describe("#96 the name ladder on the wire (web)", () => {
 
     await inst.enterView("/step/2", "url");
     await inst.enterView("Step 2 of 3", "explicit");
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
-    const a = attrsOf(sent, "custom_event")[0];
+    const a = attrsOf(sent, "custom.event")[0];
     expect(a["view.name"]).toBe("Step 2 of 3");   // not "Step {id} of {id}"
   });
 });
@@ -196,10 +196,10 @@ describe("#96 the name ladder on the wire (web)", () => {
 describe("#96 view lifetime boundaries (web)", () => {
   it("view.id never spans a session.id — a rotation emits the view under the old session", async () => {
     const { t, sent } = launch();
-    await t.log("custom_event");
+    await t.log("custom.event");
 
     vi.setSystemTime(Date.now() + 31 * MIN);   // past the 30-minute idle boundary
-    await t.log("custom_event");
+    await t.log("custom.event");
     await t.flush();
 
     const rows = sent.filter((e) => e.attributes?.["view.id"]);
@@ -225,10 +225,10 @@ describe("#96 view lifetime boundaries (web)", () => {
     const { t, sent } = launch();
     const inst = await (t as any).instancePromise;
     await inst.enterView("Home", "route");
-    await t.log("custom_event");
+    await t.log("custom.event");
 
     vi.setSystemTime(Date.now() + 31 * MIN);
-    await t.log("custom_event");
+    await t.log("custom.event");
     // The successor inherits `Home` from the view it replaced, so a same-rung move off it
     // is a real boundary and its `view` row becomes observable.
     await inst.enterView("Next", "route");
@@ -238,7 +238,7 @@ describe("#96 view lifetime boundaries (web)", () => {
     expect(loadTypes).toEqual(["initial_load", "session_rotation"]);
   });
 
-  it("`view` is on the allowlist — it is not rewritten to custom_event", async () => {
+  it("`view` is on the allowlist — it is not rewritten to custom.event", async () => {
     const { t, sent } = launch();
     const inst = await (t as any).instancePromise;
     await inst.enterView("A", "route");
@@ -258,14 +258,14 @@ describe("#169 a route change always bounds a view (web)", () => {
     await inst.enterView("/home", "url");
     await inst.enterView("Home", "route");     // upgrade window: higher rung, same view
     await inst.enterView("/home", "url");      // same route again: nothing
-    await t.log("custom_event", { at: "home" });
+    await t.log("custom.event", { at: "home" });
     await inst.enterView("/cart", "url");      // a lower rung, but a different route: a boundary
-    await t.log("custom_event", { at: "cart" });
+    await t.log("custom.event", { at: "cart" });
     await t.flush();
 
     const views = attrsOf(sent, "view");
     expect(views.map((v) => [v["view.name"], v["view.name_source"]])).toEqual([["Home", "route"]]);
-    const [home, cart] = attrsOf(sent, "custom_event");
+    const [home, cart] = attrsOf(sent, "custom.event");
     expect(home["view.id"]).toBe(views[0]["view.id"]);
     expect([cart["view.name"], cart["view.id"] !== home["view.id"]]).toEqual(["/cart", true]);
   });

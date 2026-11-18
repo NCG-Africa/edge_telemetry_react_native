@@ -3,7 +3,7 @@ import type { TelemetryEvent, Sender } from "../core/telemetry";
 import type { SyncStore } from "../core/store";
 import { webStore } from "./web/store.web";
 import { decodeFailed, encodeFailed, FAILED_EVENTS_KEY } from "./failedEvents";
-import { buildBatch, buildHeaders, DEFAULT_ENDPOINT, isRejected, sendWithRetry } from "./batch";
+import { buildBatch, buildHeaders, DEFAULT_ENDPOINT, replayGroups, sendWithRetry } from "./batch";
 
 // The offline queue goes through the Store port (#89), and on web it stays SYNCHRONOUS
 // on purpose. onFailure() runs on the unload path; a synchronous set() has landed before
@@ -33,8 +33,8 @@ function takeFailed(store: SyncStore): TelemetryEvent[] {
     return decodeFailed(read);
 }
 
-// v3 uses fetch({ keepalive: true }) rather than navigator.sendBeacon: the beacon
-// API cannot set the required credential headers. keepalive preserves the
+// fetch({ keepalive: true }) rather than navigator.sendBeacon: the beacon
+// API cannot set the required credential header. keepalive preserves the
 // survives-page-unload property we relied on sendBeacon for. Linear backoff.
 const post = (endpoint: string, apiKey: string | undefined, events: TelemetryEvent[], retryCount: number) =>
     sendWithRetry(() => fetch(endpoint, {
@@ -72,15 +72,11 @@ export function webSender(
             const stored = takeFailed(store);
             if (stored.length === 0) return;
             debug.log("Replaying failed events, count:", stored.length);
-            try {
-                await post(endpoint, apiKey, stored, retryCount);
-            } catch (err) {
-                // If replay fails again, re-persist. Exactly one copy: this path never
-                // goes through core's flush(), so onFailure() does not also persist it.
-                // A 4xx is the exception (§2.5): a rejected batch is dropped, never kept.
-                if (!isRejected(err)) persistFailed(store, stored);
-                throw err;
-            }
+            // One POST per identity, so a prior launch's rows ride that launch's `app` block.
+            // A failure re-persists exactly one copy of what is unsent: this path never goes
+            // through core's flush(), so onFailure() does not also persist it. A 4xx group is
+            // dropped, never kept (§2.5).
+            await replayGroups(stored, events => post(endpoint, apiKey, events, retryCount), events => persistFailed(store, events));
         },
     };
 }

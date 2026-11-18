@@ -11,8 +11,8 @@ function harness() {
     const metrics: Array<{ name: string; value: number; data: Record<string, any> }> = [];
     let boundary: (() => unknown) | undefined;
     const telemetry = {
-        logMetric: async (name: string, value: number, data: Record<string, any> = {}) => {
-            metrics.push({ name, value, data });
+        log: async (name: string, data: Record<string, any> = {}) => {
+            metrics.push({ name, value: data["frame.p95_ms"], data });
         },
         views: {
             onBoundary(fn: () => unknown) { boundary = fn; return () => { boundary = undefined; }; },
@@ -31,7 +31,7 @@ function harness() {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); });
 
 describe("FrameDropTracker", () => {
-    it("emits one frame_render_time per elapsed window, with the measured window length", async () => {
+    it("emits one frame.summary per elapsed window, with the measured window length", async () => {
         const h = harness();
         await new FrameDropTracker(h.telemetry, 100).start();
 
@@ -40,9 +40,9 @@ describe("FrameDropTracker", () => {
 
         expect(h.metrics).toHaveLength(1);
         const { name, data } = h.metrics[0];
-        expect(name).toBe("frame_render_time");
+        expect(name).toBe("frame.summary");
         expect(data["frame.window_duration_ms"]).toBe(112);   // closes on the first tick past 100ms
-        expect(data["frame.target_fps"]).toBe(60);
+        expect(data["display.refresh_rate"]).toBe(60);
         expect(data["frame.source"]).toBe("requestAnimationFrame");
     });
 
@@ -87,7 +87,7 @@ describe("FrameDropTracker", () => {
         await h.hitBoundary();
         expect(h.metrics).toHaveLength(1);           // one subscription, not two
         // Two rAF loops would each push a delta per vsync and double the sample count.
-        expect(h.metrics[0].data["frame.max_ms"]).toBe(16);
+        expect(h.metrics[0].data["frame.max_total_duration_ms"]).toBe(16);
         expect(h.metrics[0].data["frame.window_duration_ms"]).toBe(32);
     });
 });

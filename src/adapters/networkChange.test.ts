@@ -9,8 +9,8 @@ function fakeTelemetry() {
   };
 }
 
-describe("NetworkChangeEmitter (v3 network_change)", () => {
-  it("emits one network_change with previous + current type on a transition", () => {
+describe("NetworkChangeEmitter (v3 network.change)", () => {
+  it("emits one network.change with previous + current type on a transition", () => {
     const { telemetry, calls } = fakeTelemetry();
     const emitter = new NetworkChangeEmitter(telemetry);
 
@@ -18,7 +18,7 @@ describe("NetworkChangeEmitter (v3 network_change)", () => {
     emitter.onSample("cellular");  // wifi → cellular
 
     expect(calls).toHaveLength(1);
-    expect(calls[0].name).toBe("network_change");
+    expect(calls[0].name).toBe("network.change");
     expect(calls[0].data["network.previous_type"]).toBe("wifi");
     expect(calls[0].data["network.type"]).toBe("cellular");
     // legacy v2 name never fires

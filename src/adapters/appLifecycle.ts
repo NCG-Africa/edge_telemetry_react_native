@@ -3,10 +3,10 @@ import { Telemetry } from "../core/telemetry";
 /**
  * Shared foreground/background emitter — the single source of truth so the native
  * (RN AppState) and web (visibilitychange) lifecycle adapters stay in lockstep on the
- * v3 `app_lifecycle` contract (#30).
+ * `app.lifecycle` catalogue event (#30, #179).
  *
- * Feed it the current active state via `onState(isActive)`. It emits `app_lifecycle` only
- * on a transition, carrying the direction as `app_lifecycle.state` (foreground|background).
+ * Feed it the current active state via `onState(isActive)`. It emits `app.lifecycle` only
+ * on a transition, carrying the direction as `lifecycle.state` (foreground|background).
  */
 export class AppLifecycleEmitter {
   private active?: boolean;
@@ -30,10 +30,10 @@ export class AppLifecycleEmitter {
     this.active = isActive;
     if (previous === undefined || previous === isActive) return;
 
-    // Chained, not fired alongside, so the `app_lifecycle` row lands in the view it happened
+    // Chained, not fired alongside, so the `app.lifecycle` row lands in the view it happened
     // in — awaited because a consumer-supplied double may return a plain value.
-    await this.telemetry.log("app_lifecycle", {
-      "app_lifecycle.state": isActive ? "foreground" : "background",
+    await this.telemetry.log("app.lifecycle", {
+      "lifecycle.state": isActive ? "foreground" : "background",
     });
     // The view ends and emits, and the successor's clock starts paused so a night spent
     // backgrounded is not charged as dwell to the screen the user left open.

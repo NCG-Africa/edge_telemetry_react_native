@@ -1,4 +1,4 @@
-// The rAF sampling loop behind `frame_render_time` (§5.1), shared by both builds: rAF and
+// The rAF sampling loop behind `frame.summary` (§5.1, #179), shared by both builds: rAF and
 // `performance.now()` are globals RN polyfills and the browser ships, so there is nothing
 // platform-specific left to split. Web and native therefore cannot drift on window length,
 // on the refresh-rate measurement or on the boundary reset.
@@ -9,7 +9,7 @@ import { aggregateFrames } from "./frameAggregate";
  * All this tracker needs of core. Structural, so it is testable without a `Telemetry`.
  */
 type FrameEmitter = {
-    logMetric(name: string, value: number, data?: Record<string, any>): unknown;
+    log(name: string, data?: Record<string, any>): unknown;
     views: { onBoundary(fn: () => unknown): () => void };
 };
 
@@ -53,8 +53,8 @@ export class FrameDropTracker {
         this.windowStart = now;
         if (this.deltas.length === 0) return;
 
-        const { value, attributes } = aggregateFrames(this.deltas, elapsed, "requestAnimationFrame");
+        const window = aggregateFrames(this.deltas, elapsed, "requestAnimationFrame");
         this.deltas = [];
-        await this.telemetry.logMetric("frame_render_time", value, attributes);
+        await this.telemetry.log("frame.summary", window);
     }
 }

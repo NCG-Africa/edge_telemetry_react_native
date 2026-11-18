@@ -103,7 +103,7 @@ for (const build of ["native", "web"] as const) {
       await inst.enterView("Checkout", "route");
       await tick(2500);
       await tick();
-      await t.log("custom_event");
+      await t.log("custom.event");
       await t.flush();
 
       const [hang, ...more] = hangs(sent);
@@ -125,7 +125,7 @@ for (const build of ["native", "web"] as const) {
       expect(hang.attributes!["session.id"]).toBe(home["session.id"]);
       expect(hang.attributes!["trace.id"]).toBe(home["trace.id"]);
       expect(hang.attributes!["rum.action.id"]).toBe(home["rum.action.id"]);
-      const custom = sent.filter((e) => e.eventName === "custom_event").slice(-1)[0];
+      const custom = sent.filter((e) => e.eventName === "custom.event").slice(-1)[0];
       expect(custom.attributes!["event.sequence"]).toBeGreaterThan(hang.attributes!["event.sequence"]);
     });
 
