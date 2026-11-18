@@ -113,7 +113,7 @@ for (const build of ["native", "web"] as const) {
       const names = sent.map((e) => e.eventName);
       expect(names).toContain("session.finalized");
       expect(sent.filter((e) => e.eventName === "session.started").map((e) => e.attributes!["session.reason"]))
-        .toEqual(["idle"]);   // the launch's session.started was dropped with the queue
+        .toEqual(["timeout"]);   // the launch's session.started was dropped with the queue
       expect(sent.some((e) => e.attributes!.after === true)).toBe(true);
     });
 
@@ -130,7 +130,7 @@ for (const build of ["native", "web"] as const) {
       await t.flush();
       const names = sent.map((e) => e.eventName);
       expect(names).toContain("session.started");
-      expect(sent.find((e) => e.eventName === "session.started")!.attributes!["session.reason"]).toBe("launch");
+      expect(sent.find((e) => e.eventName === "session.started")!.attributes!["session.reason"]).toBeUndefined();
       expect(names).not.toContain("app.start");
       expect(sent.some((e) => e.attributes!.dark === true)).toBe(false);
       expect(sent.some((e) => e.attributes!.lit === true)).toBe(true);

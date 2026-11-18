@@ -54,6 +54,16 @@ jobs:
       - name: Run unit tests
         run: npm test
 
+      # #179: the golden batches must match the event catalogue pinned in catalogue.version.
+      - name: Setup Go
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5 # v5.5.0
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Conform to the event catalogue
+        run: ./scripts/conform.sh
+
       - name: Publish to npm
         run: npm publish --access public --provenance
 

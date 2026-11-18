@@ -89,8 +89,8 @@ export const DEVICE_ID_KEY = "telemetry_device_id";
 /** Store key for the resumable session record (#92). */
 export const SESSION_KEY = "telemetry_session";
 
-/** `session.reason` domains: 3 on session.started, the last 2 on session.finalized (§4.1/§4.2). */
-export type SessionReason = "launch" | "idle" | "max_duration" | "manual";
+/** Why a session started/ended. `launch` is internal only — it ships as no `session.reason` (catalogue #179). */
+export type SessionReason = "launch" | "timeout" | "max_duration" | "manual";
 export type SessionEndReason = Exclude<SessionReason, "launch">;
 
 /**
@@ -433,6 +433,7 @@ export class Telemetry {
     public readonly deviceState?: DeviceStateHandler;
 
     private networkInfoHandler: NetworkInfoHandler;
+    private networkStarted = false;
     private deviceInfoHandler: DeviceInfoHandler;
 
     // Persisted state (#89). The entry injects webStore()/nativeStore(); shared core
@@ -567,6 +568,9 @@ export class Telemetry {
             start: async () => Promise.resolve({}),
             collect: async () => Promise.resolve({})
         };
+        // #179: the tracker is what emits `network.change`; it ran only if the host called
+        // getNetworkInfo(), so a normal app never sent one.
+        if (opts?.networkInfoHandler) this.getNetworkInfo(opts.networkInfoHandler);
 
     }
 
@@ -630,7 +634,10 @@ export class Telemetry {
         });
     }
 
+    /** Starts the network tracker once; later calls are no-ops, so listeners never stack. */
     getNetworkInfo(networkInfoHandler: NetworkInfoHandler) {
+        if (this.networkStarted) return;
+        this.networkStarted = true;
         this.networkInfoHandler = networkInfoHandler;
         void networkInfoHandler.start(this).catch((err) => {
             debug.warn("Telemetry networkInfoHandler start failed:", err);
@@ -955,7 +962,7 @@ export class Telemetry {
     private expiryReason(now: number): SessionEndReason | undefined {
         if (this.lastActivity === undefined) return undefined;
         // Both boundaries are strict: a session sitting exactly on one has not crossed it.
-        if (now - this.lastActivity > SESSION_IDLE_MS) return "idle";
+        if (now - this.lastActivity > SESSION_IDLE_MS) return "timeout";
         if (now - this.sessionStart > SESSION_MAX_MS) return "max_duration";
         return undefined;
     }
@@ -995,7 +1002,8 @@ export class Telemetry {
         const a11y = await this.deviceState?.accessibility().catch(() => ({})) ?? {};
         await this.log("session.started", {
             ...a11y,
-            "session.reason": reason,
+            // Catalogue session.yaml (#179): no `launch` in the enum — a launch start carries no reason.
+            ...(reason === "launch" ? {} : { "session.reason": reason }),
             // §4.1, count only — never the hosts (#99). Ships on every session so a zero is
             // legible as "nobody opted in" rather than as a stripped header.
             "sdk.trace_allowlist_size": this.trace.allowlistSize(),

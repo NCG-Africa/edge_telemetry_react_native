@@ -14,6 +14,14 @@ fourteen are unsigned.
 
 ### Breaking
 
+- **The 4.x wire and the event catalogue** (#179). The batch is the 8-key 4.x envelope
+  (`contract_version`, `device_id`, `sdk`, `app` at the root; identity leaves the rows), sent with
+  `X-API-Key` only. Events are renamed to the processor catalogue: `app.lifecycle`,
+  `network.change`, `custom.event`, `frame.summary` and `memory.usage` (now events), `perf.lcp` &c.,
+  and `recordMetric()` rows as `custom.metric`. `session.reason` is `timeout|max_duration|manual`,
+  absent on a launch. New: `screen.load`, `app.start.duration_ms` / `.type`, `task.failure_reason`.
+  The full table is at the top of `docs/backend-wire-contract.md`; `test/golden/` pins every event.
+
 - **`TelemetryWeb` / `TelemetryNative` are exported as types only** (#159). `createTelemetry()` is
   the one way to build an instance, so the `apiKey` / `traceHostAllowlist` validation cannot be
   bypassed. *Compile-time visible.*
@@ -58,6 +66,8 @@ fourteen are unsigned.
 
 ### Fixed
 
+- `network.change` now fires: the tracker only started after a `getNetworkInfo()` call, and each
+  call stacked another listener (#179).
 - The vitals tracker stops on `shutdown()`; `trackErrors()` is per entry, so shared code imports
   no crash handler; a synchronously-throwing XHR `send()` discards the root it minted (#160).
 

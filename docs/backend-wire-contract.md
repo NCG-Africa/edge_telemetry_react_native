@@ -12,6 +12,26 @@ you, and Appendix C, ten rulings v5 asks for.
 > behaviour stated). Every v5 change carries **v5** in its row or paragraph. Until signed, every new
 > name and key is dropped on ingest — this gates the release, not the code.
 
+> **⚠ Superseded for names and the envelope: the event catalogue (#179).** RN 5.0.0 speaks the
+> processor's **4.x contract**. Every event name, key, type and enum domain is now owned by the
+> catalogue YAML in `NCG-Africa/edge_telemetry_processor_go` `docs/catalogue/`, at the tag pinned in
+> this repo's `catalogue.version` (**`catalogue-v4.5`**, "React Native converges"). The golden batches
+> in `test/golden/` are the SDK's side of that claim and `scripts/conform.sh` checks them on every `v*`
+> tag. Where a section below disagrees with the catalogue, the catalogue wins. What changed:
+>
+> | Was (this document) | Now |
+> |---|---|
+> | §2.1 envelope `{type, timestamp, batch_size, events}`, identity on every row | 8-key 4.x envelope: `type`, `contract_version` (`4.3.0`), `timestamp`, `batch_size`, `device_id`, `sdk {name: react_native, version}`, `app {name, package_name, platform, version, build_number}`, `events`. `device.id`, `app.*`, `sdk.version` and `sdk.platform` leave the rows |
+> | `X-API-Key` **and** `Authorization: Bearer` | `X-API-Key` only |
+> | `app_lifecycle` (`app_lifecycle.state`) | `app.lifecycle` (`lifecycle.state`) |
+> | `network_change` / `custom_event` | `network.change` / `custom.event` |
+> | metric `frame_render_time` (`frame.max_ms`, `frame.dropped_count`, `frame.target_fps`) | **event** `frame.summary` (`frame.total_frames`, `frame.slow_frames`, `frame.frozen_frames`, `frame.max_total_duration_ms`, `display.refresh_rate`) |
+> | metric `memory_usage` | **event** `memory.usage` (`memory.usage_mb`) |
+> | metrics `LCP` `FCP` `TTFB` `CLS` `INP` | metrics `perf.lcp` `perf.fcp` `perf.ttfb` `perf.cls` `perf.inp` |
+> | consumer `recordMetric(name)` under its own name | metric `custom.metric`, the host's name in `metric.name` |
+> | — | new: `screen.load` beside each `view`; `app.start.duration_ms` + `app.start.type`; `task.failure_reason` |
+> | `session.reason` `launch \| idle \| max_duration \| manual` | `timeout \| max_duration \| manual`; a launch-started session carries **no** `session.reason` |
+
 ---
 
 ## Pins

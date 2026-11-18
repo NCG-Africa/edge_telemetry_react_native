@@ -123,9 +123,9 @@ describe("#92 native session continuity — the async Store resumes across proce
     await second.t.log("custom.event");
     await second.t.flush();
 
-    expect(attrsOf(second.sent, "session.finalized")[0]["session.reason"]).toBe("idle");
+    expect(attrsOf(second.sent, "session.finalized")[0]["session.reason"]).toBe("timeout");
     expect(attrsOf(second.sent, "session.finalized")[0]["session.id"]).toBe(id);
-    expect(attrsOf(second.sent, "session.started")[0]["session.reason"]).toBe("idle");
+    expect(attrsOf(second.sent, "session.started")[0]["session.reason"]).toBe("timeout");
     expect(attrsOf(second.sent, "custom.event")[0]["session.id"]).not.toBe(id);
   });
 });
