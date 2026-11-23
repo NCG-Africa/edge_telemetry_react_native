@@ -42,8 +42,11 @@ function normalizeEvent(e: any) {
 export function goldens(batches: TelemetryEvent[][], suffix = ""): Record<string, string> {
     const variants: Record<string, Set<string>> = {};
     const envelopes: Record<string, any> = {};
-    for (const events of batches) {
-        const batch = JSON.parse(buildBatch(events));
+    mkdirSync("test/raw", { recursive: true }); // PROTOTYPE #90: raw batches, gitignored
+    for (const [i, events] of batches.entries()) {
+        const raw = buildBatch(events);
+        writeFileSync(`test/raw/batch${suffix}-${i}.json`, raw);
+        const batch = JSON.parse(raw);
         for (const e of batch.events) {
             const file = `${(e.eventName ?? e.metricName).replace(/\./g, "-")}${suffix}.json`;
             envelopes[file] = batch;
