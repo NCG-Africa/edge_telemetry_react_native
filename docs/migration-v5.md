@@ -12,10 +12,9 @@ explains the behaviour behind each entry. The source list is #156 §1.
 
 ## Read this first
 
-- ⚠ **v5 must not ship to production while any of contract Appendix B's A1–A14 is unsigned.** Every
-  v5 name and key is already emitted, and an unlisted name or key is **dropped on ingest** — so
-  `task.complete` and `app.hang` rows, and every new key below, vanish behind a 2xx until the
-  backend signs. See [The backend gate](#the-backend-gate-a1a14).
+- **v5 needs a backend that has signed contract Appendix B's A1–A14** — signed at the 5.0.0
+  release. Against an older collector, `task.complete` and `app.hang` rows and every new key below
+  are **dropped on ingest** behind a 2xx. See [The backend gate](#the-backend-gate-a1a14).
 - **One change breaks a build**: `new TelemetryWeb()` / `new TelemetryNative()` no longer
   compile. Use `createTelemetry()`, which every documented setup already does.
 - **Five changes are runtime-only.** No compile error; the one log line any of them produces is
@@ -81,8 +80,8 @@ All additive. Full detail in the [CHANGELOG](../CHANGELOG.md) and `CLAUDE.md`.
 ## The backend gate (A1–A14)
 
 v5 ships two new event names and fourteen asks, each needing a sign-off line in contract Appendix B.
-**At this release every one is unsigned**, so until each is signed its rows or keys are dropped on
-ingest:
+All fourteen were signed at the 5.0.0 release; a collector that predates the sign-off drops these
+rows or keys on ingest:
 
 | Ask | Affected until signed |
 |---|---|

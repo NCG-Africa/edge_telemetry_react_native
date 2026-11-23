@@ -2,15 +2,13 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
-## 5.0.0 — unreleased (gated on contract A1–A14 sign-off)
+## 5.0.0
 
 **Manual spans, RN-native capture, sibling parity.** Pure JS still — no native module, no new peer
 dependency. **Read [`docs/migration-v5.md`](docs/migration-v5.md) before deploying**: of six
 breaking changes exactly one is visible at compile time (#1, the type-only entry classes).
 
-⚠ **Do not publish while any of contract Appendix B's A1–A14 is unsigned.** Every new name and key
-below is already emitted, and an unlisted one is dropped on ingest behind a 2xx. At this cut all
-fourteen are unsigned.
+Released with backend sign-off on contract Appendix B's A1–A14.
 
 ### Breaking
 
