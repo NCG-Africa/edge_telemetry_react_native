@@ -15,8 +15,8 @@ you, and Appendix C, ten rulings v5 asks for.
 > **⚠ Superseded for names and the envelope: the event catalogue (#179).** RN 5.0.0 speaks the
 > processor's **4.x contract**. Every event name, key, type and enum domain is now owned by the
 > catalogue YAML in `NCG-Africa/edge_telemetry_processor_go` `docs/catalogue/`, at the tag pinned in
-> this repo's `catalogue.version` (**`catalogue-v4.5`**, "React Native converges"). The golden batches
-> in `test/golden/` are the SDK's side of that claim and `scripts/conform.sh` checks them on every `v*`
+> this repo's `catalogue.version` (**`catalogue-v4.6`**). The shape file
+> `test/shape.txt` is the SDK's side of that claim and `scripts/conform.sh` checks it on every `v*`
 > tag. Where a section below disagrees with the catalogue, the catalogue wins. What changed:
 >
 > | Was (this document) | Now |

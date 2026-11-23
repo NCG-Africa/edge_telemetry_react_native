@@ -1,9 +1,9 @@
-import { it, expect, vi } from "vitest";
+import { it, vi } from "vitest";
 import type { TelemetryEvent } from "./core/telemetry";
 import { memoryStore } from "./core/memoryStore";
-import { goldens, syncGoldens } from "./golden.helper";
+import { dumpRaw } from "./golden.helper";
 
-// The web golden run (#179) — see golden.helper.ts. Owns the `*-web.json` files: the five
+// The web golden run (#179) — see golden.helper.ts. Owns the `batch-web-*.json` files: the five
 // vitals, which only this build sends, and the web variant of what rides around them.
 
 type Cb = (m: any) => void;
@@ -18,7 +18,7 @@ const report = (name: string, m: any) =>
 const g = globalThis as any;
 const turns = async () => { for (let i = 0; i < 25; i++) await new Promise((r) => setTimeout(r, 0)); };
 
-it("web goldens match the wire", async () => {
+it("web golden run dumps raw batches", async () => {
     for (const m of ["log", "warn", "error"] as const) vi.spyOn(console, m).mockImplementation(() => {});
     const hide: Array<() => unknown> = [];
     g.document = {
@@ -48,6 +48,5 @@ it("web goldens match the wire", async () => {
     await turns();
     await t.flush();
 
-    const fresh = goldens(batches, "-web");
-    expect(fresh).toEqual(syncGoldens(fresh, (f) => f.endsWith("-web.json")));
+    dumpRaw(batches, "-web");
 });
