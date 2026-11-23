@@ -11,6 +11,7 @@ All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
   committed `test/shape.txt`. The committed `test/golden/` JSON, its normalizer and
   `UPDATE_GOLDENS` are gone, so the Node version, host or SDK version no longer break the check.
   Pin moves to `catalogue-v4.6`. No wire change.
+- Conform is out of CI (`ci.yml`, `release.yml`); it runs by hand at release.
 
 ## 5.0.0
 

@@ -1542,10 +1542,10 @@ ingest.
   `npm test` → `vitest run`. `npm run clean` removes `dist/`.
 - `prepare` runs the build, so a git-dependency install builds automatically.
 - CI (`.github/workflows/ci.yml`): **on a `v*` tag push only** (#180) — `npm ci`, typecheck,
-  test, conform, build. ⚠ Nothing runs on a PR or a push to master, so a PR's green comes from a
+  test, build. ⚠ Nothing runs on a PR or a push to master, so a PR's green comes from a
   local run. Actions pinned by SHA. No lint step (no lint script in the repo).
 - Publishing is **tag-driven** (`.github/workflows/release.yml`, on the same `v*` tag): fails
-  unless the tag matches `package.json`'s version, then typecheck, test, conform,
+  unless the tag matches `package.json`'s version, then typecheck, test,
   `npm publish --provenance`, and a GitHub Release from the CHANGELOG.
 - **Golden batches + conformance (#179, stable goldens #189).** `src/golden.native.test.ts` and
   `src/golden.web.test.ts` drive one session each through `createTelemetry()` and the real
@@ -1721,8 +1721,8 @@ above rather than defects.
   processor's `view` → `navigation` derive (catalogue navigation.yaml) books a self-navigation
   (`Checkout` → `Checkout`) on every foreground. Needs a ruling: omit the referrer there, or skip
   derives where from = to processor-side.
-- **Conform runs on `v*` tags only** (#180), not on PRs as #179 asked. `catalogue.version` pins
-  `catalogue-v4.6`.
+- **Conform is not in CI** (stable goldens #189, spec AC-8): it runs by hand at release, per the
+  checklist above. `catalogue.version` pins `catalogue-v4.6`.
 - **A reason-less `session.started` undercounts launches.** A resume emits no `session.started` at
   all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
   compensator and is not built — count launches from `app.start`, not from `session.reason`.
