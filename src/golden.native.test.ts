@@ -1,7 +1,7 @@
-import { it, expect, vi } from "vitest";
+import { it, vi } from "vitest";
 import type { TelemetryEvent } from "./core/telemetry";
 import { memoryStore } from "./core/memoryStore";
-import { goldens, syncGoldens } from "./golden.helper";
+import { dumpRaw } from "./golden.helper";
 
 // The native golden run (#179) — see golden.helper.ts. One session that reaches every catalogue
 // event the native build sends, through the public API and stubbed platform modules.
@@ -71,7 +71,7 @@ function installHttp() {
     };
 }
 
-it("native goldens match the wire", async () => {
+it("native golden run dumps raw batches", async () => {
     for (const m of ["log", "warn", "error"] as const) vi.spyOn(console, m).mockImplementation(() => {});
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
@@ -128,8 +128,6 @@ it("native goldens match the wire", async () => {
     await t.flush();
     await settle();
 
-    const fresh = goldens(batches);
-    const owns = (f: string) => !f.endsWith("-web.json");
-    expect(fresh).toEqual(syncGoldens(fresh, owns));
+    dumpRaw(batches);
     vi.useRealTimers();
 });

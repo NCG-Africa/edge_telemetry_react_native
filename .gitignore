@@ -95,3 +95,4 @@ dist/
 .agents/
 .claude/skills/
 skills-lock.json
+test/raw/

@@ -2,6 +2,17 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
+## Unreleased
+
+### Changed
+
+- **Stable goldens** (#189). The golden tests dump raw batches into the gitignored `test/raw/`;
+  `scripts/conform.sh` checks them against the catalogue and compares their derived shape with the
+  committed `test/shape.txt`. The committed `test/golden/` JSON, its normalizer and
+  `UPDATE_GOLDENS` are gone, so the Node version, host or SDK version no longer break the check.
+  Pin moves to `catalogue-v4.6`. No wire change.
+- Conform is out of CI (`ci.yml`, `release.yml`); it runs by hand at release.
+
 ## 5.0.0
 
 **Manual spans, RN-native capture, sibling parity.** Pure JS still — no native module, no new peer

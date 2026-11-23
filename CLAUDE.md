@@ -14,7 +14,7 @@ Two documents outrank this one, and only within their scope:
 
 | Document | Authority |
 |---|---|
-| the **event catalogue** — `docs/catalogue/*.yaml` in `NCG-Africa/edge_telemetry_processor_go`, at the tag in `catalogue.version` | **every event name, key, type and enum domain** (#179). The cross-SDK source of truth; `test/golden/` + `scripts/conform.sh` hold this SDK to it |
+| the **event catalogue** — `docs/catalogue/*.yaml` in `NCG-Africa/edge_telemetry_processor_go`, at the tag in `catalogue.version` | **every event name, key, type and enum domain** (#179). The cross-SDK source of truth; `test/shape.txt` + `scripts/conform.sh` hold this SDK to it |
 | `docs/backend-wire-contract.md` | **every wire key** — name, type, null discipline, cardinality, enum domain. It is a cross-SDK contract; where it and this doc disagree, it wins. |
 | `docs/wire-inventory.md` | a **historical record**, pinned to v3.0.1 at `9b7bf83`. Read it for what shipped then, never for what ships now. |
 
@@ -1462,7 +1462,7 @@ followed it.
 
 `ALLOWED_NAMES` in `core/telemetry.ts`. Anything else is rewritten to `custom.event` with
 the original name as `event.name`. **Each event's keys are defined by the catalogue YAML** (see the
-authority table) and pinned by its golden in `test/golden/`. Currently emitted:
+authority table) and pinned by `test/shape.txt`. Currently emitted:
 
 | Event | Trigger |
 |---|---|
@@ -1542,19 +1542,24 @@ ingest.
   `npm test` → `vitest run`. `npm run clean` removes `dist/`.
 - `prepare` runs the build, so a git-dependency install builds automatically.
 - CI (`.github/workflows/ci.yml`): **on a `v*` tag push only** (#180) — `npm ci`, typecheck,
-  test, conform, build. ⚠ Nothing runs on a PR or a push to master, so a PR's green comes from a
+  test, build. ⚠ Nothing runs on a PR or a push to master, so a PR's green comes from a
   local run. Actions pinned by SHA. No lint step (no lint script in the repo).
 - Publishing is **tag-driven** (`.github/workflows/release.yml`, on the same `v*` tag): fails
-  unless the tag matches `package.json`'s version, then typecheck, test, conform,
+  unless the tag matches `package.json`'s version, then typecheck, test,
   `npm publish --provenance`, and a GitHub Release from the CHANGELOG.
-- **Golden batches + conformance (#179, processor #40).** `src/golden.native.test.ts` and
+- **Golden batches + conformance (#179, stable goldens #189).** `src/golden.native.test.ts` and
   `src/golden.web.test.ts` drive one session each through `createTelemetry()` and the real
-  `buildBatch()`, and snapshot one normalized batch per event into `test/golden/` (web's files end
-  `-web.json`). `scripts/conform.sh` runs the processor's `cmd/conform` over that directory at the
-  tag in `catalogue.version` (needs Go; `PROCESSOR_DIR=…` reuses a local checkout). A wire change
-  fails the golden test — regenerate with `UPDATE_GOLDENS=1 npx vitest run src/golden` and review
-  the diff. A new key or event fails conform until the catalogue registers it: that is a processor
-  catalogue PR and a new tag, then bump `catalogue.version`.
+  `buildBatch()`, and dump the raw batches into the gitignored `test/raw/` (web's files are
+  `batch-web-*.json`). They compare nothing. `scripts/conform.sh` (after `npm test`) runs the
+  processor's `cmd/conform` at the tag in `catalogue.version` (needs Go; `PROCESSOR_DIR=…` reuses a
+  local checkout): the batches must match the catalogue, and their derived shape (event, key, JSON
+  type; never a value) must equal the committed `test/shape.txt`. Intended wire change:
+  `scripts/conform.sh -update`, commit the shape diff with the serializer change. A key that shows
+  up only by timing is a test-input bug: fix the input, don't widen the shape. A new key or event
+  fails conform until the catalogue registers it: a processor catalogue PR and a new tag.
+- **Release checklist (conform).** (1) Is the catalogue tagged? If not, cut a `catalogue-v*` tag in
+  the processor first. (2) Bump `catalogue.version` (always a `catalogue-v*` tag, never a branch).
+  (3) `npm test && scripts/conform.sh` must pass. Pin bumps happen only here, never in a feature PR.
 - **Size budget (§5, #158):** `src/size.budget.test.ts` walks each entry's built chunk graph,
   esbuild-minifies (esbuild ships with vite — no new dependency), gzips and fails above
   **21 KB gz native / 27 KB gz web** — raised from 20 / 26 by cap ruling at #179. Measured at #158: native
@@ -1716,8 +1721,8 @@ above rather than defects.
   processor's `view` → `navigation` derive (catalogue navigation.yaml) books a self-navigation
   (`Checkout` → `Checkout`) on every foreground. Needs a ruling: omit the referrer there, or skip
   derives where from = to processor-side.
-- **Conform runs on `v*` tags only** (#180), not on PRs as #179 asked. `catalogue.version` pins
-  `catalogue-v4.5`.
+- **Conform is not in CI** (stable goldens #189, spec AC-8): it runs by hand at release, per the
+  checklist above. `catalogue.version` pins `catalogue-v4.6`.
 - **A reason-less `session.started` undercounts launches.** A resume emits no `session.started` at
   all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
   compensator and is not built — count launches from `app.start`, not from `session.reason`.
