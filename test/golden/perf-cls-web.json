@@ -24,7 +24,7 @@
         "cls.largest_shift_value": 1.5,
         "device.brand": "unknown",
         "device.manufacturer": "browser",
-        "device.model": "Node.js/26",
+        "device.model": "<device.model>",
         "device.orientation": "portrait",
         "device.platform": "web",
         "device.screen_density": 1,
