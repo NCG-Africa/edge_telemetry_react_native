@@ -1716,10 +1716,8 @@ above rather than defects.
   processor's `view` → `navigation` derive (catalogue navigation.yaml) books a self-navigation
   (`Checkout` → `Checkout`) on every foreground. Needs a ruling: omit the referrer there, or skip
   derives where from = to processor-side.
-- **`catalogue.version` pins `catalogue-v4.5`, which exists only once the processor's
-  "React Native converges" catalogue PR is merged and tagged.** Until then `scripts/conform.sh`
-  (and so the release job) fails at the clone. Conform also runs on `v*` tags only (#180), not on
-  PRs as #179 asked.
+- **Conform runs on `v*` tags only** (#180), not on PRs as #179 asked. `catalogue.version` pins
+  `catalogue-v4.5`.
 - **A reason-less `session.started` undercounts launches.** A resume emits no `session.started` at
   all, so the rows that would reveal it are the ones never emitted. §4.3's `app.start` is the
   compensator and is not built — count launches from `app.start`, not from `session.reason`.
