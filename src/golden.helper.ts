@@ -18,6 +18,7 @@ const TS = "2026-01-01T00:00:00.000Z";
 const VOLATILE = new Set([
     "session.id", "user.id", "view.id", "trace.id", "span.id", "parent.span.id", "rum.action.id",
     "error.stacktrace", "error.breadcrumbs", "error.component_stack", "device.platform_version",
+    "device.model", // web reads the runtime: "Node.js/<major>" differs between a dev machine and CI
 ]);
 
 function normalize(key: string, v: unknown): unknown {

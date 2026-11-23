@@ -23,7 +23,7 @@
       "attributes": {
         "device.brand": "unknown",
         "device.manufacturer": "browser",
-        "device.model": "Node.js/26",
+        "device.model": "<device.model>",
         "device.orientation": "portrait",
         "device.platform": "web",
         "device.screen_density": 1,
