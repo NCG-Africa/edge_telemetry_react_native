@@ -31,6 +31,7 @@ vi.mock("@react-native-async-storage/async-storage", () => ({
 
 const g = globalThis as any;
 let mono = 0;
+const realSetImmediate = setImmediate;   // captured before vi.useFakeTimers() replaces it
 const settle = async () => { for (let i = 0; i < 50; i++) await Promise.resolve(); };
 
 for (const build of ["native", "web"] as const) {
@@ -81,7 +82,14 @@ for (const build of ["native", "web"] as const) {
       for (let i = 0; i < 20; i++) await vi.advanceTimersByTimeAsync(0);
       // The lifecycle adapter arms the detector after a cold dynamic import, which is real
       // I/O on the first test of a file, not a microtask: wait for it rather than guess.
-      if (g.__DEV__ === false) await vi.waitFor(() => expect((inst.hangs as any)?.timer).toBeDefined());
+      // On real time: `vi.waitFor` advances the fake clock 50 ms per poll, which pushes the
+      // last good tick past the launch root's 2 s idle expiry and drops its trace keys.
+      if (g.__DEV__ === false) {
+        for (let i = 0; i < 200 && (inst.hangs as any)?.timer === undefined; i++) {
+          await new Promise((r) => realSetImmediate(r));
+        }
+        expect((inst.hangs as any)?.timer).toBeDefined();
+      }
       return { t, inst, sent };
     }
 
