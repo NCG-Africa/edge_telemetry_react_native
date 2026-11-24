@@ -2,7 +2,11 @@
 
 All notable changes to `@nathanclaire/edge-telemetry-sdk` are documented here.
 
-## Unreleased
+## 5.0.1
+
+First npm publish of the 5.x line — the `v5.0.0` release job failed (conform step), so 5.0.0
+never reached npm. Install 5.0.1; read the 5.0.0 notes below and
+[`docs/migration-v5.md`](docs/migration-v5.md). No wire or API change from 5.0.0.
 
 ### Changed
 

@@ -37,7 +37,7 @@ Native Web). It captures performance, errors, network requests, device/network c
 navigation, then ships them to the shared **EdgeTelemetryProcessor** backend — the same
 backend the Android (Ionic) and iOS SDKs feed.
 
-- npm: `@nathanclaire/edge-telemetry-sdk`, currently **v5.0.0**. (v2 was the unscoped
+- npm: `@nathanclaire/edge-telemetry-sdk`, currently **v5.0.1**. (v2 was the unscoped
   `edge-telemetry-sdk`, now deprecated.)
 - Bundler: **Vite** (`vite build` → `dist/`). Not `react-native-builder-bob`.
 - Dual entry: web (`dist/index.web.js|.cjs`) and native (`dist/index.native.js|.cjs`),
@@ -206,7 +206,7 @@ X-API-Key: edge_...
   "timestamp": "2026-06-14T10:30:00.512Z",   // ISO 8601
   "batch_size": 13,
   "device_id": "device_…",
-  "sdk": { "name": "react_native", "version": "5.0.0" },
+  "sdk": { "name": "react_native", "version": "5.0.1" },
   "app": { "name", "package_name", "platform", "version", "build_number" },
   "events": [ /* Event | Metric */ ]
 }
